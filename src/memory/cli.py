@@ -55,9 +55,21 @@ def _fmt_memory_line(m: dict) -> str:
     h = _short_hash(m["content_hash"])
     mtype = m.get("memory_type", "note")
     sim = m.get("similarity")
+    score = m.get("score")
+    conf = m.get("confidence")
+    imp = m.get("importance")
     header = f"{h} [{mtype}]"
-    if sim is not None:
+    if score is not None:
+        header += f" score={score:.2f}"
+    elif sim is not None:
         header += f" {sim:.2f}"
+    extras = []
+    if conf is not None and conf < 1.0:
+        extras.append(f"conf={conf:.2f}")
+    if imp is not None:
+        extras.append(f"imp={imp:.2f}")
+    if extras:
+        header += f" ({', '.join(extras)})"
     content = _TYPE_PREFIX_RE.sub("", m.get("content", ""))
     indented = content.replace("\n", "\n  ")
     return f"{header}\n  {indented}"
@@ -123,6 +135,25 @@ def _fmt_update(d: dict) -> str:
 
 def _fmt_cleanup(d: dict) -> str:
     return f"{d.get('duplicates_removed', 0)} duplicates removed"
+
+
+def _fmt_consolidate(d: dict) -> str:
+    if d.get("dry_run"):
+        lines = [f"would consolidate {d.get('would_consolidate', 0)} pairs:"]
+        for p in d.get("pairs", []):
+            lines.append(f"  keep {_short_hash(p['keep_hash'])} ← remove {_short_hash(p['remove_hash'])} (sim={p['similarity']:.2f})")
+        return "\n".join(lines)
+    count = d.get("consolidated", 0)
+    if not count:
+        return "0 pairs consolidated"
+    lines = [f"{count} pairs consolidated:"]
+    for p in d.get("pairs", []):
+        lines.append(f"  keep {_short_hash(p['keep_hash'])} ← remove {_short_hash(p['remove_hash'])} (sim={p['similarity']:.2f})")
+    return "\n".join(lines)
+
+
+def _fmt_decay(d: dict) -> str:
+    return f"{d.get('updated', 0)} updated, {d.get('pruned', 0)} pruned"
 
 
 def _fmt_stats(d: dict) -> str:
@@ -237,6 +268,7 @@ def cmd_store(args, store: MemoryStore, fmt: str) -> None:
     result = store.store(
         args.content, tags=tag_list, memory_type=args.memory_type,
         metadata=meta, dedup_threshold=args.dedup_threshold,
+        importance=args.importance,
     )
     _out(fmt, result, _fmt_store)
 
@@ -298,6 +330,10 @@ def cmd_update(args, store: MemoryStore, fmt: str) -> None:
         except json.JSONDecodeError:
             print("Error: --metadata must be valid JSON", file=sys.stderr)
             sys.exit(1)
+    if args.importance is not None:
+        updates["importance"] = args.importance
+    if args.confidence is not None:
+        updates["confidence"] = args.confidence
     if not updates:
         print("Error: no updates specified", file=sys.stderr)
         sys.exit(1)
@@ -311,6 +347,17 @@ def cmd_health(args, store: MemoryStore, fmt: str) -> None:
 
 def cmd_cleanup(args, store: MemoryStore, fmt: str) -> None:
     _out(fmt, store.cleanup(), _fmt_cleanup)
+
+
+def cmd_consolidate(args, store: MemoryStore, fmt: str) -> None:
+    exclude = [t.strip() for t in args.exclude_types.split(",") if t.strip()] if args.exclude_types else []
+    result = store.consolidate(threshold=args.threshold, dry_run=args.dry_run, exclude_types=exclude)
+    _out(fmt, result, _fmt_consolidate)
+
+
+def cmd_decay(args, store: MemoryStore, fmt: str) -> None:
+    result = store.apply_decay(min_confidence=args.min_confidence)
+    _out(fmt, result, _fmt_decay)
 
 
 def cmd_stats(args, store: MemoryStore, fmt: str) -> None:
@@ -342,6 +389,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--metadata", "-m", default="{}", help="JSON metadata")
     p.add_argument("--dedup", dest="dedup_threshold", default=None, type=float,
                    help="Skip if existing memory has similarity >= threshold (0.0-1.0)")
+    p.add_argument("--importance", default=None, type=float,
+                   help="Importance score (0.0-1.0). Auto-inferred if not set.")
 
     # store-batch
     p = sub.add_parser("store-batch", help="Store multiple memories from a JSON array")
@@ -384,12 +433,27 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tags", "-t", default=None, help="New tags (comma-separated)")
     p.add_argument("--type", dest="memory_type", default=None, help="New memory type")
     p.add_argument("--metadata", "-m", default=None, help="JSON metadata to merge")
+    p.add_argument("--importance", default=None, type=float, help="New importance (0.0-1.0)")
+    p.add_argument("--confidence", default=None, type=float, help="New confidence (0.0-1.0)")
 
     # health
     sub.add_parser("health", help="Check database health and stats")
 
     # cleanup
     sub.add_parser("cleanup", help="Remove duplicate entries")
+
+    # consolidate
+    p = sub.add_parser("consolidate", help="Merge near-duplicate memories (deterministic)")
+    p.add_argument("--threshold", default=0.92, type=float,
+                   help="Cosine similarity threshold for merging (default 0.92)")
+    p.add_argument("--dry-run", action="store_true", help="Preview without executing")
+    p.add_argument("--exclude-types", default="reference",
+                   help="Comma-separated memory types to skip (default: reference). Use '' to include all.")
+
+    # decay
+    p = sub.add_parser("decay", help="Apply confidence decay and optionally prune low-confidence memories")
+    p.add_argument("--min-confidence", default=0.0, type=float,
+                   help="Prune memories below this confidence (default 0.0 = no pruning)")
 
     # stats
     p = sub.add_parser("stats", help="Show usage statistics and analytics")
@@ -411,6 +475,8 @@ _DISPATCH = {
     "update": cmd_update,
     "health": cmd_health,
     "cleanup": cmd_cleanup,
+    "consolidate": cmd_consolidate,
+    "decay": cmd_decay,
     "stats": cmd_stats,
 }
 

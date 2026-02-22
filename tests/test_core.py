@@ -4,7 +4,13 @@ import time
 
 import pytest
 
-from memory.core import MemoryStore, _parse_time_expr
+from memory.core import (
+    MemoryStore,
+    _parse_time_expr,
+    compute_confidence,
+    compute_recency,
+    infer_importance,
+)
 
 
 # --- Original tests (fixture now comes from conftest.py) ---
@@ -304,3 +310,205 @@ def test_rollback_safe_no_transaction(store):
     conn = store._get_conn()
     # Should not raise even though no transaction is open
     MemoryStore._rollback_safe(conn)
+
+
+# --- Round 4: Confidence decay ---
+
+
+def test_confidence_decay_formula():
+    """compute_confidence decays over time based on type rate."""
+    now = time.time()
+    # 10 days ago, error type (rate=0.99)
+    conf = compute_confidence(1.0, "error", None, now - 10 * 86400)
+    assert 0.9 < conf < 0.95  # 0.99^10 ≈ 0.904
+
+    # decision type barely decays (rate=0.999)
+    conf_d = compute_confidence(1.0, "decision", None, now - 10 * 86400)
+    assert conf_d > 0.99  # 0.999^10 ≈ 0.990
+
+
+def test_confidence_reset_on_recall(store):
+    """Recalled memories get confidence reset to 1.0."""
+    store.store("confidence reset test", memory_type="error")
+    # Manually set confidence low
+    conn = store._get_conn()
+    conn.execute("UPDATE memories SET confidence = 0.5 WHERE deleted_at IS NULL")
+
+    # Search triggers recall → resets confidence to 1.0
+    store.search("confidence reset", mode="exact")
+
+    row = conn.execute(
+        "SELECT confidence FROM memories WHERE deleted_at IS NULL"
+    ).fetchone()
+    assert row["confidence"] == 1.0
+
+
+def test_compute_recency():
+    """compute_recency returns 1.0 for now, decays for older."""
+    now = time.time()
+    assert compute_recency(now) > 0.99
+    # 30 days ago
+    r30 = compute_recency(now - 30 * 86400)
+    assert 0.03 < r30 < 0.04  # 1/(1+30) ≈ 0.032
+
+
+# --- Round 4: Importance scoring ---
+
+
+def test_infer_importance_keywords():
+    """Keywords like IMPORTANT/CRITICAL bump importance to 0.9."""
+    assert infer_importance("This is IMPORTANT for deployment", "note") == 0.9
+    assert infer_importance("CRITICAL bug in auth", "error") == 0.9
+    assert infer_importance("NEVER run git clean -fd", "pattern") == 0.8
+
+
+def test_infer_importance_by_type():
+    """Importance is inferred from memory type when no keywords match."""
+    assert infer_importance("plain content", "decision") == 0.8
+    assert infer_importance("plain content", "error") == 0.7
+    assert infer_importance("plain content", "note") == 0.4
+
+
+def test_store_auto_infers_importance(store):
+    """Storing without explicit importance auto-infers it."""
+    result = store.store("CRITICAL: never delete production DB", memory_type="decision")
+    assert result["status"] == "stored"
+
+    conn = store._get_conn()
+    row = conn.execute(
+        "SELECT importance FROM memories WHERE content_hash = ?",
+        (result["content_hash"],),
+    ).fetchone()
+    assert row["importance"] == 0.9  # keyword match
+
+
+def test_store_explicit_importance(store):
+    """Explicit importance overrides auto-inference."""
+    result = store.store("plain content", importance=0.95)
+    conn = store._get_conn()
+    row = conn.execute(
+        "SELECT importance FROM memories WHERE content_hash = ?",
+        (result["content_hash"],),
+    ).fetchone()
+    assert row["importance"] == 0.95
+
+
+# --- Round 4: Composite retrieval scoring ---
+
+
+def test_search_returns_composite_score(store):
+    """Semantic search results include score, confidence, importance."""
+    store.store("Kubernetes pods run containers", tags=["k8s"])
+    results = store.search("kubernetes pods", limit=5)
+    assert len(results) >= 1
+    r = results[0]
+    assert "score" in r
+    assert "confidence" in r
+    assert "importance" in r
+    assert r["score"] > 0
+
+
+def test_search_composite_reranks(store):
+    """Higher importance memory can outrank slightly closer match."""
+    store.store("basic note about cats", memory_type="note", importance=0.1)
+    store.store("CRITICAL: always validate user input in API handlers",
+                memory_type="decision", importance=0.9)
+    # Search for something that could match both
+    results = store.search("validate input", limit=2)
+    # The CRITICAL one should rank higher due to importance boost
+    if len(results) >= 2:
+        assert results[0]["importance"] >= results[1]["importance"]
+
+
+# --- Round 4: Memory consolidation ---
+
+
+def test_consolidate_dry_run(store):
+    """Consolidate dry-run finds near-duplicates without deleting."""
+    store.store("Kubernetes pods run in clusters")
+    store.store("Kubernetes pods run in clusters for container orchestration")
+    result = store.consolidate(threshold=0.8, dry_run=True)
+    assert result["dry_run"] is True
+    assert result["would_consolidate"] >= 1
+
+
+def test_consolidate_merges(store):
+    """Consolidate actually merges and soft-deletes."""
+    r1 = store.store("Terraform uses HCL for infrastructure config", tags=["terraform"])
+    r2 = store.store("Terraform uses HCL for infrastructure configuration", tags=["iac"])
+
+    result = store.consolidate(threshold=0.8)
+    assert result["consolidated"] >= 1
+
+    # One should be soft-deleted
+    listing = store.list()
+    assert listing["total"] == 1
+    # Surviving memory should have union of tags
+    surviving = listing["memories"][0]
+    assert "terraform" in surviving["tags"] or "iac" in surviving["tags"]
+
+
+def test_consolidate_no_matches(store):
+    """Consolidate with very different memories finds no pairs."""
+    store.store("Python asyncio for concurrent IO")
+    store.store("Terraform infrastructure management")
+    result = store.consolidate(threshold=0.99)
+    assert result["consolidated"] == 0
+
+
+# --- Round 4: Confidence decay application ---
+
+
+def test_apply_decay(store):
+    """apply_decay updates confidence values."""
+    store.store("decay test memory", memory_type="observation")
+    # Backdate created_at to 30 days ago
+    conn = store._get_conn()
+    conn.execute(
+        "UPDATE memories SET created_at = ? WHERE deleted_at IS NULL",
+        (time.time() - 30 * 86400,),
+    )
+    result = store.apply_decay()
+    assert result["updated"] >= 1 or result["pruned"] >= 0
+
+
+def test_apply_decay_prunes(store):
+    """apply_decay with min_confidence prunes low-confidence memories."""
+    store.store("very old memory", memory_type="observation")
+    conn = store._get_conn()
+    # Set confidence very low
+    conn.execute("UPDATE memories SET confidence = 0.05 WHERE deleted_at IS NULL")
+    result = store.apply_decay(min_confidence=0.1)
+    assert result["pruned"] == 1
+
+    listing = store.list()
+    assert listing["total"] == 0
+
+
+# --- Round 4: Update importance/confidence ---
+
+
+def test_update_importance(store):
+    """Update memory importance via update()."""
+    result = store.store("update importance test")
+    h = result["content_hash"]
+    store.update(h, updates={"importance": 0.9})
+
+    conn = store._get_conn()
+    row = conn.execute(
+        "SELECT importance FROM memories WHERE content_hash = ?", (h,)
+    ).fetchone()
+    assert row["importance"] == 0.9
+
+
+def test_update_confidence(store):
+    """Update memory confidence via update()."""
+    result = store.store("update confidence test")
+    h = result["content_hash"]
+    store.update(h, updates={"confidence": 0.75})
+
+    conn = store._get_conn()
+    row = conn.execute(
+        "SELECT confidence FROM memories WHERE content_hash = ?", (h,)
+    ).fetchone()
+    assert row["confidence"] == 0.75

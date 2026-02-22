@@ -34,21 +34,23 @@ The codebase lives entirely in `src/memory/` (~2000 lines across 5 modules):
 **`embeddings.py`** — Wraps the `intfloat/e5-small` ONNX model (12-layer, 384-dim vectors, seq_length=256, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/.claude/tools/memory/data/models/`. Mean pooling + L2 normalization. Returns raw numpy arrays to avoid `.tolist()` overhead.
 
 **`core.py`** — `MemoryStore`, the main logic layer. All operations go through this class:
-- `store()` / `store_batch()` — insert with optional semantic dedup (cosine threshold)
-- `search()` — semantic (sqlite-vec cosine distance), exact (LIKE), or hybrid mode
+- `store()` / `store_batch()` — insert with optional semantic dedup (cosine threshold) and importance scoring
+- `search()` — semantic (sqlite-vec cosine distance), exact (LIKE), or hybrid mode with composite scoring
 - `delete()` — soft delete via `deleted_at` timestamp; supports dry-run
+- `consolidate()` — deterministic merge of near-duplicate memories (cosine > threshold)
+- `apply_decay()` — recompute confidence decay and optionally prune low-confidence memories
 - `stats()` — aggregated analytics from `operation_events` table
 - Uses IMMEDIATE transactions to prevent TOCTOU races in multi-agent scenarios
 - Database at `~/.claude/tools/memory/data/sqlite_vec.db` (WAL mode, 15s busy timeout)
 
-**`cli.py`** — Click-based CLI. Commands: `store`, `store-batch`, `search`, `list`, `delete`, `update`, `health`, `cleanup`, `stats`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format).
+**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `list`, `delete`, `update`, `health`, `cleanup`, `consolidate`, `decay`, `stats`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format).
 
 **`mcp_server.py`** — MCP stdio server exposing the same operations as tools. Handles type coercion (string→int/bool/JSON) since MCP clients send everything as strings. Input validation is intentionally disabled.
 
 ## Database Schema
 
 Five tables in SQLite:
-- **`memories`** — core storage (content, tags as JSON, soft delete via `deleted_at`, recall tracking via `recall_count`/`last_recalled_at`)
+- **`memories`** — core storage (content, tags as JSON, soft delete via `deleted_at`, recall tracking via `recall_count`/`last_recalled_at`, `confidence` for decay, `importance` for scoring)
 - **`memory_embeddings`** — sqlite-vec virtual table, 384-dim float vectors with cosine distance
 - **`memory_graph`** — relationship edges between memories (source_hash ↔ target_hash)
 - **`operation_events`** — analytics log (operation type, duration, result counts, dedup info)
@@ -60,6 +62,10 @@ Five tables in SQLite:
 - **Soft delete everywhere**: Records are never hard-deleted; `deleted_at IS NULL` filters them out.
 - **Natural language time filters**: `search()` and `delete()` accept expressions like `"last week"`, `"3 days ago"`, or ISO dates.
 - **Content hash as primary key for API**: External interfaces use `content_hash` (SHA256) to identify memories, not internal row IDs.
+- **Confidence decay**: Memories lose confidence over time at per-type rates (decision/pattern=0.999/day, error/learning=0.99/day, note/observation=0.97/day). Recalled memories reset to 1.0.
+- **Composite retrieval scoring**: `score = w1*similarity + w2*importance + w3*recency` (default 0.6/0.2/0.2). Search results re-ranked by composite score.
+- **Importance auto-inference**: Keywords (IMPORTANT→0.9, NEVER→0.8) override type-based defaults (decision=0.8, error=0.7, note=0.4). Explicit `--importance` overrides both.
+- **Deterministic consolidation**: Pairs with cosine similarity > threshold (default 0.92) are merged — higher recall_count wins, tags are unioned.
 
 ## Testing
 

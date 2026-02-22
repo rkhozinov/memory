@@ -22,6 +22,8 @@ class Memory:
     updated_at: float = 0.0
     created_at_iso: str = ""
     updated_at_iso: str = ""
+    confidence: float = 1.0
+    importance: float = 0.5
 
     def __post_init__(self) -> None:
         if not self.content_hash:
@@ -52,6 +54,8 @@ class Memory:
             self.updated_at,
             self.created_at_iso,
             self.updated_at_iso,
+            self.confidence,
+            self.importance,
         )
 
     @classmethod
@@ -85,6 +89,8 @@ class Memory:
             updated_at=row.get("updated_at", 0.0),
             created_at_iso=row.get("created_at_iso", ""),
             updated_at_iso=row.get("updated_at_iso", ""),
+            confidence=row.get("confidence", 1.0) or 1.0,
+            importance=row.get("importance", 0.5) or 0.5,
         )
 
     def to_dict(self) -> dict:
@@ -97,4 +103,6 @@ class Memory:
             "metadata": self.metadata,
             "created_at": self.created_at_iso,
             "updated_at": self.updated_at_iso,
+            "confidence": round(self.confidence, 4),
+            "importance": round(self.importance, 4),
         }

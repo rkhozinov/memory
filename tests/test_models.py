@@ -87,7 +87,7 @@ def test_to_dict_structure():
     """to_dict() returns all expected keys."""
     m = Memory(content="test", tags=["x"], memory_type="fact", metadata={"k": 1})
     d = m.to_dict()
-    expected_keys = {"content_hash", "content", "tags", "memory_type", "metadata", "created_at", "updated_at"}
+    expected_keys = {"content_hash", "content", "tags", "memory_type", "metadata", "created_at", "updated_at", "confidence", "importance"}
     assert set(d.keys()) == expected_keys
     assert d["tags"] == ["x"]
     assert d["memory_type"] == "fact"

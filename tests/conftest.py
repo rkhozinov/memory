@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS memories (
     updated_at REAL,
     created_at_iso TEXT,
     updated_at_iso TEXT,
-    deleted_at REAL DEFAULT NULL
+    deleted_at REAL DEFAULT NULL,
+    confidence REAL DEFAULT 1.0,
+    importance REAL DEFAULT 0.5
 );
 CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);
 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);

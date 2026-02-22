@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import struct
@@ -22,6 +23,37 @@ DB_PATH = Path.home() / ".claude" / "tools" / "memory" / "data" / "sqlite_vec.db
 EMBEDDING_DIM = 384
 
 _F32_STRUCT = struct.Struct(f"<{EMBEDDING_DIM}f")
+
+# --- Confidence decay rates (per day) ---
+# Higher = slower decay.  decision/pattern/reference are near-permanent.
+DECAY_RATES: dict[str, float] = {
+    "decision": 0.999,
+    "pattern": 0.999,
+    "reference": 0.999,
+    "error": 0.99,
+    "learning": 0.99,
+    "observation": 0.97,
+    "note": 0.97,
+}
+DEFAULT_DECAY_RATE = 0.98
+
+# --- Importance auto-inference rules ---
+_IMPORTANCE_KEYWORDS: list[tuple[float, re.Pattern]] = [
+    (0.9, re.compile(r"\b(IMPORTANT|CRITICAL|MUST|BREAKING)\b", re.IGNORECASE)),
+    (0.8, re.compile(r"\b(NEVER|ALWAYS|WARNING|DANGER)\b", re.IGNORECASE)),
+]
+_IMPORTANCE_BY_TYPE: dict[str, float] = {
+    "decision": 0.8,
+    "pattern": 0.7,
+    "error": 0.7,
+    "reference": 0.6,
+    "learning": 0.6,
+    "observation": 0.4,
+    "note": 0.4,
+}
+
+# --- Composite scoring defaults ---
+DEFAULT_SCORING_WEIGHTS = (0.6, 0.2, 0.2)  # similarity, importance, recency
 
 
 def _serialize_f32(vec: object) -> bytes:
@@ -72,6 +104,42 @@ def _parse_time_expr(expr: str) -> datetime:
         return now - delta
 
     raise ValueError(f"Cannot parse time expression: {expr!r}")
+
+
+def infer_importance(content: str, memory_type: str) -> float:
+    """Auto-infer importance from content keywords and memory type."""
+    # Keyword rules take priority (highest match wins)
+    for score, pattern in _IMPORTANCE_KEYWORDS:
+        if pattern.search(content):
+            return score
+    # Fall back to type-based default
+    return _IMPORTANCE_BY_TYPE.get(memory_type, 0.5)
+
+
+def compute_confidence(
+    base_confidence: float,
+    memory_type: str,
+    last_recalled_at: float | None,
+    created_at: float,
+) -> float:
+    """Compute decayed confidence for a memory."""
+    rate = DECAY_RATES.get(memory_type, DEFAULT_DECAY_RATE)
+    anchor = last_recalled_at if last_recalled_at else created_at
+    days = max(0.0, (time.time() - anchor) / 86400)
+    return base_confidence * (rate ** days)
+
+
+def compute_recency(created_at: float) -> float:
+    """Recency score: 1/(1 + days_since_creation)."""
+    days = max(0.0, (time.time() - created_at) / 86400)
+    return 1.0 / (1.0 + days)
+
+
+def normalize_importance(recall_count: int, max_recall: int) -> float:
+    """Normalize recall-based importance to 0-1 range."""
+    if max_recall <= 0:
+        return 0.0
+    return min(1.0, recall_count / max_recall)
 
 
 class MemoryStore:
@@ -136,14 +204,16 @@ class MemoryStore:
             """
         )
         # Add recall columns (idempotent, DDL auto-commits)
-        try:
-            conn.execute("ALTER TABLE memories ADD COLUMN recall_count INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            conn.execute("ALTER TABLE memories ADD COLUMN last_recalled_at REAL DEFAULT NULL")
-        except sqlite3.OperationalError:
-            pass
+        for col_sql in (
+            "ALTER TABLE memories ADD COLUMN recall_count INTEGER DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN last_recalled_at REAL DEFAULT NULL",
+            "ALTER TABLE memories ADD COLUMN confidence REAL DEFAULT 1.0",
+            "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 0.5",
+        ):
+            try:
+                conn.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass
 
     @staticmethod
     def _rollback_safe(conn: sqlite3.Connection) -> None:
@@ -190,6 +260,7 @@ class MemoryStore:
         memory_type: str = "note",
         metadata: dict | None = None,
         dedup_threshold: float | None = None,
+        importance: float | None = None,
         _embedding: object | None = None,
     ) -> dict:
         """Store a single memory. Returns dict with hash and status.
@@ -197,13 +268,17 @@ class MemoryStore:
         If dedup_threshold is set (0.0-1.0), checks for semantically similar
         memories before storing. Embeds content once and reuses for both the
         similarity check and the stored embedding.
+
+        importance: explicit 0-1 score. If None, auto-inferred from content/type.
         """
         start = time.time()
+        imp = importance if importance is not None else infer_importance(content, memory_type)
         mem = Memory(
             content=content,
             tags=tags or [],
             memory_type=memory_type,
             metadata=metadata or {},
+            importance=imp,
         )
 
         conn = self._begin_immediate()
@@ -264,8 +339,9 @@ class MemoryStore:
                 """
                 INSERT INTO memories
                     (content_hash, content, tags, memory_type, metadata,
-                     created_at, updated_at, created_at_iso, updated_at_iso)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     created_at, updated_at, created_at_iso, updated_at_iso,
+                     confidence, importance)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 mem.to_row(),
             )
@@ -320,6 +396,7 @@ class MemoryStore:
                 memory_type=item.get("memory_type", "note"),
                 metadata=item.get("metadata", {}),
                 dedup_threshold=dedup_threshold,
+                importance=item.get("importance"),
                 _embedding=embedding,
             )
             results.append(result)
@@ -336,8 +413,13 @@ class MemoryStore:
         time_expr: str | None = None,
         after: str | None = None,
         before: str | None = None,
+        scoring_weights: tuple[float, float, float] | None = None,
     ) -> list[dict]:
-        """Search memories. Modes: semantic, exact, hybrid."""
+        """Search memories. Modes: semantic, exact, hybrid.
+
+        scoring_weights: (similarity_w, importance_w, recency_w) for composite
+        scoring. Defaults to (0.6, 0.2, 0.2). Only applies to semantic/hybrid.
+        """
         start = time.time()
         conn = self._get_conn()
 
@@ -346,7 +428,8 @@ class MemoryStore:
             results = self._search_exact(conn, query, limit, tags, time_expr, after, before)
         elif mode in ("semantic", "hybrid"):
             results = self._search_semantic(
-                conn, query, limit, tags, time_expr, after, before
+                conn, query, limit, tags, time_expr, after, before,
+                scoring_weights=scoring_weights,
             )
         else:
             raise ValueError(f"Unknown search mode: {mode}")
@@ -363,11 +446,12 @@ class MemoryStore:
                 top_similarity=results[0].get("similarity") if results else None,
                 chars_returned=sum(len(m.get("content", "")) for m in results),
             )
-            # Update recall counts for returned memories
+            # Update recall counts and reset confidence (reinforcement) for returned memories
             now = time.time()
             for m in results:
                 conn.execute(
-                    "UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = ? WHERE content_hash = ?",
+                    "UPDATE memories SET recall_count = recall_count + 1, "
+                    "last_recalled_at = ?, confidence = 1.0 WHERE content_hash = ?",
                     (now, m["content_hash"]),
                 )
             conn.execute("COMMIT")
@@ -424,6 +508,7 @@ class MemoryStore:
         after: str | None,
         before: str | None,
         _embedding: object | None = None,
+        scoring_weights: tuple[float, float, float] | None = None,
     ) -> list[dict]:
         if _embedding is not None:
             embedding = _embedding
@@ -432,8 +517,8 @@ class MemoryStore:
             embedding = get_model().embed(query)
         else:
             return []
-        # Fetch more than needed to allow post-filtering
-        fetch_limit = limit * 5 if (tags or time_expr or after or before) else limit
+        # Fetch more than needed to allow post-filtering and re-ranking
+        fetch_limit = max(limit * 5, 50) if (tags or time_expr or after or before) else max(limit * 3, 30)
 
         rows = conn.execute(
             """
@@ -467,19 +552,38 @@ class MemoryStore:
 
         mem_rows = conn.execute(sql, params).fetchall()
         # Build lookup by id, then iterate in original distance order
-        row_by_id = {row["id"]: row for row in mem_rows}
+        row_by_id = {row["id"]: dict(row) for row in mem_rows}
+
+        w_sim, w_imp, w_rec = scoring_weights or DEFAULT_SCORING_WEIGHTS
         memories = []
         for rid in rowids:
             row = row_by_id.get(rid)
             if row is None:
                 continue  # filtered out by time/deleted_at
-            mem = Memory.from_row(dict(row))
+            mem = Memory.from_row(row)
             d = mem.to_dict()
-            d["similarity"] = round(1.0 - distances.get(rid, 1.0), 4)
+            similarity = round(1.0 - distances.get(rid, 1.0), 4)
+            d["similarity"] = similarity
+
+            # Compute decayed confidence
+            conf = compute_confidence(
+                mem.confidence, mem.memory_type,
+                row.get("last_recalled_at"), mem.created_at,
+            )
+            d["confidence"] = round(conf, 4)
+
+            # Composite score
+            recency = compute_recency(mem.created_at)
+            d["score"] = round(
+                w_sim * similarity + w_imp * mem.importance + w_rec * recency, 4
+            )
             memories.append(d)
 
         if tags:
             memories = self._filter_by_tags(memories, tags)
+
+        # Re-rank by composite score
+        memories.sort(key=lambda m: m["score"], reverse=True)
 
         return memories[:limit]
 
@@ -693,6 +797,14 @@ class MemoryStore:
                 existing.update(updates["metadata"])
                 sets.append("metadata = ?")
                 params.append(json.dumps(existing))
+
+            if "importance" in updates:
+                sets.append("importance = ?")
+                params.append(float(updates["importance"]))
+
+            if "confidence" in updates:
+                sets.append("confidence = ?")
+                params.append(float(updates["confidence"]))
 
             if not preserve_timestamps or sets:
                 now = time.time()
@@ -963,3 +1075,198 @@ class MemoryStore:
             self._rollback_safe(conn)
             raise
         return {"duplicates_removed": len(to_delete)}
+
+    def consolidate(
+        self,
+        threshold: float = 0.92,
+        dry_run: bool = False,
+        exclude_types: list[str] | None = None,
+    ) -> dict:
+        """Merge near-duplicate memories deterministically.
+
+        Finds memory pairs with cosine similarity > threshold.
+        Keeps the one with higher recall_count (ties: older memory wins),
+        soft-deletes the other, and unions tags.
+
+        exclude_types: memory types to skip (default: ["reference"]).
+        Pass empty list to include all types.
+        """
+        if exclude_types is None:
+            exclude_types = ["reference"]
+        start = time.time()
+        conn = self._get_conn()
+
+        # Gather all active memory embeddings
+        sql = (
+            "SELECT m.id, m.content_hash, m.recall_count, m.created_at, m.tags, "
+            "m.importance, m.confidence, m.memory_type "
+            "FROM memories m WHERE m.deleted_at IS NULL"
+        )
+        params: list = []
+        if exclude_types:
+            placeholders = ",".join("?" * len(exclude_types))
+            sql += f" AND m.memory_type NOT IN ({placeholders})"
+            params.extend(exclude_types)
+        rows = conn.execute(sql, params).fetchall()
+
+        if len(rows) < 2:
+            return {"consolidated": 0, "pairs": []}
+
+        # Load all embeddings
+        id_list = [r["id"] for r in rows]
+        placeholders = ",".join("?" * len(id_list))
+        emb_rows = conn.execute(
+            f"SELECT rowid, content_embedding FROM memory_embeddings WHERE rowid IN ({placeholders})",
+            id_list,
+        ).fetchall()
+        emb_by_id = {r["rowid"]: r["content_embedding"] for r in emb_rows}
+
+        import numpy as np
+
+        # Parse embeddings into numpy for pairwise comparison
+        id_to_idx = {}
+        vectors = []
+        valid_rows = []
+        for r in rows:
+            emb_bytes = emb_by_id.get(r["id"])
+            if emb_bytes is None:
+                continue
+            vec = np.frombuffer(emb_bytes, dtype=np.float32).copy()
+            id_to_idx[r["id"]] = len(vectors)
+            vectors.append(vec)
+            valid_rows.append(dict(r))
+
+        if len(vectors) < 2:
+            return {"consolidated": 0, "pairs": []}
+
+        mat = np.stack(vectors)
+        # Cosine similarity matrix (vectors are already L2-normalized from embed())
+        sim_matrix = mat @ mat.T
+
+        # Find pairs above threshold (upper triangle only)
+        pairs = []
+        merged_ids: set[int] = set()
+        n = len(valid_rows)
+        for i in range(n):
+            if valid_rows[i]["id"] in merged_ids:
+                continue
+            for j in range(i + 1, n):
+                if valid_rows[j]["id"] in merged_ids:
+                    continue
+                sim = float(sim_matrix[i, j])
+                if sim >= threshold:
+                    ri, rj = valid_rows[i], valid_rows[j]
+                    # Keep the one with higher recall_count; tie-break by older created_at
+                    rc_i = ri.get("recall_count", 0) or 0
+                    rc_j = rj.get("recall_count", 0) or 0
+                    if rc_i > rc_j or (rc_i == rc_j and ri["created_at"] <= rj["created_at"]):
+                        keep, remove = ri, rj
+                    else:
+                        keep, remove = rj, ri
+                    pairs.append({
+                        "keep_hash": keep["content_hash"],
+                        "remove_hash": remove["content_hash"],
+                        "similarity": round(sim, 4),
+                    })
+                    merged_ids.add(remove["id"])
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "would_consolidate": len(pairs),
+                "pairs": pairs,
+            }
+
+        if not pairs:
+            return {"consolidated": 0, "pairs": []}
+
+        # Execute merges
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now = time.time()
+            for p in pairs:
+                keep_h = p["keep_hash"]
+                remove_h = p["remove_hash"]
+                # Union tags
+                keep_tags = _safe_tags(
+                    conn.execute(
+                        "SELECT tags FROM memories WHERE content_hash = ?", (keep_h,)
+                    ).fetchone()["tags"]
+                )
+                remove_tags = _safe_tags(
+                    conn.execute(
+                        "SELECT tags FROM memories WHERE content_hash = ?", (remove_h,)
+                    ).fetchone()["tags"]
+                )
+                merged_tags = list(dict.fromkeys(keep_tags + remove_tags))  # preserve order, dedup
+                conn.execute(
+                    "UPDATE memories SET tags = ? WHERE content_hash = ?",
+                    (json.dumps(merged_tags), keep_h),
+                )
+                # Soft-delete the removed memory
+                remove_row = conn.execute(
+                    "SELECT id FROM memories WHERE content_hash = ?", (remove_h,)
+                ).fetchone()
+                conn.execute(
+                    "UPDATE memories SET deleted_at = ? WHERE id = ?",
+                    (now, remove_row["id"]),
+                )
+                conn.execute(
+                    "DELETE FROM memory_embeddings WHERE rowid = ?", (remove_row["id"],)
+                )
+
+            duration_ms = (time.time() - start) * 1000
+            self._track_event(conn, "consolidate",
+                duration_ms=duration_ms,
+                result_count=len(pairs),
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return {"consolidated": len(pairs), "pairs": pairs}
+
+    def apply_decay(self, min_confidence: float = 0.0) -> dict:
+        """Recompute and persist decayed confidence for all memories.
+
+        If min_confidence > 0, soft-deletes memories that fall below it.
+        Returns count of updated and pruned memories.
+        """
+        conn = self._begin_immediate()
+        try:
+            rows = conn.execute(
+                "SELECT id, content_hash, memory_type, confidence, "
+                "last_recalled_at, created_at "
+                "FROM memories WHERE deleted_at IS NULL"
+            ).fetchall()
+
+            updated = 0
+            pruned = 0
+            now = time.time()
+            for r in rows:
+                new_conf = compute_confidence(
+                    r["confidence"] or 1.0, r["memory_type"],
+                    r["last_recalled_at"], r["created_at"],
+                )
+                if min_confidence > 0 and new_conf < min_confidence:
+                    conn.execute(
+                        "UPDATE memories SET deleted_at = ? WHERE id = ?",
+                        (now, r["id"]),
+                    )
+                    conn.execute(
+                        "DELETE FROM memory_embeddings WHERE rowid = ?", (r["id"],)
+                    )
+                    pruned += 1
+                elif abs(new_conf - (r["confidence"] or 1.0)) > 0.0001:
+                    conn.execute(
+                        "UPDATE memories SET confidence = ? WHERE id = ?",
+                        (new_conf, r["id"]),
+                    )
+                    updated += 1
+
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+        return {"updated": updated, "pruned": pruned}

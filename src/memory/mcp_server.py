@@ -90,6 +90,10 @@ TOOLS = [
                             "type": "string",
                             "description": "Memory type (note, fact, reminder, etc.)",
                         },
+                        "importance": {
+                            "type": "number",
+                            "description": "Importance score (0.0-1.0). Auto-inferred if not set.",
+                        },
                     },
                 },
             },
@@ -227,6 +231,46 @@ TOOLS = [
         description="Find and remove duplicate entries.",
         inputSchema={"type": "object", "properties": {}},
     ),
+    Tool(
+        name="memory_consolidate",
+        description="Merge near-duplicate memories deterministically. Keeps the higher-recall memory, unions tags, soft-deletes the other. Excludes 'reference' type by default.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "threshold": {
+                    "type": "number",
+                    "default": 0.92,
+                    "description": "Cosine similarity threshold for merging (default 0.92)",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Preview without executing",
+                },
+                "exclude_types": {
+                    "description": "Memory types to skip (default: ['reference']). Pass empty list to include all.",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ],
+                },
+            },
+        },
+    ),
+    Tool(
+        name="memory_decay",
+        description="Apply confidence decay to all memories and optionally prune low-confidence ones.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_confidence": {
+                    "type": "number",
+                    "default": 0.0,
+                    "description": "Prune memories below this confidence (default 0.0 = no pruning)",
+                },
+            },
+        },
+    ),
 ]
 
 # Build schema lookup
@@ -264,14 +308,18 @@ def _handle_store(store: MemoryStore, args: dict) -> dict:
 
     tags = _normalize_tags(meta.get("tags"))
     memory_type = meta.get("type", "note")
-    # Remove tags and type from metadata to avoid duplication
-    clean_meta = {k: v for k, v in meta.items() if k not in ("tags", "type")}
+    importance = meta.get("importance")
+    if importance is not None:
+        importance = float(importance)
+    # Remove tags, type, importance from metadata to avoid duplication
+    clean_meta = {k: v for k, v in meta.items() if k not in ("tags", "type", "importance")}
 
     return store.store(
         content=args["content"],
         tags=tags,
         memory_type=memory_type,
         metadata=clean_meta,
+        importance=importance,
     )
 
 
@@ -331,6 +379,21 @@ def _handle_update(store: MemoryStore, args: dict) -> dict:
     )
 
 
+def _handle_consolidate(store: MemoryStore, args: dict) -> dict:
+    exclude = _normalize_tags(args.get("exclude_types"))
+    return store.consolidate(
+        threshold=args.get("threshold", 0.92),
+        dry_run=args.get("dry_run", False),
+        exclude_types=exclude if exclude else None,
+    )
+
+
+def _handle_decay(store: MemoryStore, args: dict) -> dict:
+    return store.apply_decay(
+        min_confidence=args.get("min_confidence", 0.0),
+    )
+
+
 _HANDLERS = {
     "memory_store": _handle_store,
     "memory_store_batch": _handle_store_batch,
@@ -340,6 +403,8 @@ _HANDLERS = {
     "memory_update": _handle_update,
     "memory_health": lambda store, _: store.health(),
     "memory_cleanup": lambda store, _: store.cleanup(),
+    "memory_consolidate": _handle_consolidate,
+    "memory_decay": _handle_decay,
 }
 
 
