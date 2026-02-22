@@ -1,0 +1,115 @@
+{
+  "timestamp": "2026-02-22T17:40:20+0000",
+  "warm_runs": 100,
+  "batch_size": 50,
+  "results": [
+    {
+      "runtime": "onnx-cpu-fp32-1t | all-MiniLM-L6-v2",
+      "model": "all-MiniLM-L6-v2",
+      "cold_start_ms": 69.17470900225453,
+      "warm_median_ms": 13.417458001640625,
+      "warm_p95_ms": 13.848166010575369,
+      "batch_total_ms": 719.6612920088228,
+      "batch_per_item_ms": 14.393225840176456,
+      "peak_memory_mb": 19.62923526763916,
+      "embedding_dim": 384,
+      "error": null
+    },
+    {
+      "runtime": "onnx-cpu-fp32-8t | all-MiniLM-L6-v2",
+      "model": "all-MiniLM-L6-v2",
+      "cold_start_ms": 53.6694579932373,
+      "warm_median_ms": 5.752500495873392,
+      "warm_p95_ms": 9.91291698301211,
+      "batch_total_ms": 445.94970799516886,
+      "batch_per_item_ms": 8.918994159903377,
+      "peak_memory_mb": 19.229952812194824,
+      "embedding_dim": 384,
+      "error": null
+    },
+    {
+      "runtime": "onnx-coreml-fp32 | all-MiniLM-L6-v2",
+      "model": "all-MiniLM-L6-v2",
+      "cold_start_ms": 667.0374159875792,
+      "warm_median_ms": 41.79314601060469,
+      "warm_p95_ms": 43.095875007566065,
+      "batch_total_ms": 2460.575666016666,
+      "batch_per_item_ms": 49.211513320333324,
+      "peak_memory_mb": 19.219478607177734,
+      "embedding_dim": 384,
+      "error": null
+    },
+    {
+      "runtime": "mlx | all-MiniLM-L6-v2",
+      "model": "all-MiniLM-L6-v2",
+      "cold_start_ms": 891.4722079935018,
+      "warm_median_ms": 4.339374994742684,
+      "warm_p95_ms": 5.51579101011157,
+      "batch_total_ms": 96.39787499327213,
+      "batch_per_item_ms": 1.9279574998654425,
+      "peak_memory_mb": 107.619704246521,
+      "embedding_dim": 384,
+      "error": null
+    },
+    {
+      "runtime": "onnx-cpu-fp32-1t | snowflake-arctic-embed-xs",
+      "model": "snowflake-arctic-embed-xs",
+      "cold_start_ms": 74.12687499891035,
+      "warm_median_ms": 34.6636670146836,
+      "warm_p95_ms": 37.06291699199937,
+      "batch_total_ms": 2038.381209014915,
+      "batch_per_item_ms": 40.7676241802983,
+      "peak_memory_mb": 38.32409381866455,
+      "embedding_dim": 384,
+      "error": null
+    },
+    {
+      "runtime": "onnx-cpu-fp32-8t | snowflake-arctic-embed-xs",
+      "model": "snowflake-arctic-embed-xs",
+      "cold_start_ms": 51.58887497964315,
+      "warm_median_ms": 17.27897951786872,
+      "warm_p95_ms": 22.338375012623146,
+      "batch_total_ms": 949.9181249993853,
+      "batch_per_item_ms": 18.998362499987707,
+      "peak_memory_mb": 38.316104888916016,
+      "embedding_dim": 384,
+      "error": null
+    },
+    {
+      "runtime": "onnx-cpu-int8-8t | snowflake-arctic-embed-xs",
+      "model": "snowflake-arctic-embed-xs",
+      "cold_start_ms": 65.1323749916628,
+      "warm_median_ms": 13.949874497484416,
+      "warm_p95_ms": 17.057749995728955,
+      "batch_total_ms": 895.2366250159685,
+      "batch_per_item_ms": 17.90473250031937,
+      "peak_memory_mb": 38.30893135070801,
+      "embedding_dim": 384,
+      "error": null
+    },
+    {
+      "runtime": "onnx-coreml-fp32 | snowflake-arctic-embed-xs",
+      "model": "snowflake-arctic-embed-xs",
+      "cold_start_ms": 665.7032080111094,
+      "warm_median_ms": 86.43333350482862,
+      "warm_p95_ms": 88.57916601118632,
+      "batch_total_ms": 6423.225167003693,
+      "batch_per_item_ms": 128.46450334007386,
+      "peak_memory_mb": 38.312710762023926,
+      "embedding_dim": 384,
+      "error": null
+    },
+    {
+      "runtime": "mlx | snowflake-arctic-embed-xs",
+      "model": "snowflake-arctic-embed-xs",
+      "cold_start_ms": 25499.389291013358,
+      "warm_median_ms": 7.714312494499609,
+      "warm_p95_ms": 9.440833004191518,
+      "batch_total_ms": 221.83299998869188,
+      "batch_per_item_ms": 4.436659999773838,
+      "peak_memory_mb": 86.54054355621338,
+      "embedding_dim": 384,
+      "error": null
+    }
+  ]
+}
