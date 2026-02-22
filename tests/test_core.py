@@ -512,3 +512,73 @@ def test_update_confidence(store):
         "SELECT confidence FROM memories WHERE content_hash = ?", (h,)
     ).fetchone()
     assert row["confidence"] == 0.75
+
+
+# --- Round 5: Briefing ---
+
+
+def test_briefing_empty(store):
+    """Briefing on empty store returns sensible defaults."""
+    result = store.briefing()
+    assert result["total_memories"] == 0
+    assert result["total_lines"] == 0
+    assert "No memories" in result["markdown"]
+    assert result["sections"] == {}
+
+
+def test_briefing_basic(store):
+    """Briefing returns sections and markdown."""
+    store.store("[Decision] Use PostgreSQL for production", memory_type="decision")
+    store.store("[Error] OOM on large batch — reduce batch size", memory_type="error")
+    store.store("[Pattern] Always use uv instead of pip", memory_type="pattern")
+    store.store("General note about project", memory_type="note")
+
+    result = store.briefing()
+    assert result["total_memories"] == 4
+    assert result["total_lines"] > 0
+    assert "markdown" in result
+    assert "## Decisions" in result["markdown"]
+    assert "sections" in result
+    assert isinstance(result["sections"], dict)
+
+
+def test_briefing_budget(store):
+    """Briefing respects line budget."""
+    for i in range(50):
+        store.store(f"Pattern number {i} for testing budget", memory_type="pattern")
+
+    result_small = store.briefing(budget=10)
+    result_large = store.briefing(budget=200)
+    assert result_small["total_lines"] <= result_large["total_lines"]
+
+
+def test_briefing_recent_section(store):
+    """Recent section includes memories from last 7 days."""
+    store.store("[Learning] Fresh learning from today", memory_type="learning")
+    result = store.briefing()
+    # Should appear in both learning and recent sections
+    assert "recent" in result["sections"]
+    assert len(result["sections"]["recent"]) >= 1
+
+
+# --- Round 5: Search recall fields ---
+
+
+def test_search_semantic_returns_recall_fields(store):
+    """Semantic search results include recall_count and last_recalled_at."""
+    store.store("Kubernetes pods run containers", tags=["k8s"])
+    results = store.search("kubernetes pods", limit=5)
+    assert len(results) >= 1
+    r = results[0]
+    assert "recall_count" in r
+    assert "last_recalled_at" in r
+
+
+def test_search_exact_returns_recall_fields(store):
+    """Exact search results include recall_count and last_recalled_at."""
+    store.store("Python asyncio patterns for IO")
+    results = store.search("asyncio", mode="exact")
+    assert len(results) >= 1
+    r = results[0]
+    assert "recall_count" in r
+    assert "last_recalled_at" in r

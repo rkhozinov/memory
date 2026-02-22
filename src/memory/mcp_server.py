@@ -158,6 +158,12 @@ TOOLS = [
                 },
                 "after": {"type": "string", "description": "ISO date (YYYY-MM-DD)"},
                 "before": {"type": "string", "description": "ISO date (YYYY-MM-DD)"},
+                "depth": {
+                    "type": "string",
+                    "enum": ["titles", "summary", "full"],
+                    "default": "summary",
+                    "description": "Output depth: titles (minimal), summary (default), full (all metadata)",
+                },
             },
         },
     ),
@@ -271,6 +277,20 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="memory_briefing",
+        description="Generate a compact markdown briefing of top memories, ranked by confidence * importance * recency.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "budget": {
+                    "type": "integer",
+                    "default": 150,
+                    "description": "Total line budget for the briefing (default 150)",
+                },
+            },
+        },
+    ),
 ]
 
 # Build schema lookup
@@ -336,7 +356,7 @@ def _handle_store_batch(store: MemoryStore, args: dict) -> list[dict]:
 
 def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
     tags = _normalize_tags(args.get("tags"))
-    return store.search(
+    results = store.search(
         query=args.get("query"),
         mode=args.get("mode", "semantic"),
         limit=args.get("limit", 10),
@@ -345,6 +365,30 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
         after=args.get("after"),
         before=args.get("before"),
     )
+    depth = args.get("depth", "summary")
+    if depth == "titles":
+        import re
+        _pfx = re.compile(
+            r"^\[(Pattern|Observation|Decision|Learning|Error|Note|Reference)\]\s*"
+        )
+        return [
+            {
+                "content_hash": m["content_hash"],
+                "memory_type": m.get("memory_type", "note"),
+                "score": m.get("score"),
+                "similarity": m.get("similarity"),
+                "content_preview": _pfx.sub("", m.get("content", ""))[:80],
+            }
+            for m in results
+        ]
+    elif depth == "full":
+        return results  # already includes recall_count, last_recalled_at
+    return results
+
+
+def _handle_briefing(store: MemoryStore, args: dict) -> str:
+    result = store.briefing(budget=args.get("budget", 150))
+    return result
 
 
 def _handle_list(store: MemoryStore, args: dict) -> dict:
@@ -405,6 +449,7 @@ _HANDLERS = {
     "memory_cleanup": lambda store, _: store.cleanup(),
     "memory_consolidate": _handle_consolidate,
     "memory_decay": _handle_decay,
+    "memory_briefing": _handle_briefing,
 }
 
 

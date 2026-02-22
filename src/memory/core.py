@@ -572,6 +572,10 @@ class MemoryStore:
             )
             d["confidence"] = round(conf, 4)
 
+            # Recall tracking fields
+            d["recall_count"] = row.get("recall_count", 0) or 0
+            d["last_recalled_at"] = row.get("last_recalled_at")
+
             # Composite score
             recency = compute_recency(mem.created_at)
             d["score"] = round(
@@ -614,7 +618,13 @@ class MemoryStore:
         params.append(limit * 5 if tags else limit)
 
         rows = conn.execute(sql, params).fetchall()
-        memories = [Memory.from_row(dict(r)).to_dict() for r in rows]
+        memories = []
+        for r in rows:
+            row_dict = dict(r)
+            d = Memory.from_row(row_dict).to_dict()
+            d["recall_count"] = row_dict.get("recall_count", 0) or 0
+            d["last_recalled_at"] = row_dict.get("last_recalled_at")
+            memories.append(d)
 
         if tags:
             memories = self._filter_by_tags(memories, tags)
@@ -1226,6 +1236,161 @@ class MemoryStore:
             raise
 
         return {"consolidated": len(pairs), "pairs": pairs}
+
+    def briefing(self, budget: int = 150) -> dict:
+        """Generate a compact markdown briefing of top memories.
+
+        Ranks memories by confidence * importance * recency, groups by type,
+        and allocates a line budget per section.
+        """
+        start = time.time()
+        conn = self._get_conn()
+
+        rows = conn.execute(
+            "SELECT content_hash, content, memory_type, confidence, importance, "
+            "recall_count, last_recalled_at, created_at "
+            "FROM memories WHERE deleted_at IS NULL"
+        ).fetchall()
+
+        total_memories = len(rows)
+        if not total_memories:
+            result = {
+                "sections": {},
+                "total_memories": 0,
+                "total_lines": 0,
+                "markdown": "No memories stored.",
+            }
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._track_event(conn, "briefing",
+                    duration_ms=(time.time() - start) * 1000,
+                    result_count=0,
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                self._rollback_safe(conn)
+                raise
+            return result
+
+        now = time.time()
+        seven_days_ago = now - 7 * 86400
+
+        # Score each memory
+        scored = []
+        for r in rows:
+            conf = compute_confidence(
+                r["confidence"] or 1.0, r["memory_type"],
+                r["last_recalled_at"], r["created_at"],
+            )
+            imp = r["importance"] or 0.5
+            days = max(0.0, (now - r["created_at"]) / 86400)
+            recency = 1.0 / (1.0 + days)
+            score = conf * imp * recency
+            scored.append({
+                "content": r["content"],
+                "memory_type": r["memory_type"],
+                "score": score,
+                "created_at": r["created_at"],
+            })
+
+        # Section budgets
+        section_budgets = {
+            "decision": 25,
+            "pattern": 25,
+            "error": 15,
+            "learning": 25,
+            "reference": 15,
+            "recent": 25,
+            "other": 20,
+        }
+
+        # Scale budgets to fit total budget
+        total_budget_raw = sum(section_budgets.values())
+        scale = budget / total_budget_raw
+        for k in section_budgets:
+            section_budgets[k] = max(1, int(section_budgets[k] * scale))
+
+        # Group memories into sections
+        _TYPE_PREFIX_RE = re.compile(
+            r"^\[(Pattern|Observation|Decision|Learning|Error|Note|Reference)\]\s*"
+        )
+        known_sections = {"decision", "pattern", "error", "learning", "reference"}
+        groups: dict[str, list] = {k: [] for k in section_budgets}
+
+        for m in scored:
+            mt = m["memory_type"]
+            if mt in known_sections:
+                groups[mt].append(m)
+            else:
+                groups["other"].append(m)
+            # Also add to recent if within 7 days
+            if m["created_at"] >= seven_days_ago:
+                groups["recent"].append(m)
+
+        # Sort each group by score descending, take top-N per budget
+        sections: dict[str, list[str]] = {}
+        total_lines = 0
+        for section, mems in groups.items():
+            if not mems:
+                continue
+            mems.sort(key=lambda x: x["score"], reverse=True)
+            line_budget = section_budgets.get(section, 10)
+            lines = []
+            for m in mems:
+                if len(lines) >= line_budget:
+                    break
+                first_line = m["content"].split("\n")[0]
+                first_line = _TYPE_PREFIX_RE.sub("", first_line)
+                if len(first_line) > 120:
+                    first_line = first_line[:117] + "..."
+                lines.append(first_line)
+            if lines:
+                sections[section] = lines
+                total_lines += len(lines)
+
+        # Build markdown
+        section_titles = {
+            "decision": "Decisions",
+            "pattern": "Patterns",
+            "error": "Errors & Fixes",
+            "learning": "Learnings",
+            "reference": "References",
+            "recent": "Recent (last 7 days)",
+            "other": "Notes & Observations",
+        }
+        md_parts = [f"# Session Briefing ({total_memories} memories)\n"]
+        for section in ("decision", "pattern", "error", "learning", "reference", "recent", "other"):
+            lines = sections.get(section)
+            if not lines:
+                continue
+            title = section_titles.get(section, section.title())
+            md_parts.append(f"## {title}")
+            for line in lines:
+                md_parts.append(f"- {line}")
+            md_parts.append("")
+
+        markdown = "\n".join(md_parts).rstrip()
+
+        result = {
+            "sections": sections,
+            "total_memories": total_memories,
+            "total_lines": total_lines,
+            "markdown": markdown,
+        }
+
+        duration_ms = (time.time() - start) * 1000
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._track_event(conn, "briefing",
+                duration_ms=duration_ms,
+                result_count=total_lines,
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return result
 
     def apply_decay(self, min_confidence: float = 0.0) -> dict:
         """Recompute and persist decayed confidence for all memories.

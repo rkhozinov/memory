@@ -75,10 +75,51 @@ def _fmt_memory_line(m: dict) -> str:
     return f"{header}\n  {indented}"
 
 
+def _fmt_search_titles(results: list) -> str:
+    if not results:
+        return "no results"
+    lines = []
+    for m in results:
+        h = _short_hash(m["content_hash"])
+        mtype = m.get("memory_type", "note")
+        score = m.get("score")
+        content = _TYPE_PREFIX_RE.sub("", m.get("content", ""))
+        first_line = content.split("\n")[0]
+        if len(first_line) > 80:
+            first_line = first_line[:77] + "..."
+        score_str = f" score={score:.2f}" if score is not None else ""
+        lines.append(f"{h} [{mtype}]{score_str} {first_line}")
+    return "\n".join(lines)
+
+
 def _fmt_search(results: list) -> str:
     if not results:
         return "no results"
     return "\n\n".join(_fmt_memory_line(m) for m in results)
+
+
+def _fmt_search_full(results: list) -> str:
+    if not results:
+        return "no results"
+    parts = []
+    for m in results:
+        lines = [_fmt_memory_line(m)]
+        lines.append(f"  tags: {', '.join(m.get('tags', []))}")
+        lines.append(f"  created: {m.get('created_at', 'n/a')}")
+        lines.append(f"  updated: {m.get('updated_at', 'n/a')}")
+        rc = m.get("recall_count", 0)
+        lr = m.get("last_recalled_at")
+        lines.append(f"  recall_count: {rc}")
+        lines.append(f"  last_recalled_at: {lr if lr else 'never'}")
+        conf = m.get("confidence")
+        imp = m.get("importance")
+        lines.append(f"  confidence: {conf}")
+        lines.append(f"  importance: {imp}")
+        meta = m.get("metadata", {})
+        if meta:
+            lines.append(f"  metadata: {json.dumps(meta)}")
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
 
 
 def _fmt_search_hook(results: list) -> str:
@@ -154,6 +195,10 @@ def _fmt_consolidate(d: dict) -> str:
 
 def _fmt_decay(d: dict) -> str:
     return f"{d.get('updated', 0)} updated, {d.get('pruned', 0)} pruned"
+
+
+def _fmt_briefing(d: dict) -> str:
+    return d.get("markdown", "No memories stored.")
 
 
 def _fmt_stats(d: dict) -> str:
@@ -299,7 +344,14 @@ def cmd_search(args, store: MemoryStore, fmt: str) -> None:
         if output:
             print(output)
     else:
-        _out(fmt, results, _fmt_search)
+        depth = getattr(args, "depth", "summary")
+        if depth == "titles":
+            text_fn = _fmt_search_titles
+        elif depth == "full":
+            text_fn = _fmt_search_full
+        else:
+            text_fn = _fmt_search
+        _out(fmt, results, text_fn)
 
 
 def cmd_list(args, store: MemoryStore, fmt: str) -> None:
@@ -360,6 +412,11 @@ def cmd_decay(args, store: MemoryStore, fmt: str) -> None:
     _out(fmt, result, _fmt_decay)
 
 
+def cmd_briefing(args, store: MemoryStore, fmt: str) -> None:
+    result = store.briefing(budget=args.budget)
+    _out(fmt, result, _fmt_briefing)
+
+
 def cmd_stats(args, store: MemoryStore, fmt: str) -> None:
     result = store.stats(
         after=args.after, before=args.before,
@@ -410,6 +467,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--before", default=None, help="ISO date (YYYY-MM-DD)")
     p.add_argument("--min-similarity", default=None, type=float,
                    help="Filter results below this similarity threshold")
+    p.add_argument("--depth", default="summary", choices=["titles", "summary", "full"],
+                   help="Output depth: titles (one-line), summary (default), full (all metadata)")
 
     # list
     p = sub.add_parser("list", help="List memories with pagination")
@@ -455,6 +514,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-confidence", default=0.0, type=float,
                    help="Prune memories below this confidence (default 0.0 = no pruning)")
 
+    # briefing
+    p = sub.add_parser("briefing", help="Generate a compact session briefing of top memories")
+    p.add_argument("--budget", default=150, type=int,
+                   help="Total line budget for the briefing (default 150)")
+
     # stats
     p = sub.add_parser("stats", help="Show usage statistics and analytics")
     p.add_argument("--after", default=None, help="Filter events after date (YYYY-MM-DD)")
@@ -477,6 +541,7 @@ _DISPATCH = {
     "cleanup": cmd_cleanup,
     "consolidate": cmd_consolidate,
     "decay": cmd_decay,
+    "briefing": cmd_briefing,
     "stats": cmd_stats,
 }
 
