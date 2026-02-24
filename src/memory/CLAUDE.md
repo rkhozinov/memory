@@ -63,6 +63,7 @@ Five tables in SQLite:
 ## Key Patterns
 
 - **Embedding reuse**: When storing with dedup, the embedding is computed once and reused for both similarity check and storage.
+- **Dedup scoping**: Semantic dedup is scoped first by `memory_type`, then by tags (if provided). A new memory only deduplicates against existing memories sharing the same type AND at least one tag. This prevents cross-project false positives from shared sentence structure. Use `--dedup 0.90` (not 0.85) as the default threshold — genuine duplicates cluster above 0.92.
 - **Soft delete everywhere**: Records are never hard-deleted; `deleted_at IS NULL` filters them out.
 - **Natural language time filters**: `search()` and `delete()` accept expressions like `"last week"`, `"3 days ago"`, or ISO dates.
 - **Content hash as primary key for API**: External interfaces use `content_hash` (SHA256) to identify memories, not internal row IDs.

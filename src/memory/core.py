@@ -339,6 +339,14 @@ class MemoryStore:
                 # Only dedup against same memory_type to avoid false positives
                 # across unrelated content (e.g. reference vs decision)
                 same_type = [s for s in similar if s.get("memory_type") == memory_type]
+                # Further scope by tags: if the new memory has tags, only compare
+                # against memories sharing at least one tag (prevents cross-project
+                # false positives from shared sentence structure)
+                if mem.tags:
+                    same_type = [
+                        s for s in same_type
+                        if any(t in s.get("tags", []) for t in mem.tags)
+                    ]
                 if same_type and same_type[0].get("similarity", 0) >= dedup_threshold:
                     duration_ms = (time.time() - start) * 1000
                     self._track_event(conn, "store",
