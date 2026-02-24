@@ -96,6 +96,10 @@ TOOLS = [
                         },
                     },
                 },
+                "dedup_threshold": {
+                    "type": "number",
+                    "description": "Skip if existing same-type memory has similarity >= threshold (0.0-1.0)",
+                },
             },
             "required": ["content"],
         },
@@ -334,12 +338,17 @@ def _handle_store(store: MemoryStore, args: dict) -> dict:
     # Remove tags, type, importance from metadata to avoid duplication
     clean_meta = {k: v for k, v in meta.items() if k not in ("tags", "type", "importance")}
 
+    dedup_threshold = args.get("dedup_threshold")
+    if dedup_threshold is not None:
+        dedup_threshold = float(dedup_threshold)
+
     return store.store(
         content=args["content"],
         tags=tags,
         memory_type=memory_type,
         metadata=clean_meta,
         importance=importance,
+        dedup_threshold=dedup_threshold,
     )
 
 

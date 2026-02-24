@@ -9,7 +9,10 @@ memory — a lean memory service for Claude Code. Provides an MCP server and CLI
 ## Commands
 
 ```bash
-# Install (editable, with test deps)
+# Full install: pip package + symlink skills & hooks into ~/.claude/
+./install.sh
+
+# Install just the Python package (editable, with test deps)
 uv pip install -e ".[test]"
 
 # Run tests
@@ -69,6 +72,23 @@ Five tables in SQLite:
 - **Deterministic consolidation**: Pairs with cosine similarity > threshold (default 0.92) are merged — higher recall_count wins, tags are unioned. `reference` type is excluded by default (`--exclude-types=reference`) because templated content like TF layer listings produces false-positive high-similarity matches. Pass `--exclude-types=''` to include all types.
 - **Session briefing**: `briefing(budget=150)` generates a markdown summary grouped by type (decision/pattern/error/learning/reference/recent/other) with per-section line budgets scaled to fit the total budget. Ranked by `confidence * importance * recency`.
 - **Progressive disclosure**: Search `--depth` controls output verbosity: `titles` (one line per result), `summary` (default, current behavior), `full` (all metadata including recall stats, timestamps, tags).
+
+## Skills & Hooks
+
+Skills and hooks live in this repo and are symlinked into `~/.claude/` by `install.sh`.
+
+**`skills/`** — Claude Code slash commands (symlinked to `~/.claude/skills/`):
+- **`recall/`** — `/recall [query]`: search memories or generate briefing
+- **`remember/`** — `/remember <content>`: store facts with tag taxonomy
+- **`forget/`** — `/forget <query>`: find and delete memories with confirmation
+- **`memory-status/`** — `/memory-status`: health check, stats, briefing
+
+**`hooks/`** — Claude Code event hooks (symlinked to `~/.claude/hooks/`):
+- **`memory-session-start.sh`** — SessionStart: health check, daily cleanup, codebase map check
+- **`memory-topic-recall.sh`** — UserPromptSubmit: auto-recall on first prompt per session
+- **`memory-cleanup.sh`** — Cleanup report (manual): dedup, stats, recommendations
+
+After editing any skill or hook in this repo, changes take effect immediately (symlinks).
 
 ## Testing
 

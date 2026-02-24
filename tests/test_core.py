@@ -582,3 +582,132 @@ def test_search_exact_returns_recall_fields(store):
     r = results[0]
     assert "recall_count" in r
     assert "last_recalled_at" in r
+
+
+# --- Type-scoped dedup ---
+
+
+def test_dedup_cross_type_not_rejected(store):
+    """Dedup should NOT reject a memory when the similar match is a different type."""
+    store.store(
+        "AWS Organizations: use SCPs for account-level guardrails",
+        memory_type="decision",
+        tags=["cloud:aws"],
+    )
+    # Similar infrastructure content but different type — should NOT be rejected
+    result = store.store(
+        "SSH key for bastion host: ssh-rsa AAAA... user@host",
+        memory_type="reference",
+        tags=["cloud:aws"],
+        dedup_threshold=0.85,
+    )
+    assert result["status"] == "stored"
+
+
+def test_dedup_same_type_still_rejected(store):
+    """Dedup should still reject when the similar match is the same type."""
+    store.store("Kubernetes pods run containers in a cluster", memory_type="note")
+    result = store.store(
+        "Kubernetes pods run containers in a cluster for orchestration",
+        memory_type="note",
+        dedup_threshold=0.5,
+    )
+    assert result["status"] == "duplicate"
+    assert "similar_hash" in result
+
+
+def test_force_flag_bypasses_dedup(store):
+    """--force (dedup_threshold=None) bypasses dedup entirely."""
+    store.store("Terraform uses HCL for infrastructure", memory_type="note")
+    # Same type, very similar content, but force=True means dedup_threshold=None
+    result = store.store(
+        "Terraform uses HCL for infrastructure configuration",
+        memory_type="note",
+        dedup_threshold=None,  # simulates --force
+    )
+    assert result["status"] == "stored"
+
+
+# --- Get ---
+
+
+def test_get(store):
+    """get() returns the full memory dict by exact hash."""
+    result = store.store("get test content", tags=["test"], memory_type="note")
+    h = result["content_hash"]
+    mem = store.get(h)
+    assert mem["content_hash"] == h
+    assert mem["content"] == "get test content"
+    assert "test" in mem["tags"]
+    assert mem["memory_type"] == "note"
+
+
+def test_get_prefix(store):
+    """get() resolves a unique short hash prefix."""
+    result = store.store("prefix get test")
+    prefix = result["content_hash"][:8]
+    mem = store.get(prefix)
+    assert mem["content_hash"] == result["content_hash"]
+    assert mem["content"] == "prefix get test"
+
+
+def test_get_not_found(store):
+    """get() returns error for nonexistent hash."""
+    mem = store.get("nonexistent_hash_000")
+    assert "error" in mem
+    assert "not found" in mem["error"].lower()
+
+
+def test_get_ambiguous_prefix(store):
+    """get() returns error for ambiguous prefix."""
+    conn = store._get_conn()
+    now = time.time()
+    for suffix in ("aaa", "aab"):
+        conn.execute(
+            "INSERT INTO memories (content_hash, content, tags, memory_type, metadata, created_at, updated_at) "
+            "VALUES (?, ?, '[]', 'note', '{}', ?, ?)",
+            (f"deadbeef{suffix}", f"content {suffix}", now, now),
+        )
+    mem = store.get("deadbeef")
+    assert "error" in mem
+    assert "Ambiguous" in mem["error"]
+
+
+# --- Update content ---
+
+
+def test_update_content(store):
+    """update() with content rehashes and updates content."""
+    result = store.store("original content", tags=["test"], memory_type="note")
+    old_hash = result["content_hash"]
+
+    updated = store.update(old_hash, updates={"content": "updated content"})
+    assert updated["status"] == "updated"
+    new_hash = updated["content_hash"]
+    assert new_hash != old_hash
+
+    # Old hash should not resolve
+    old_mem = store.get(old_hash)
+    assert "error" in old_mem
+
+    # New hash should work
+    new_mem = store.get(new_hash)
+    assert new_mem["content"] == "updated content"
+
+
+def test_update_content_preserves_metadata(store):
+    """update() with content preserves tags, type, recall_count, importance."""
+    result = store.store("preserve meta test", tags=["keep"], memory_type="decision", importance=0.9)
+    h = result["content_hash"]
+
+    # Simulate a recall to set recall_count
+    conn = store._get_conn()
+    conn.execute("UPDATE memories SET recall_count = 5 WHERE content_hash = ?", (h,))
+
+    updated = store.update(h, updates={"content": "new content preserving meta"})
+    new_hash = updated["content_hash"]
+
+    new_mem = store.get(new_hash)
+    assert new_mem["memory_type"] == "decision"
+    assert "keep" in new_mem["tags"]
+    assert new_mem["recall_count"] == 5

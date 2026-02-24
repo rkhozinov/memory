@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -310,28 +311,31 @@ class MemoryStore:
                 from .embeddings import get_model
                 embedding = get_model().embed(content)
 
-            # Similarity-based dedup
+            # Similarity-based dedup (scoped to same memory_type)
             if dedup_threshold is not None:
                 similar = self._search_semantic(
-                    conn, query=None, limit=1, tags=None,
+                    conn, query=None, limit=5, tags=None,
                     time_expr=None, after=None, before=None,
                     _embedding=embedding,
                 )
-                if similar and similar[0].get("similarity", 0) >= dedup_threshold:
+                # Only dedup against same memory_type to avoid false positives
+                # across unrelated content (e.g. reference vs decision)
+                same_type = [s for s in similar if s.get("memory_type") == memory_type]
+                if same_type and same_type[0].get("similarity", 0) >= dedup_threshold:
                     duration_ms = (time.time() - start) * 1000
                     self._track_event(conn, "store",
                         duration_ms=duration_ms,
                         content_hash=mem.content_hash,
                         dedup_used=True,
                         duplicate_detected=True,
-                        duplicate_similarity=similar[0]["similarity"],
+                        duplicate_similarity=same_type[0]["similarity"],
                     )
                     conn.execute("COMMIT")
                     return {
                         "content_hash": mem.content_hash,
                         "status": "duplicate",
-                        "message": f"Similar memory exists (similarity={similar[0]['similarity']:.2f})",
-                        "similar_hash": similar[0]["content_hash"],
+                        "message": f"Similar memory exists (similarity={same_type[0]['similarity']:.2f})",
+                        "similar_hash": same_type[0]["content_hash"],
                     }
 
             # Insert memory
@@ -759,6 +763,32 @@ class MemoryStore:
             raise
         return {"deleted": len(deleted_hashes), "deleted_hashes": deleted_hashes}
 
+    # --- Get ---
+
+    def get(self, content_hash: str) -> dict:
+        """Retrieve a single memory by exact content hash or unique prefix."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+            (content_hash,),
+        ).fetchone()
+        if not row and len(content_hash) < 64:
+            rows = conn.execute(
+                "SELECT * FROM memories WHERE content_hash LIKE ? AND deleted_at IS NULL",
+                (content_hash + "%",),
+            ).fetchall()
+            if len(rows) == 1:
+                row = rows[0]
+            elif len(rows) > 1:
+                return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+        if not row:
+            return {"error": f"Memory not found: {content_hash}"}
+        row_dict = dict(row)
+        d = Memory.from_row(row_dict).to_dict()
+        d["recall_count"] = row_dict.get("recall_count", 0) or 0
+        d["last_recalled_at"] = row_dict.get("last_recalled_at")
+        return d
+
     # --- Update ---
 
     def update(
@@ -790,6 +820,24 @@ class MemoryStore:
 
             sets = []
             params: list = []
+            new_hash = None
+
+            if "content" in updates:
+                new_content = updates["content"]
+                new_hash = hashlib.sha256(new_content.encode()).hexdigest()
+                # Recompute embedding
+                from .embeddings import get_model
+                new_embedding = get_model().embed(new_content)
+                sets.append("content = ?")
+                params.append(new_content)
+                sets.append("content_hash = ?")
+                params.append(new_hash)
+                # Update embedding
+                mem_id = row["id"]
+                conn.execute(
+                    "UPDATE memory_embeddings SET content_embedding = ? WHERE rowid = ?",
+                    (_serialize_f32(new_embedding), mem_id),
+                )
 
             if "tags" in updates:
                 tags = updates["tags"]
@@ -828,16 +876,16 @@ class MemoryStore:
                 conn.execute("ROLLBACK")
                 return {"error": "No valid updates provided"}
 
-            params.append(content_hash)
+            params.append(row["id"])
             conn.execute(
-                f"UPDATE memories SET {', '.join(sets)} WHERE content_hash = ?",
+                f"UPDATE memories SET {', '.join(sets)} WHERE id = ?",
                 params,
             )
             conn.execute("COMMIT")
         except BaseException:
             self._rollback_safe(conn)
             raise
-        return {"status": "updated", "content_hash": content_hash}
+        return {"status": "updated", "content_hash": new_hash or content_hash}
 
     # --- Stats ---
 

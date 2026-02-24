@@ -159,6 +159,38 @@ def test_store_batch_stdin(cli_env):
     assert all(r["status"] == "stored" for r in data)
 
 
+def test_store_batch_invalid_json_stdin(cli_env):
+    """Invalid JSON shows helpful error, not traceback."""
+    err_buf = io.StringIO()
+    with pytest.raises(SystemExit) as exc_info:
+        with patch("sys.stderr", err_buf), patch("sys.stdin", io.StringIO('[{"broken"')):
+            main(["store-batch"])
+    assert exc_info.value.code == 1
+    err = err_buf.getvalue()
+    assert "Invalid JSON" in err
+    assert "heredoc" in err.lower()
+
+
+def test_store_batch_invalid_json_with_quotes(cli_env):
+    """Unescaped quotes (echo shell issue) caught cleanly."""
+    err_buf = io.StringIO()
+    with pytest.raises(SystemExit) as exc_info:
+        with patch("sys.stderr", err_buf), patch("sys.stdin", io.StringIO('[{"content":"has "quotes"}]')):
+            main(["store-batch"])
+    assert exc_info.value.code == 1
+    assert "Invalid JSON" in err_buf.getvalue()
+
+
+def test_store_batch_not_array(cli_env):
+    """Non-array JSON shows expected error."""
+    err_buf = io.StringIO()
+    with pytest.raises(SystemExit) as exc_info:
+        with patch("sys.stderr", err_buf), patch("sys.stdin", io.StringIO('{"not": "array"}')):
+            main(["store-batch"])
+    assert exc_info.value.code == 1
+    assert "expected a JSON array" in err_buf.getvalue()
+
+
 def test_update_no_args_error(cli_env):
     """Missing updates exits with error."""
     store_output = _invoke(cli_env, ["store", "update target"])
@@ -166,3 +198,68 @@ def test_update_no_args_error(cli_env):
     with pytest.raises(SystemExit) as exc_info:
         main(["update", h])
     assert exc_info.value.code != 0
+
+
+def test_get_by_hash(cli_env):
+    """'memory get <hash>' returns the memory."""
+    store_output = _invoke(cli_env, ["store", "get test content"])
+    h = json.loads(store_output)["content_hash"]
+    output = _invoke(cli_env, ["get", h])
+    data = json.loads(output)
+    assert data["content_hash"] == h
+    assert data["content"] == "get test content"
+
+
+def test_get_by_prefix(cli_env):
+    """'memory get <prefix>' resolves unique prefix."""
+    store_output = _invoke(cli_env, ["store", "prefix get cli test"])
+    h = json.loads(store_output)["content_hash"]
+    output = _invoke(cli_env, ["get", h[:8]])
+    data = json.loads(output)
+    assert data["content_hash"] == h
+
+
+def test_get_not_found(cli_env):
+    """'memory get <bad_hash>' returns error."""
+    output = _invoke(cli_env, ["get", "nonexistent_hash_000"])
+    data = json.loads(output)
+    assert "error" in data
+
+
+def test_get_text_output(cli_env):
+    """'memory -f text get' shows formatted memory line."""
+    store_output = _invoke(cli_env, ["store", "text get test"])
+    h = json.loads(store_output)["content_hash"]
+    output = _invoke_text(cli_env, ["get", h])
+    assert h[:16] in output
+    assert "text get test" in output
+
+
+def test_get_not_found_text(cli_env):
+    """'memory -f text get <bad>' shows error prefix."""
+    output = _invoke_text(cli_env, ["get", "nonexistent_hash_000"])
+    assert output.startswith("error:")
+
+
+def test_update_content(cli_env):
+    """'memory update <hash> --content ...' changes content and hash."""
+    store_output = _invoke(cli_env, ["store", "original cli content"])
+    old_hash = json.loads(store_output)["content_hash"]
+    update_output = _invoke(cli_env, ["update", old_hash, "--content", "updated cli content"])
+    data = json.loads(update_output)
+    assert data["status"] == "updated"
+    new_hash = data["content_hash"]
+    assert new_hash != old_hash
+
+    # Verify new content via get
+    get_output = _invoke(cli_env, ["get", new_hash])
+    mem = json.loads(get_output)
+    assert mem["content"] == "updated cli content"
+
+
+def test_update_content_text_output(cli_env):
+    """Text format after content update shows new hash."""
+    store_output = _invoke(cli_env, ["store", "text update test"])
+    h = json.loads(store_output)["content_hash"]
+    output = _invoke_text(cli_env, ["update", h, "--content", "new text update test"])
+    assert "updated" in output

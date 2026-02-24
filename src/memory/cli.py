@@ -157,6 +157,12 @@ def _fmt_store_batch(results: list) -> str:
     return header + "\n" + "\n".join(lines)
 
 
+def _fmt_get(d: dict) -> str:
+    if "error" in d:
+        return f"error: {d['error']}"
+    return _fmt_memory_line(d)
+
+
 def _fmt_delete(d: dict) -> str:
     if "error" in d:
         return f"error: {d['error']}"
@@ -310,20 +316,30 @@ def cmd_store(args, store: MemoryStore, fmt: str) -> None:
         meta = json.loads(args.metadata)
     except json.JSONDecodeError:
         meta = {}
+    dedup = None if args.force else args.dedup_threshold
     result = store.store(
         args.content, tags=tag_list, memory_type=args.memory_type,
-        metadata=meta, dedup_threshold=args.dedup_threshold,
+        metadata=meta, dedup_threshold=dedup,
         importance=args.importance,
     )
     _out(fmt, result, _fmt_store)
 
 
 def cmd_store_batch(args, store: MemoryStore, fmt: str) -> None:
-    if args.file_path == "-":
-        data = json.load(sys.stdin)
-    else:
-        with open(args.file_path) as f:
-            data = json.load(f)
+    try:
+        if args.file_path == "-":
+            data = json.load(sys.stdin)
+        else:
+            with open(args.file_path) as f:
+                data = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON at line {e.lineno}, column {e.colno}: {e.msg}", file=sys.stderr)
+        if args.file_path == "-":
+            print("\nHint: Use a heredoc to avoid shell quoting issues:", file=sys.stderr)
+            print("  cat <<'ENDJSON' | memory -f text store-batch --dedup 0.85", file=sys.stderr)
+            print('  [{"content": "...", "tags": ["t"], "memory_type": "decision"}]', file=sys.stderr)
+            print("  ENDJSON", file=sys.stderr)
+        sys.exit(1)
     if not isinstance(data, list):
         print("Error: expected a JSON array", file=sys.stderr)
         sys.exit(1)
@@ -370,8 +386,15 @@ def cmd_delete(args, store: MemoryStore, fmt: str) -> None:
     _out(fmt, result, _fmt_delete)
 
 
+def cmd_get(args, store: MemoryStore, fmt: str) -> None:
+    result = store.get(content_hash=args.content_hash)
+    _out(fmt, result, _fmt_get)
+
+
 def cmd_update(args, store: MemoryStore, fmt: str) -> None:
     updates: dict = {}
+    if args.content is not None:
+        updates["content"] = args.content
     if args.tags is not None:
         updates["tags"] = [t.strip() for t in args.tags.split(",") if t.strip()]
     if args.memory_type is not None:
@@ -448,6 +471,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Skip if existing memory has similarity >= threshold (0.0-1.0)")
     p.add_argument("--importance", default=None, type=float,
                    help="Importance score (0.0-1.0). Auto-inferred if not set.")
+    p.add_argument("--force", action="store_true", default=False,
+                   help="Store even if dedup detects a similar memory")
 
     # store-batch
     p = sub.add_parser("store-batch", help="Store multiple memories from a JSON array")
@@ -455,6 +480,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="JSON file with items (- for stdin)")
     p.add_argument("--dedup", dest="dedup_threshold", default=None, type=float,
                    help="Skip if existing memory has similarity >= threshold (0.0-1.0)")
+
+    # get
+    p = sub.add_parser("get", help="Get a single memory by content hash")
+    p.add_argument("content_hash", help="Full or prefix content hash")
 
     # search
     p = sub.add_parser("search", help="Search memories")
@@ -487,8 +516,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="Preview deletions without executing")
 
     # update
-    p = sub.add_parser("update", help="Update memory metadata")
+    p = sub.add_parser("update", help="Update memory metadata or content")
     p.add_argument("content_hash")
+    p.add_argument("--content", default=None, help="New content (rehashes and re-embeds)")
     p.add_argument("--tags", "-t", default=None, help="New tags (comma-separated)")
     p.add_argument("--type", dest="memory_type", default=None, help="New memory type")
     p.add_argument("--metadata", "-m", default=None, help="JSON metadata to merge")
@@ -533,6 +563,7 @@ def _build_parser() -> argparse.ArgumentParser:
 _DISPATCH = {
     "store": cmd_store,
     "store-batch": cmd_store_batch,
+    "get": cmd_get,
     "search": cmd_search,
     "list": cmd_list,
     "delete": cmd_delete,
