@@ -48,5 +48,11 @@ def store(tmp_path):
         "CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings "
         "USING vec0(content_embedding FLOAT[384] distance_metric=cosine)"
     )
+    # FTS5 virtual table for BM25 keyword search
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts "
+        "USING fts5(content, content='memories', content_rowid='id', "
+        "tokenize='porter ascii')"
+    )
     yield s
     s.close()

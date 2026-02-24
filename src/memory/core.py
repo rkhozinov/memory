@@ -216,6 +216,24 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 pass
 
+        # FTS5 virtual table for BM25 keyword search (zero cold start, no model)
+        conn.executescript(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts
+            USING fts5(content, content='memories', content_rowid='id',
+                       tokenize='porter ascii');
+            """
+        )
+        # Backfill existing rows — only if memories table already exists
+        memories_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'"
+        ).fetchone()
+        if memories_exists:
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_fts(rowid, content) "
+                "SELECT id, content FROM memories WHERE deleted_at IS NULL"
+            )
+
     @staticmethod
     def _rollback_safe(conn: sqlite3.Connection) -> None:
         """Roll back the current transaction, ignoring errors if none is active."""
@@ -359,6 +377,12 @@ class MemoryStore:
                 (mem_id, _serialize_f32(embedding)),
             )
 
+            # Keep FTS index in sync
+            conn.execute(
+                "INSERT INTO memory_fts(rowid, content) VALUES (?, ?)",
+                (mem_id, content),
+            )
+
             duration_ms = (time.time() - start) * 1000
             self._track_event(conn, "store",
                 duration_ms=duration_ms,
@@ -432,6 +456,11 @@ class MemoryStore:
             results = self._search_exact(conn, query, limit, tags, time_expr, after, before)
         elif mode in ("semantic", "hybrid"):
             results = self._search_semantic(
+                conn, query, limit, tags, time_expr, after, before,
+                scoring_weights=scoring_weights,
+            )
+        elif mode == "fts":
+            results = self._search_fts(
                 conn, query, limit, tags, time_expr, after, before,
                 scoring_weights=scoring_weights,
             )
@@ -633,6 +662,86 @@ class MemoryStore:
         if tags:
             memories = self._filter_by_tags(memories, tags)
 
+        return memories[:limit]
+
+    def _search_fts(
+        self,
+        conn: sqlite3.Connection,
+        query: str | None,
+        limit: int,
+        tags: list[str] | None,
+        time_expr: str | None,
+        after: str | None,
+        before: str | None,
+        scoring_weights: tuple[float, float, float] | None = None,
+    ) -> list[dict]:
+        """BM25 full-text search via FTS5. No embedding model required."""
+        if not query:
+            return []
+
+        fetch_limit = max(limit * 5, 50) if (tags or time_expr or after or before) else max(limit * 3, 30)
+
+        fts_rows = conn.execute(
+            "SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+            (query, fetch_limit),
+        ).fetchall()
+
+        if not fts_rows:
+            return []
+
+        # BM25 rank is negative: more negative = better. Normalize to [0, 1].
+        ranks = {r["rowid"]: r["rank"] for r in fts_rows}
+        rank_values = list(ranks.values())
+        min_rank = min(rank_values)
+        max_rank = max(rank_values)
+        rank_range = max_rank - min_rank or 1.0
+
+        rowids = list(ranks.keys())
+        placeholders = ",".join("?" * len(rowids))
+        time_clause, time_params = self._build_time_filter(time_expr, after, before)
+
+        sql = f"""
+            SELECT * FROM memories m
+            WHERE m.id IN ({placeholders})
+              AND m.deleted_at IS NULL
+        """
+        params = list(rowids)
+        if time_clause:
+            sql += f" AND {time_clause}"
+            params.extend(time_params)
+
+        mem_rows = conn.execute(sql, params).fetchall()
+
+        w_sim, w_imp, w_rec = scoring_weights or DEFAULT_SCORING_WEIGHTS
+        memories = []
+        for row in mem_rows:
+            row_dict = dict(row)
+            mem = Memory.from_row(row_dict)
+            d = mem.to_dict()
+
+            rid = row_dict["id"]
+            rank = ranks[rid]
+            similarity = round((max_rank - rank) / rank_range, 4)
+            d["similarity"] = similarity
+
+            conf = compute_confidence(
+                mem.confidence, mem.memory_type,
+                row_dict.get("last_recalled_at"), mem.created_at,
+            )
+            d["confidence"] = round(conf, 4)
+            d["recall_count"] = row_dict.get("recall_count", 0) or 0
+            d["last_recalled_at"] = row_dict.get("last_recalled_at")
+
+            recency = compute_recency(mem.created_at)
+            d["score"] = round(
+                w_sim * similarity + w_imp * mem.importance + w_rec * recency, 4
+            )
+            memories.append(d)
+
+        if tags:
+            memories = self._filter_by_tags(memories, tags)
+
+        memories.sort(key=lambda m: m["score"], reverse=True)
         return memories[:limit]
 
     # --- List ---
