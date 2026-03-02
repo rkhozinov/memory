@@ -150,13 +150,21 @@ class MemoryStore:
         self.db_path = Path(db_path) if db_path else DB_PATH
         self._conn: sqlite3.Connection | None = None
 
+    @staticmethod
+    def _sqlite_vec_path() -> str:
+        """Resolve the sqlite-vec loadable extension path without importing numpy."""
+        from importlib.util import find_spec
+        spec = find_spec("sqlite_vec")
+        if spec is None or spec.origin is None:
+            raise ImportError("sqlite_vec package not found")
+        from os.path import dirname, join, normpath
+        return normpath(join(dirname(spec.origin), "vec0"))
+
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            import sqlite_vec
-
             self._conn = sqlite3.connect(str(self.db_path), isolation_level=None)
             self._conn.enable_load_extension(True)
-            sqlite_vec.load(self._conn)
+            self._conn.load_extension(self._sqlite_vec_path())
             self._conn.enable_load_extension(False)
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")

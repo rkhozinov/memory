@@ -263,3 +263,67 @@ def test_update_content_text_output(cli_env):
     h = json.loads(store_output)["content_hash"]
     output = _invoke_text(cli_env, ["update", h, "--content", "new text update test"])
     assert "updated" in output
+
+
+# --- depth flag tests ---
+
+
+def test_get_depth_full(cli_env):
+    """'memory -f text get --depth full' shows tags, timestamps, recall stats."""
+    store_output = _invoke(cli_env, ["store", "depth full get test", "--tags", "alpha,beta"])
+    h = json.loads(store_output)["content_hash"]
+    output = _invoke_text(cli_env, ["get", h, "--depth", "full"])
+    assert h[:16] in output
+    assert "depth full get test" in output
+    assert "tags: alpha, beta" in output
+    assert "created:" in output
+    assert "updated:" in output
+    assert "recall_count:" in output
+    assert "last_recalled_at:" in output
+    assert "confidence:" in output
+    assert "importance:" in output
+
+
+def test_get_depth_titles(cli_env):
+    """'memory -f text get --depth titles' shows truncated one-liner."""
+    store_output = _invoke(cli_env, ["store", "depth titles get test"])
+    h = json.loads(store_output)["content_hash"]
+    output = _invoke_text(cli_env, ["get", h, "--depth", "titles"])
+    assert h[:16] in output
+    assert "depth titles get test" in output
+    # titles mode is a single line
+    assert "\n" not in output.strip()
+
+
+def test_get_depth_default_is_summary(cli_env):
+    """'memory -f text get' without --depth shows summary (backward compat)."""
+    store_output = _invoke(cli_env, ["store", "depth default get test"])
+    h = json.loads(store_output)["content_hash"]
+    output = _invoke_text(cli_env, ["get", h])
+    assert h[:16] in output
+    assert "depth default get test" in output
+    # summary should NOT include tags line
+    assert "tags:" not in output
+
+
+def test_list_depth_full(cli_env):
+    """'memory -f text list --depth full' shows metadata for each memory."""
+    _invoke(cli_env, ["store", "list depth full item", "--tags", "gamma"])
+    output = _invoke_text(cli_env, ["list", "--depth", "full"])
+    assert "memories (page" in output
+    assert "tags:" in output
+    assert "recall_count:" in output
+    assert "confidence:" in output
+
+
+def test_list_depth_titles(cli_env):
+    """'memory -f text list --depth titles' shows one-liners."""
+    _invoke(cli_env, ["store", "list depth titles item"])
+    output = _invoke_text(cli_env, ["list", "--depth", "titles"])
+    assert "memories (page" in output
+    assert "list depth titles item" in output
+    # titles lines should not have indented content
+    lines = output.strip().split("\n")
+    # first line is header, rest are one-liners (no indented continuation)
+    for line in lines[2:]:  # skip header + blank
+        assert not line.startswith("  ")

@@ -98,28 +98,30 @@ def _fmt_search(results: list) -> str:
     return "\n\n".join(_fmt_memory_line(m) for m in results)
 
 
+def _fmt_memory_full(m: dict) -> str:
+    """Format a single memory with all metadata."""
+    lines = [_fmt_memory_line(m)]
+    lines.append(f"  tags: {', '.join(m.get('tags', []))}")
+    lines.append(f"  created: {m.get('created_at', 'n/a')}")
+    lines.append(f"  updated: {m.get('updated_at', 'n/a')}")
+    rc = m.get("recall_count", 0)
+    lr = m.get("last_recalled_at")
+    lines.append(f"  recall_count: {rc}")
+    lines.append(f"  last_recalled_at: {lr if lr else 'never'}")
+    conf = m.get("confidence")
+    imp = m.get("importance")
+    lines.append(f"  confidence: {conf}")
+    lines.append(f"  importance: {imp}")
+    meta = m.get("metadata", {})
+    if meta:
+        lines.append(f"  metadata: {json.dumps(meta)}")
+    return "\n".join(lines)
+
+
 def _fmt_search_full(results: list) -> str:
     if not results:
         return "no results"
-    parts = []
-    for m in results:
-        lines = [_fmt_memory_line(m)]
-        lines.append(f"  tags: {', '.join(m.get('tags', []))}")
-        lines.append(f"  created: {m.get('created_at', 'n/a')}")
-        lines.append(f"  updated: {m.get('updated_at', 'n/a')}")
-        rc = m.get("recall_count", 0)
-        lr = m.get("last_recalled_at")
-        lines.append(f"  recall_count: {rc}")
-        lines.append(f"  last_recalled_at: {lr if lr else 'never'}")
-        conf = m.get("confidence")
-        imp = m.get("importance")
-        lines.append(f"  confidence: {conf}")
-        lines.append(f"  importance: {imp}")
-        meta = m.get("metadata", {})
-        if meta:
-            lines.append(f"  metadata: {json.dumps(meta)}")
-        parts.append("\n".join(lines))
-    return "\n\n".join(parts)
+    return "\n\n".join(_fmt_memory_full(m) for m in results)
 
 
 def _fmt_search_hook(results: list) -> str:
@@ -133,15 +135,20 @@ def _fmt_search_hook(results: list) -> str:
     return json.dumps(payload)
 
 
-def _fmt_list(d: dict) -> str:
+def _fmt_list(d: dict, depth: str = "summary") -> str:
     memories = d.get("memories", [])
     total = d.get("total", 0)
     page = d.get("page", 1)
     header = f"{total} memories (page {page})"
     if not memories:
         return header
-    lines = [_fmt_memory_line(m) for m in memories]
-    return header + "\n\n" + "\n\n".join(lines)
+    if depth == "titles":
+        body = _fmt_search_titles(memories)
+    elif depth == "full":
+        body = "\n\n".join(_fmt_memory_full(m) for m in memories)
+    else:
+        body = "\n\n".join(_fmt_memory_line(m) for m in memories)
+    return header + "\n\n" + body
 
 
 def _fmt_store(d: dict) -> str:
@@ -157,9 +164,13 @@ def _fmt_store_batch(results: list) -> str:
     return header + "\n" + "\n".join(lines)
 
 
-def _fmt_get(d: dict) -> str:
+def _fmt_get(d: dict, depth: str = "summary") -> str:
     if "error" in d:
         return f"error: {d['error']}"
+    if depth == "titles":
+        return _fmt_search_titles([d])
+    if depth == "full":
+        return _fmt_memory_full(d)
     return _fmt_memory_line(d)
 
 
@@ -373,7 +384,8 @@ def cmd_search(args, store: MemoryStore, fmt: str) -> None:
 def cmd_list(args, store: MemoryStore, fmt: str) -> None:
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     result = store.list(page=args.page, page_size=args.page_size, tags=tag_list, memory_type=args.memory_type)
-    _out(fmt, result, _fmt_list)
+    depth = getattr(args, "depth", "summary")
+    _out(fmt, result, lambda d: _fmt_list(d, depth=depth))
 
 
 def cmd_delete(args, store: MemoryStore, fmt: str) -> None:
@@ -388,7 +400,8 @@ def cmd_delete(args, store: MemoryStore, fmt: str) -> None:
 
 def cmd_get(args, store: MemoryStore, fmt: str) -> None:
     result = store.get(content_hash=args.content_hash)
-    _out(fmt, result, _fmt_get)
+    depth = getattr(args, "depth", "summary")
+    _out(fmt, result, lambda d: _fmt_get(d, depth=depth))
 
 
 def cmd_update(args, store: MemoryStore, fmt: str) -> None:
@@ -484,6 +497,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # get
     p = sub.add_parser("get", help="Get a single memory by content hash")
     p.add_argument("content_hash", help="Full or prefix content hash")
+    p.add_argument("--depth", default="summary", choices=["titles", "summary", "full"],
+                   help="Output depth: titles (one-line), summary (default), full (all metadata)")
 
     # search
     p = sub.add_parser("search", help="Search memories")
@@ -505,6 +520,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--page-size", default=20, type=int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--type", dest="memory_type", default=None, help="Filter by memory type")
+    p.add_argument("--depth", default="summary", choices=["titles", "summary", "full"],
+                   help="Output depth: titles (one-line), summary (default), full (all metadata)")
 
     # delete
     p = sub.add_parser("delete", help="Delete memories by hash, tags, or time range")
