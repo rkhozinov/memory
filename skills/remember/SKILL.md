@@ -14,10 +14,36 @@ Set `PROJECT=$(basename "$(pwd)")` before commands.
 - If `$ARGUMENTS` contains "global" or "--global": tag with `scope:global`
 - Otherwise: tag with `project:$PROJECT`
 
+## Routing: Memories vs Documents
+
+Analyze each piece of content and **automatically route** to the right store:
+
+| Route | When | Store with |
+|-------|------|-----------|
+| **Memory** (`memory store`) | Short, atomic facts ≤800 chars: a decision, pattern, error, learning, observation | `memory store` or `store-batch` |
+| **Document** (`memory doc store`) | Long-form content >800 chars OR multi-section structured content: plans, specs, runbooks, session summaries, implementation guides, architecture docs | `memory doc store` |
+
+**Always route automatically.** Never ask the user which store to use — just pick the right one based on content length and structure. Both stores are cheap (SQLite + embeddings).
+
+### Signals that content is a document:
+- More than ~800 characters
+- Has headings, numbered steps, or multiple sections
+- Is a plan, spec, runbook, guide, or summary
+- Would lose meaning if condensed to a single line
+- User says "save this plan", "remember this spec", "store this summary"
+
+### Signals that content is a memory:
+- A single fact, decision, or observation
+- Can be expressed in 1-3 sentences
+- Prefixable with `[Decision]`, `[Pattern]`, `[Error]`, `[Learning]`, `[Observation]`
+
 ## Process
 
-1. **Identify facts** from `$ARGUMENTS` or conversation: decisions, patterns, observations, learnings, errors.
-2. **Store** — use `store` for a single fact, `store-batch` for 2+ facts:
+1. **Identify content** from `$ARGUMENTS` or conversation.
+2. **Route each piece** — apply the routing rules above to decide memory vs document for each.
+3. **Store** using the appropriate command(s):
+
+### Storing memories (short facts)
 
    Single:
    ```bash
@@ -36,7 +62,40 @@ Set `PROJECT=$(basename "$(pwd)")` before commands.
 
    **IMPORTANT**: Always use `store-batch` for multiple facts — it computes embeddings in a single batch. Never split into separate parallel Bash tool calls; Claude Code serializes them with high dispatch overhead.
 
-3. Content should be a self-contained statement prefixed with `[Decision]`, `[Pattern]`, `[Learning]`, `[Error]`, or `[Observation]`.
+   Content should be a self-contained statement prefixed with `[Decision]`, `[Pattern]`, `[Learning]`, `[Error]`, or `[Observation]`.
+
+### Storing documents (long-form content)
+
+   ```bash
+   cat <<'ENDBODY' | memory -f text doc store --title "<title>" --summary "<1-2 sentence summary>" --type <doc_type> --tags "project:$PROJECT,<topic>" --body-file -
+   <full body content here>
+   ENDBODY
+   ```
+
+   - **title**: Short descriptive title (e.g., "EKS Migration Plan")
+   - **summary**: 1-2 sentences describing what the document covers — this is what gets embedded for semantic search, so make it descriptive
+   - **type**: `plan`, `spec`, `runbook`, `session`, `reference`, or `document` (default)
+   - **body**: The full content via `--body-file -` (stdin) to avoid shell quoting issues with long text
+
+### Mixed content (common case)
+
+When the user says "remember all of this", you'll often have both atomic facts AND long-form content. Store them in a **single chained Bash call**:
+
+```bash
+cat <<'ENDJSON' | memory -f text store-batch --dedup 0.85
+[
+  {"content": "[Decision] Use EKS over ECS for the platform", "tags": ["project:X", "cloud:aws"], "memory_type": "decision"},
+  {"content": "[Pattern] Terraform modules go in modules/ with per-env tfvars", "tags": ["project:X", "tool:terraform"], "memory_type": "pattern"}
+]
+ENDJSON
+echo "---"
+cat <<'ENDBODY' | memory -f text doc store --title "EKS Migration Plan" --summary "Step-by-step plan for migrating services from ECS to EKS" --type plan --tags "project:X,cloud:aws,svc:eks" --body-file -
+# EKS Migration Plan
+
+## Phase 1: Infrastructure
+...full plan content...
+ENDBODY
+```
 
 ## Tag Taxonomy
 
@@ -62,6 +121,7 @@ Available commands: `store`, `store-batch`, `get`, `search`, `list`, `delete`, `
 - **`delete` takes hash as positional arg:** `memory delete <hash>` (not `--hash`)
 - **Dedup rejections are not errors.** When `store` returns "duplicate", the memory already exists — no action needed.
 - **`update --content` rehashes and re-embeds.** The returned `content_hash` changes — use the new hash for subsequent operations.
+- **Long content → use `doc store`**: If content is >800 chars or structured, use `memory doc store` with `--body-file -` to pipe via stdin.
 
 ### Common Patterns
 
@@ -69,33 +129,21 @@ Available commands: `store`, `store-batch`, `get`, `search`, `list`, `delete`, `
 # Retrieve a memory by hash (supports prefix)
 memory -f text get <hash>
 
+# Retrieve a document by hash
+memory -f text doc get <hash>
+
 # Update content in-place (preserves tags, type, recall_count)
 memory -f text update <hash> --content "new content here"
 
 # Update only tags/importance (content stays the same)
 memory update <hash> --tags "new,tags" --importance 0.9
-```
 
-### Documents (long-form content)
-
-For plans, specs, runbooks, or session summaries that exceed atomic fact size, use `memory doc`:
-
-```bash
-# Store a document (body from file or inline)
-memory -f text doc store --title "Deploy Plan" --summary "EKS deploy steps" --body-file plan.md --type plan --tags "project:X"
-
-# Search documents (auto = semantic + FTS merged)
-memory -f text doc search "EKS deployment" --limit 5
-
-# Get full document by hash
-memory -f text doc get <hash>
-
-# Update body (increments version, rehashes)
+# Update document body (increments version, rehashes)
 memory -f text doc update <hash> --body-file updated.md --summary "updated summary"
 
-# List/delete
-memory -f text doc list --type plan --tags "project:X"
-memory -f text doc delete <hash>
+# Search across both stores
+memory -f text search "query" --limit 10
+memory -f text doc search "query" --limit 5
 ```
 
-Report: count stored, brief list, scope, any skipped duplicates.
+Report: count stored (memories + documents), brief list, scope, any skipped duplicates.
