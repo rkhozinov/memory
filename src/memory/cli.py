@@ -319,6 +319,93 @@ def _fmt_stats(d: dict) -> str:
     return "\n".join(lines)
 
 
+def _fmt_doc_line(d: dict) -> str:
+    """Format a single document as a summary line."""
+    h = _short_hash(d["content_hash"])
+    dtype = d.get("doc_type", "document")
+    version = d.get("version", 1)
+    title = d.get("title", "")
+    header = f"{h} [{dtype}] v{version} {title}"
+    sim = d.get("similarity")
+    score = d.get("score")
+    if score is not None:
+        header += f" score={score:.2f}"
+    elif sim is not None:
+        header += f" sim={sim:.2f}"
+    summary = d.get("summary", "")
+    if summary:
+        if len(summary) > 120:
+            summary = summary[:117] + "..."
+        return f"{header}\n  {summary}"
+    return header
+
+
+def _fmt_doc_full(d: dict) -> str:
+    """Format a single document with all metadata."""
+    lines = [_fmt_doc_line(d)]
+    lines.append(f"  tags: {', '.join(d.get('tags', []))}")
+    lines.append(f"  created: {d.get('created_at', 'n/a')}")
+    lines.append(f"  updated: {d.get('updated_at', 'n/a')}")
+    rc = d.get("recall_count", 0)
+    lr = d.get("last_recalled_at")
+    lines.append(f"  recall_count: {rc}")
+    lines.append(f"  last_recalled_at: {lr if lr else 'never'}")
+    meta = d.get("metadata", {})
+    if meta:
+        lines.append(f"  metadata: {json.dumps(meta)}")
+    body = d.get("body", "")
+    if body:
+        preview = body[:500]
+        if len(body) > 500:
+            preview += f"... ({len(body)} chars total)"
+        lines.append(f"  body:\n    {preview.replace(chr(10), chr(10) + '    ')}")
+    return "\n".join(lines)
+
+
+def _fmt_doc_store(d: dict) -> str:
+    if d.get("status") == "duplicate":
+        return f"duplicate {_short_hash(d['content_hash'])} ({d['message']})"
+    return f"{d['status']} {_short_hash(d['content_hash'])}"
+
+
+def _fmt_doc_search(results: list) -> str:
+    if not results:
+        return "no results"
+    return "\n\n".join(_fmt_doc_line(d) for d in results)
+
+
+def _fmt_doc_list(d: dict) -> str:
+    docs = d.get("documents", [])
+    total = d.get("total", 0)
+    page = d.get("page", 1)
+    header = f"{total} documents (page {page})"
+    if not docs:
+        return header
+    body = "\n\n".join(_fmt_doc_line(doc) for doc in docs)
+    return header + "\n\n" + body
+
+
+def _fmt_doc_update(d: dict) -> str:
+    if "error" in d:
+        return f"error: {d['error']}"
+    v = d.get("version", "?")
+    return f"updated {_short_hash(d['content_hash'])} (v{v})"
+
+
+def _fmt_doc_delete(d: dict) -> str:
+    if "error" in d:
+        return f"error: {d['error']}"
+    if d.get("dry_run"):
+        return f"would delete {_short_hash(d['content_hash'])}"
+    return f"deleted {_short_hash(d['content_hash'])}"
+
+
+def _fmt_doc_get(d: dict) -> str:
+    if "error" in d:
+        return f"error: {d['error']}"
+    return _fmt_doc_full(d)
+
+
 # --- Command handlers ---
 
 def cmd_store(args, store: MemoryStore, fmt: str) -> None:
@@ -462,6 +549,115 @@ def cmd_stats(args, store: MemoryStore, fmt: str) -> None:
     _out(fmt, result, _fmt_stats)
 
 
+def cmd_doc_store(args, store: MemoryStore, fmt: str) -> None:
+    # Read body from file or stdin
+    if args.body_file:
+        if args.body_file == "-":
+            body = sys.stdin.read()
+        else:
+            with open(args.body_file) as f:
+                body = f.read()
+    elif args.body:
+        body = args.body
+    else:
+        print("Error: --body or --body-file is required", file=sys.stderr)
+        sys.exit(1)
+    tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+    try:
+        meta = json.loads(args.metadata)
+    except json.JSONDecodeError:
+        meta = {}
+    result = store.store_doc(
+        title=args.title, body=body, summary=args.summary,
+        doc_type=args.doc_type, tags=tag_list, metadata=meta,
+    )
+    _out(fmt, result, _fmt_doc_store)
+
+
+def cmd_doc_get(args, store: MemoryStore, fmt: str) -> None:
+    result = store.get_doc(content_hash=args.content_hash)
+    _out(fmt, result, _fmt_doc_get)
+
+
+def cmd_doc_search(args, store: MemoryStore, fmt: str) -> None:
+    tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+    results = store.search_docs(
+        query=args.query, mode=args.mode, limit=args.limit,
+        tags=tag_list, doc_type=args.doc_type,
+    )
+    _out(fmt, results, _fmt_doc_search)
+
+
+def cmd_doc_list(args, store: MemoryStore, fmt: str) -> None:
+    tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
+    result = store.list_docs(
+        page=args.page, page_size=args.page_size,
+        tags=tag_list, doc_type=args.doc_type,
+    )
+    _out(fmt, result, _fmt_doc_list)
+
+
+def cmd_doc_update(args, store: MemoryStore, fmt: str) -> None:
+    kwargs = {}
+    if args.title is not None:
+        kwargs["title"] = args.title
+    if args.body_file:
+        if args.body_file == "-":
+            kwargs["body"] = sys.stdin.read()
+        else:
+            with open(args.body_file) as f:
+                kwargs["body"] = f.read()
+    if args.summary is not None:
+        kwargs["summary"] = args.summary
+    if args.doc_type is not None:
+        kwargs["doc_type"] = args.doc_type
+    if args.tags is not None:
+        kwargs["tags"] = [t.strip() for t in args.tags.split(",") if t.strip()]
+    if args.metadata is not None:
+        try:
+            kwargs["metadata"] = json.loads(args.metadata)
+        except json.JSONDecodeError:
+            print("Error: --metadata must be valid JSON", file=sys.stderr)
+            sys.exit(1)
+    if not kwargs:
+        print("Error: no updates specified", file=sys.stderr)
+        sys.exit(1)
+    result = store.update_doc(content_hash=args.content_hash, **kwargs)
+    _out(fmt, result, _fmt_doc_update)
+
+
+def cmd_doc_delete(args, store: MemoryStore, fmt: str) -> None:
+    content_hash = args.hash_arg or args.content_hash
+    if not content_hash:
+        print("Error: content hash required", file=sys.stderr)
+        sys.exit(1)
+    result = store.delete_doc(content_hash=content_hash, dry_run=args.dry_run)
+    _out(fmt, result, _fmt_doc_delete)
+
+
+_DOC_DISPATCH = {
+    "store": cmd_doc_store,
+    "get": cmd_doc_get,
+    "search": cmd_doc_search,
+    "list": cmd_doc_list,
+    "update": cmd_doc_update,
+    "delete": cmd_doc_delete,
+}
+
+
+def cmd_doc(args, store: MemoryStore, fmt: str) -> None:
+    """Dispatch doc subcommands."""
+    doc_cmd = getattr(args, "doc_command", None)
+    if not doc_cmd:
+        print("Usage: memory doc {store,get,search,list,update,delete}", file=sys.stderr)
+        sys.exit(1)
+    handler = _DOC_DISPATCH.get(doc_cmd)
+    if not handler:
+        print(f"Unknown doc subcommand: {doc_cmd}", file=sys.stderr)
+        sys.exit(1)
+    handler(args, store, fmt)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="memory",
@@ -574,6 +770,57 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--never-recalled", action="store_true", help="Show memories never recalled")
     p.add_argument("--stale", action="store_true", help="Show stale memories (old, never recalled)")
 
+    # doc (subcommand group)
+    doc_parser = sub.add_parser("doc", help="Document management")
+    doc_sub = doc_parser.add_subparsers(dest="doc_command")
+
+    # doc store
+    p = doc_sub.add_parser("store", help="Store a document")
+    p.add_argument("--title", required=True, help="Document title")
+    p.add_argument("--summary", required=True, help="Short summary for embedding (~100-200 tokens)")
+    p.add_argument("--body", default=None, help="Document body text (use --body-file for files)")
+    p.add_argument("--body-file", default=None, help="Read body from file (- for stdin)")
+    p.add_argument("--type", dest="doc_type", default="document",
+                   help="Document type: document, plan, spec, runbook, session, reference")
+    p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
+    p.add_argument("--metadata", "-m", default="{}", help="JSON metadata")
+
+    # doc get
+    p = doc_sub.add_parser("get", help="Get a document by content hash")
+    p.add_argument("content_hash", help="Full or prefix content hash")
+
+    # doc search
+    p = doc_sub.add_parser("search", help="Search documents")
+    p.add_argument("query", help="Search query")
+    p.add_argument("--mode", default="auto", choices=["semantic", "fts", "auto"],
+                   help="Search mode (default: auto = semantic + FTS merged)")
+    p.add_argument("--limit", "-n", default=5, type=int)
+    p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
+    p.add_argument("--type", dest="doc_type", default=None, help="Filter by document type")
+
+    # doc list
+    p = doc_sub.add_parser("list", help="List documents")
+    p.add_argument("--page", default=1, type=int)
+    p.add_argument("--page-size", default=20, type=int)
+    p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
+    p.add_argument("--type", dest="doc_type", default=None, help="Filter by document type")
+
+    # doc update
+    p = doc_sub.add_parser("update", help="Update a document")
+    p.add_argument("content_hash", help="Full or prefix content hash")
+    p.add_argument("--title", default=None, help="New title")
+    p.add_argument("--summary", default=None, help="New summary (re-embeds)")
+    p.add_argument("--body-file", default=None, help="New body from file (- for stdin)")
+    p.add_argument("--type", dest="doc_type", default=None, help="New document type")
+    p.add_argument("--tags", "-t", default=None, help="New tags (comma-separated)")
+    p.add_argument("--metadata", "-m", default=None, help="JSON metadata to merge")
+
+    # doc delete
+    p = doc_sub.add_parser("delete", help="Delete a document")
+    p.add_argument("hash_arg", nargs="?", default=None, metavar="HASH")
+    p.add_argument("--hash", dest="content_hash", default=None, help="Delete by content hash")
+    p.add_argument("--dry-run", action="store_true", help="Preview deletion without executing")
+
     return parser
 
 
@@ -591,6 +838,7 @@ _DISPATCH = {
     "decay": cmd_decay,
     "briefing": cmd_briefing,
     "stats": cmd_stats,
+    "doc": cmd_doc,
 }
 
 

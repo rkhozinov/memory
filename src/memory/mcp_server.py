@@ -295,6 +295,147 @@ TOOLS = [
             },
         },
     ),
+    Tool(
+        name="document_store",
+        description="Store a long-form document (plan, spec, runbook, session summary). Provide a short summary for semantic search.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Document title"},
+                "body": {"type": "string", "description": "Full document body (markdown)"},
+                "summary": {
+                    "type": "string",
+                    "description": "Short summary (~100-200 tokens) for semantic embedding",
+                },
+                "doc_type": {
+                    "type": "string",
+                    "default": "document",
+                    "description": "Type: document, plan, spec, runbook, session, reference",
+                },
+                "tags": {
+                    "description": "Tags to categorize the document",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ],
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "Optional metadata key-value pairs",
+                },
+            },
+            "required": ["title", "body", "summary"],
+        },
+    ),
+    Tool(
+        name="document_search",
+        description="Search documents by topic. Modes: semantic (summary embedding), fts (full-text on body), auto (both merged, default).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["semantic", "fts", "auto"],
+                    "default": "auto",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+                "tags": {
+                    "description": "Filter by tags",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ],
+                },
+                "doc_type": {
+                    "type": "string",
+                    "description": "Filter by document type",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="document_get",
+        description="Retrieve a single document by content hash (full or prefix).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "content_hash": {
+                    "type": "string",
+                    "description": "Full or prefix content hash",
+                },
+            },
+            "required": ["content_hash"],
+        },
+    ),
+    Tool(
+        name="document_list",
+        description="List documents with pagination and optional filters.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "page": {"type": "integer", "default": 1, "minimum": 1},
+                "page_size": {
+                    "type": "integer",
+                    "default": 20,
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+                "tags": {
+                    "description": "Filter by tags",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ],
+                },
+                "doc_type": {
+                    "type": "string",
+                    "description": "Filter by document type",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="document_update",
+        description="Update a document's title, body, summary, type, tags, or metadata. Body changes increment version and rehash. Summary changes re-embed.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "content_hash": {"type": "string", "description": "Full or prefix content hash"},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "summary": {"type": "string"},
+                "doc_type": {"type": "string"},
+                "tags": {
+                    "description": "New tags",
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ],
+                },
+                "metadata": {"type": "object", "description": "Metadata to merge"},
+            },
+            "required": ["content_hash"],
+        },
+    ),
+    Tool(
+        name="document_delete",
+        description="Soft-delete a document by content hash. Use dry_run=true to preview.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "content_hash": {"type": "string"},
+                "dry_run": {"type": "boolean", "default": False},
+            },
+            "required": ["content_hash"],
+        },
+    ),
 ]
 
 # Build schema lookup
@@ -447,6 +588,75 @@ def _handle_decay(store: MemoryStore, args: dict) -> dict:
     )
 
 
+def _handle_doc_store(store: MemoryStore, args: dict) -> dict:
+    tags = _normalize_tags(args.get("tags"))
+    meta = args.get("metadata", {})
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+    return store.store_doc(
+        title=args["title"],
+        body=args["body"],
+        summary=args["summary"],
+        doc_type=args.get("doc_type", "document"),
+        tags=tags,
+        metadata=meta,
+    )
+
+
+def _handle_doc_search(store: MemoryStore, args: dict) -> list[dict]:
+    tags = _normalize_tags(args.get("tags"))
+    return store.search_docs(
+        query=args.get("query"),
+        mode=args.get("mode", "auto"),
+        limit=args.get("limit", 5),
+        tags=tags or None,
+        doc_type=args.get("doc_type"),
+    )
+
+
+def _handle_doc_get(store: MemoryStore, args: dict) -> dict:
+    return store.get_doc(content_hash=args["content_hash"])
+
+
+def _handle_doc_list(store: MemoryStore, args: dict) -> dict:
+    tags = _normalize_tags(args.get("tags"))
+    return store.list_docs(
+        page=args.get("page", 1),
+        page_size=args.get("page_size", 20),
+        tags=tags or None,
+        doc_type=args.get("doc_type"),
+    )
+
+
+def _handle_doc_update(store: MemoryStore, args: dict) -> dict:
+    content_hash = args["content_hash"]
+    kwargs = {}
+    for key in ("title", "body", "summary", "doc_type"):
+        if key in args and args[key] is not None:
+            kwargs[key] = args[key]
+    if "tags" in args:
+        kwargs["tags"] = _normalize_tags(args["tags"])
+    if "metadata" in args:
+        meta = args["metadata"]
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+        kwargs["metadata"] = meta
+    return store.update_doc(content_hash=content_hash, **kwargs)
+
+
+def _handle_doc_delete(store: MemoryStore, args: dict) -> dict:
+    return store.delete_doc(
+        content_hash=args["content_hash"],
+        dry_run=args.get("dry_run", False),
+    )
+
+
 _HANDLERS = {
     "memory_store": _handle_store,
     "memory_store_batch": _handle_store_batch,
@@ -459,6 +669,12 @@ _HANDLERS = {
     "memory_consolidate": _handle_consolidate,
     "memory_decay": _handle_decay,
     "memory_briefing": _handle_briefing,
+    "document_store": _handle_doc_store,
+    "document_search": _handle_doc_search,
+    "document_get": _handle_doc_get,
+    "document_list": _handle_doc_list,
+    "document_update": _handle_doc_update,
+    "document_delete": _handle_doc_delete,
 }
 
 

@@ -25,6 +25,28 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);
 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+
+CREATE TABLE IF NOT EXISTS documents (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_hash    TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    summary         TEXT NOT NULL,
+    doc_type        TEXT NOT NULL DEFAULT 'document',
+    tags            TEXT DEFAULT '[]',
+    metadata        TEXT DEFAULT '{}',
+    created_at      REAL,
+    updated_at      REAL,
+    created_at_iso  TEXT,
+    updated_at_iso  TEXT,
+    deleted_at      REAL DEFAULT NULL,
+    version         INTEGER DEFAULT 1,
+    recall_count    INTEGER DEFAULT 0,
+    last_recalled_at REAL DEFAULT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
+CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(doc_type);
+CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created_at);
 """
 
 
@@ -52,6 +74,17 @@ def store(tmp_path):
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts "
         "USING fts5(content, content='memories', content_rowid='id', "
+        "tokenize='porter ascii')"
+    )
+
+    # document-specific virtual tables
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS document_embeddings "
+        "USING vec0(summary_embedding FLOAT[384] distance_metric=cosine)"
+    )
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS document_fts "
+        "USING fts5(title, body, content='documents', content_rowid='id', "
         "tokenize='porter ascii')"
     )
     yield s

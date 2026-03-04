@@ -55,7 +55,7 @@ Always include at least a scope tag.
 
 ## CLI Quick Reference
 
-Available commands: `store`, `store-batch`, `get`, `search`, `list`, `delete`, `update`, `health`, `cleanup`, `consolidate`, `decay`, `briefing`, `stats`.
+Available commands: `store`, `store-batch`, `get`, `search`, `list`, `delete`, `update`, `health`, `cleanup`, `consolidate`, `decay`, `briefing`, `stats`, `doc`.
 
 ### Gotchas
 
@@ -74,6 +74,28 @@ memory -f text update <hash> --content "new content here"
 
 # Update only tags/importance (content stays the same)
 memory update <hash> --tags "new,tags" --importance 0.9
+```
+
+### Documents (long-form content)
+
+For plans, specs, runbooks, or session summaries that exceed atomic fact size, use `memory doc`:
+
+```bash
+# Store a document (body from file or inline)
+memory -f text doc store --title "Deploy Plan" --summary "EKS deploy steps" --body-file plan.md --type plan --tags "project:X"
+
+# Search documents (auto = semantic + FTS merged)
+memory -f text doc search "EKS deployment" --limit 5
+
+# Get full document by hash
+memory -f text doc get <hash>
+
+# Update body (increments version, rehashes)
+memory -f text doc update <hash> --body-file updated.md --summary "updated summary"
+
+# List/delete
+memory -f text doc list --type plan --tags "project:X"
+memory -f text doc delete <hash>
 ```
 
 Report: count stored, brief list, scope, any skipped duplicates.

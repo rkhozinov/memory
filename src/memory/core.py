@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
 
-from .models import Memory
+from .models import Document, Memory
 
 DB_PATH = Path.home() / ".claude" / "tools" / "memory" / "data" / "sqlite_vec.db"
 
@@ -240,6 +240,63 @@ class MemoryStore:
             conn.execute(
                 "INSERT OR IGNORE INTO memory_fts(rowid, content) "
                 "SELECT id, content FROM memories WHERE deleted_at IS NULL"
+            )
+
+        self._migrate_documents_tables()
+
+    def _migrate_documents_tables(self) -> None:
+        """One-time migration: create documents table, embeddings, and FTS."""
+        conn = self._conn
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                content_hash    TEXT NOT NULL,
+                title           TEXT NOT NULL,
+                body            TEXT NOT NULL,
+                summary         TEXT NOT NULL,
+                doc_type        TEXT NOT NULL DEFAULT 'document',
+                tags            TEXT DEFAULT '[]',
+                metadata        TEXT DEFAULT '{}',
+                created_at      REAL,
+                updated_at      REAL,
+                created_at_iso  TEXT,
+                updated_at_iso  TEXT,
+                deleted_at      REAL DEFAULT NULL,
+                version         INTEGER DEFAULT 1,
+                recall_count    INTEGER DEFAULT 0,
+                last_recalled_at REAL DEFAULT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
+            CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(doc_type);
+            CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created_at);
+            """
+        )
+
+        conn.executescript(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS document_embeddings
+                USING vec0(summary_embedding FLOAT[384] distance_metric=cosine);
+            """
+        )
+
+        conn.executescript(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5(
+                title, body, content='documents', content_rowid='id',
+                tokenize='porter ascii'
+            );
+            """
+        )
+
+        # Backfill FTS for existing documents
+        docs_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone()
+        if docs_exists:
+            conn.execute(
+                "INSERT OR IGNORE INTO document_fts(rowid, title, body) "
+                "SELECT id, title, body FROM documents WHERE deleted_at IS NULL"
             )
 
     @staticmethod
@@ -1608,3 +1665,517 @@ class MemoryStore:
             self._rollback_safe(conn)
             raise
         return {"updated": updated, "pruned": pruned}
+
+    # ------------------------------------------------------------------ #
+    #  Document operations                                                #
+    # ------------------------------------------------------------------ #
+
+    def store_doc(
+        self,
+        title: str,
+        body: str,
+        summary: str,
+        doc_type: str = "document",
+        tags: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Store a document. Returns dict with content_hash and status."""
+        start = time.time()
+        doc = Document(
+            title=title,
+            body=body,
+            summary=summary,
+            doc_type=doc_type,
+            tags=tags or [],
+            metadata=metadata or {},
+        )
+
+        conn = self._begin_immediate()
+        try:
+            # Check exact duplicate by content_hash (same body text)
+            existing = conn.execute(
+                "SELECT id FROM documents WHERE content_hash = ? AND deleted_at IS NULL",
+                (doc.content_hash,),
+            ).fetchone()
+            if existing:
+                duration_ms = (time.time() - start) * 1000
+                self._track_event(conn, "doc_store",
+                    duration_ms=duration_ms,
+                    content_hash=doc.content_hash,
+                    duplicate_detected=True,
+                )
+                conn.execute("COMMIT")
+                return {
+                    "content_hash": doc.content_hash,
+                    "status": "duplicate",
+                    "message": "Document with this body already exists",
+                }
+
+            # Compute embedding of summary
+            from .embeddings import get_model
+            embedding = get_model().embed(summary)
+
+            # Insert document
+            conn.execute(
+                """
+                INSERT INTO documents
+                    (content_hash, title, body, summary, doc_type, tags, metadata,
+                     created_at, updated_at, created_at_iso, updated_at_iso,
+                     version, recall_count, last_recalled_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                doc.to_row(),
+            )
+            doc_id = conn.execute(
+                "SELECT id FROM documents WHERE content_hash = ?", (doc.content_hash,)
+            ).fetchone()["id"]
+
+            # Store embedding
+            conn.execute(
+                "INSERT INTO document_embeddings (rowid, summary_embedding) VALUES (?, ?)",
+                (doc_id, _serialize_f32(embedding)),
+            )
+
+            # Insert into FTS index
+            conn.execute(
+                "INSERT INTO document_fts(rowid, title, body) VALUES (?, ?, ?)",
+                (doc_id, title, body),
+            )
+
+            duration_ms = (time.time() - start) * 1000
+            self._track_event(conn, "doc_store",
+                duration_ms=duration_ms,
+                content_hash=doc.content_hash,
+                duplicate_detected=False,
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return {
+            "content_hash": doc.content_hash,
+            "status": "stored",
+            "message": "Document stored successfully",
+        }
+
+    def get_doc(self, content_hash: str) -> dict:
+        """Retrieve a single document by exact content hash or unique prefix."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM documents WHERE content_hash = ? AND deleted_at IS NULL",
+            (content_hash,),
+        ).fetchone()
+        if not row and len(content_hash) < 64:
+            rows = conn.execute(
+                "SELECT * FROM documents WHERE content_hash LIKE ? AND deleted_at IS NULL",
+                (content_hash + "%",),
+            ).fetchall()
+            if len(rows) == 1:
+                row = rows[0]
+            elif len(rows) > 1:
+                return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+        if not row:
+            return {"error": f"Document not found: {content_hash}"}
+        row_dict = dict(row)
+        d = Document.from_row(row_dict).to_dict()
+        d["recall_count"] = row_dict.get("recall_count", 0) or 0
+        d["last_recalled_at"] = row_dict.get("last_recalled_at")
+        return d
+
+    def list_docs(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        tags: list[str] | None = None,
+        doc_type: str | None = None,
+    ) -> dict:
+        """Paginated listing of documents with optional filters."""
+        conn = self._get_conn()
+        offset = (page - 1) * page_size
+
+        sql = "SELECT * FROM documents m WHERE m.deleted_at IS NULL"
+        count_sql = "SELECT COUNT(*) as cnt FROM documents m WHERE m.deleted_at IS NULL"
+        params: list = []
+        count_params: list = []
+
+        if doc_type:
+            sql += " AND m.doc_type = ?"
+            count_sql += " AND m.doc_type = ?"
+            params.append(doc_type)
+            count_params.append(doc_type)
+
+        total = conn.execute(count_sql, count_params).fetchone()["cnt"]
+
+        sql += " ORDER BY m.created_at DESC LIMIT ? OFFSET ?"
+        params.extend([page_size * 5 if tags else page_size, offset])
+
+        rows = conn.execute(sql, params).fetchall()
+        documents = [Document.from_row(dict(r)).to_dict() for r in rows]
+
+        if tags:
+            documents = self._filter_by_tags(documents, tags)
+            documents = documents[:page_size]
+
+        return {
+            "documents": documents,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
+    def search_docs(
+        self,
+        query: str | None = None,
+        mode: str = "auto",
+        limit: int = 5,
+        tags: list[str] | None = None,
+        doc_type: str | None = None,
+    ) -> list[dict]:
+        """Search documents. Modes: semantic, fts, auto (both merged)."""
+        if not query:
+            return []
+        conn = self._get_conn()
+
+        results_by_hash: dict[str, dict] = {}
+
+        if mode in ("semantic", "auto"):
+            sem_results = self._search_docs_semantic(
+                conn, query, limit=limit * 2 if mode == "auto" else limit,
+            )
+            for r in sem_results:
+                results_by_hash[r["content_hash"]] = r
+
+        if mode in ("fts", "auto"):
+            fts_results = self._search_docs_fts(
+                conn, query, limit=limit * 2 if mode == "auto" else limit,
+            )
+            for r in fts_results:
+                h = r["content_hash"]
+                if h in results_by_hash:
+                    # Merge: take max similarity, add scores
+                    existing = results_by_hash[h]
+                    existing["similarity"] = max(
+                        existing.get("similarity", 0), r.get("similarity", 0),
+                    )
+                    existing["score"] = existing.get("score", 0) + r.get("score", 0)
+                else:
+                    results_by_hash[h] = r
+
+        results = list(results_by_hash.values())
+
+        # Filter by tags
+        if tags:
+            results = self._filter_by_tags(results, tags)
+        # Filter by doc_type
+        if doc_type:
+            results = [r for r in results if r.get("doc_type") == doc_type]
+
+        results.sort(key=lambda r: r.get("score", 0), reverse=True)
+
+        # Update recall counts
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now = time.time()
+            for r in results[:limit]:
+                conn.execute(
+                    "UPDATE documents SET recall_count = recall_count + 1, "
+                    "last_recalled_at = ? WHERE content_hash = ? AND deleted_at IS NULL",
+                    (now, r["content_hash"]),
+                )
+            self._track_event(conn, "doc_search",
+                query=query,
+                search_mode=mode,
+                result_count=len(results[:limit]),
+                top_similarity=results[0].get("similarity") if results else None,
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return results[:limit]
+
+    def _search_docs_semantic(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        limit: int,
+    ) -> list[dict]:
+        """Cosine similarity search on document summary embeddings."""
+        from .embeddings import get_model
+        embedding = get_model().embed(query)
+
+        fetch_limit = max(limit * 3, 30)
+        rows = conn.execute(
+            """
+            SELECT e.rowid, e.distance
+            FROM document_embeddings e
+            WHERE e.summary_embedding MATCH ?
+            ORDER BY e.distance
+            LIMIT ?
+            """,
+            (_serialize_f32(embedding), fetch_limit),
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        rowids = [r["rowid"] for r in rows]
+        distances = {r["rowid"]: r["distance"] for r in rows}
+
+        placeholders = ",".join("?" * len(rowids))
+        doc_rows = conn.execute(
+            f"SELECT * FROM documents WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+            rowids,
+        ).fetchall()
+
+        row_by_id = {row["id"]: dict(row) for row in doc_rows}
+        results = []
+        for rid in rowids:
+            row = row_by_id.get(rid)
+            if row is None:
+                continue
+            doc = Document.from_row(row)
+            d = doc.to_dict()
+            similarity = round(1.0 - distances.get(rid, 1.0), 4)
+            d["similarity"] = similarity
+            d["recall_count"] = row.get("recall_count", 0) or 0
+            d["last_recalled_at"] = row.get("last_recalled_at")
+            d["score"] = similarity
+            results.append(d)
+
+        return results
+
+    def _search_docs_fts(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        limit: int,
+    ) -> list[dict]:
+        """BM25 full-text search on document title and body via FTS5."""
+        fetch_limit = max(limit * 3, 30)
+
+        fts_rows = conn.execute(
+            "SELECT rowid, rank FROM document_fts "
+            "WHERE document_fts MATCH ? ORDER BY rank LIMIT ?",
+            (query, fetch_limit),
+        ).fetchall()
+
+        if not fts_rows:
+            return []
+
+        # BM25 rank is negative: more negative = better. Normalize to [0, 1].
+        ranks = {r["rowid"]: r["rank"] for r in fts_rows}
+        rank_values = list(ranks.values())
+        min_rank = min(rank_values)
+        max_rank = max(rank_values)
+        rank_range = max_rank - min_rank or 1.0
+
+        rowids = list(ranks.keys())
+        placeholders = ",".join("?" * len(rowids))
+
+        doc_rows = conn.execute(
+            f"SELECT * FROM documents WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+            rowids,
+        ).fetchall()
+
+        results = []
+        for row in doc_rows:
+            row_dict = dict(row)
+            doc = Document.from_row(row_dict)
+            d = doc.to_dict()
+
+            rid = row_dict["id"]
+            rank = ranks[rid]
+            similarity = round((max_rank - rank) / rank_range, 4)
+            d["similarity"] = similarity
+            d["recall_count"] = row_dict.get("recall_count", 0) or 0
+            d["last_recalled_at"] = row_dict.get("last_recalled_at")
+            d["score"] = similarity
+            results.append(d)
+
+        return results
+
+    def update_doc(self, content_hash: str, **kwargs) -> dict:
+        """Update a document. Accepted kwargs: title, body, summary, doc_type, tags, metadata."""
+        conn = self._begin_immediate()
+        try:
+            row = conn.execute(
+                "SELECT * FROM documents WHERE content_hash = ? AND deleted_at IS NULL",
+                (content_hash,),
+            ).fetchone()
+            if not row and len(content_hash) < 64:
+                rows = conn.execute(
+                    "SELECT * FROM documents WHERE content_hash LIKE ? AND deleted_at IS NULL",
+                    (content_hash + "%",),
+                ).fetchall()
+                if len(rows) == 1:
+                    row = rows[0]
+                elif len(rows) > 1:
+                    conn.execute("ROLLBACK")
+                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+            if not row:
+                conn.execute("ROLLBACK")
+                return {"error": f"Document not found: {content_hash}"}
+
+            row_dict = dict(row)
+            doc_id = row_dict["id"]
+            sets: list[str] = []
+            params: list = []
+            new_hash = row_dict["content_hash"]
+            new_version = row_dict.get("version", 1) or 1
+            body_changed = False
+            summary_changed = False
+            title_changed = False
+
+            if "title" in kwargs:
+                sets.append("title = ?")
+                params.append(kwargs["title"])
+                title_changed = True
+
+            if "body" in kwargs:
+                new_body = kwargs["body"]
+                new_hash = hashlib.sha256(new_body.encode()).hexdigest()
+                new_version += 1
+                sets.append("body = ?")
+                params.append(new_body)
+                sets.append("content_hash = ?")
+                params.append(new_hash)
+                sets.append("version = ?")
+                params.append(new_version)
+                body_changed = True
+
+            if "summary" in kwargs:
+                sets.append("summary = ?")
+                params.append(kwargs["summary"])
+                summary_changed = True
+
+            if "doc_type" in kwargs:
+                sets.append("doc_type = ?")
+                params.append(kwargs["doc_type"])
+
+            if "tags" in kwargs:
+                tags = kwargs["tags"]
+                if isinstance(tags, str):
+                    tags = [t.strip() for t in tags.split(",") if t.strip()]
+                sets.append("tags = ?")
+                params.append(json.dumps(tags))
+
+            if "metadata" in kwargs:
+                existing_meta = json.loads(row_dict["metadata"] or "{}")
+                existing_meta.update(kwargs["metadata"])
+                sets.append("metadata = ?")
+                params.append(json.dumps(existing_meta))
+
+            if not sets:
+                conn.execute("ROLLBACK")
+                return {"error": "No valid updates provided"}
+
+            # Always update timestamps
+            now = time.time()
+            now_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+            sets.append("updated_at = ?")
+            params.append(now)
+            sets.append("updated_at_iso = ?")
+            params.append(now_iso)
+
+            params.append(doc_id)
+            conn.execute(
+                f"UPDATE documents SET {', '.join(sets)} WHERE id = ?",
+                params,
+            )
+
+            # Re-embed summary if it changed
+            if summary_changed:
+                from .embeddings import get_model
+                new_embedding = get_model().embed(kwargs["summary"])
+                conn.execute(
+                    "DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,)
+                )
+                conn.execute(
+                    "INSERT INTO document_embeddings (rowid, summary_embedding) VALUES (?, ?)",
+                    (doc_id, _serialize_f32(new_embedding)),
+                )
+
+            # Update FTS if title or body changed
+            # External content FTS5 tables require the special delete command
+            # with the original values, then re-insert with new values.
+            if title_changed or body_changed:
+                conn.execute(
+                    "INSERT INTO document_fts(document_fts, rowid, title, body) "
+                    "VALUES('delete', ?, ?, ?)",
+                    (doc_id, row_dict["title"], row_dict["body"]),
+                )
+                new_title = kwargs.get("title", row_dict["title"])
+                new_body_text = kwargs.get("body", row_dict["body"])
+                conn.execute(
+                    "INSERT INTO document_fts(rowid, title, body) VALUES (?, ?, ?)",
+                    (doc_id, new_title, new_body_text),
+                )
+
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+        return {
+            "status": "updated",
+            "content_hash": new_hash,
+            "version": new_version,
+        }
+
+    def delete_doc(self, content_hash: str, dry_run: bool = False) -> dict:
+        """Soft-delete a document by content hash."""
+        start = time.time()
+        conn = self._begin_immediate()
+        try:
+            # Exact match first; fall back to prefix match for short hashes
+            rows = conn.execute(
+                "SELECT id, content_hash FROM documents WHERE content_hash = ? AND deleted_at IS NULL",
+                (content_hash,),
+            ).fetchall()
+            if not rows and len(content_hash) < 64:
+                rows = conn.execute(
+                    "SELECT id, content_hash FROM documents WHERE content_hash LIKE ? AND deleted_at IS NULL",
+                    (content_hash + "%",),
+                ).fetchall()
+                if len(rows) > 1:
+                    conn.execute("ROLLBACK")
+                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+
+            if not rows:
+                conn.execute("ROLLBACK")
+                return {"error": f"Document not found: {content_hash}"}
+
+            if dry_run:
+                conn.execute("ROLLBACK")
+                return {
+                    "dry_run": True,
+                    "would_delete": len(rows),
+                    "content_hash": rows[0]["content_hash"],
+                }
+
+            doc_id = rows[0]["id"]
+            full_hash = rows[0]["content_hash"]
+
+            # Soft-delete
+            conn.execute(
+                "UPDATE documents SET deleted_at = ? WHERE id = ?",
+                (time.time(), doc_id),
+            )
+            # Hard-delete embedding
+            conn.execute(
+                "DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,)
+            )
+
+            duration_ms = (time.time() - start) * 1000
+            self._track_event(conn, "doc_delete",
+                duration_ms=duration_ms,
+                content_hash=full_hash,
+                result_count=1,
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+        return {"deleted": 1, "content_hash": full_hash}

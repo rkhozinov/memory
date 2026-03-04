@@ -32,7 +32,7 @@ memory-mcp-server
 
 The codebase lives entirely in `src/memory/` (~2000 lines across 5 modules):
 
-**`models.py`** — `Memory` dataclass. Content is SHA256-hashed (`content_hash`) for exact dedup. Tags are `list[str]`, metadata is `dict`. Provides `to_row()`/`from_row()`/`to_dict()` for DB serialization.
+**`models.py`** — `Memory` and `Document` dataclasses. Content is SHA256-hashed (`content_hash`) for exact dedup. Tags are `list[str]`, metadata is `dict`. Both provide `to_row()`/`from_row()`/`to_dict()` for DB serialization. `Document` has `title`, `body`, `summary`, `doc_type`, `version` — no confidence/importance (reference material, no decay).
 
 **`embeddings.py`** — Wraps the `intfloat/e5-small` ONNX model (12-layer, 384-dim vectors, seq_length=256, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/.claude/tools/memory/data/models/`. Mean pooling + L2 normalization. Returns raw numpy arrays to avoid `.tolist()` overhead.
 
@@ -44,21 +44,25 @@ The codebase lives entirely in `src/memory/` (~2000 lines across 5 modules):
 - `apply_decay()` — recompute confidence decay and optionally prune low-confidence memories
 - `briefing()` — generates a compact markdown briefing ranked by `confidence * importance * recency`, grouped into sections with line budget allocation
 - `stats()` — aggregated analytics from `operation_events` table
+- Document operations: `store_doc()`, `get_doc()`, `list_docs()`, `search_docs()`, `update_doc()`, `delete_doc()` — long-form content (plans, specs, runbooks) with summary-based hybrid retrieval (semantic on summary embedding + FTS5 on body)
 - Uses IMMEDIATE transactions to prevent TOCTOU races in multi-agent scenarios
 - Database at `~/.claude/tools/memory/data/sqlite_vec.db` (WAL mode, 15s busy timeout)
 
-**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `list`, `delete`, `update`, `health`, `cleanup`, `consolidate`, `decay`, `briefing`, `stats`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure.
+**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `list`, `delete`, `update`, `health`, `cleanup`, `consolidate`, `decay`, `briefing`, `stats`, `doc`. The `doc` subcommand group has: `store`, `get`, `search`, `list`, `update`, `delete`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure.
 
 **`mcp_server.py`** — MCP stdio server exposing the same operations as tools. Handles type coercion (string→int/bool/JSON) since MCP clients send everything as strings. Input validation is intentionally disabled.
 
 ## Database Schema
 
-Five tables in SQLite:
+Eight tables in SQLite:
 - **`memories`** — core storage (content, tags as JSON, soft delete via `deleted_at`, recall tracking via `recall_count`/`last_recalled_at`, `confidence` for decay, `importance` for scoring)
 - **`memory_embeddings`** — sqlite-vec virtual table, 384-dim float vectors with cosine distance
-- **`memory_graph`** — relationship edges between memories (source_hash ↔ target_hash)
+- **`memory_fts`** — FTS5 virtual table for BM25 keyword search on memory content
+- **`documents`** — long-form content (title, body, summary, doc_type, version tracking, recall tracking, soft delete)
+- **`document_embeddings`** — sqlite-vec virtual table, 384-dim float vectors on summary embedding
+- **`document_fts`** — FTS5 virtual table for BM25 keyword search on document title + body
 - **`operation_events`** — analytics log (operation type, duration, result counts, dedup info)
-- **`metadata`** — generic key-value store
+- **`memory_graph`** — relationship edges between memories (source_hash ↔ target_hash)
 
 ## Key Patterns
 
@@ -73,16 +77,17 @@ Five tables in SQLite:
 - **Deterministic consolidation**: Pairs with cosine similarity > threshold (default 0.92) are merged — higher recall_count wins, tags are unioned. `reference` type is excluded by default (`--exclude-types=reference`) because templated content like TF layer listings produces false-positive high-similarity matches. Pass `--exclude-types=''` to include all types.
 - **Session briefing**: `briefing(budget=150)` generates a markdown summary grouped by type (decision/pattern/error/learning/reference/recent/other) with per-section line budgets scaled to fit the total budget. Ranked by `confidence * importance * recency`.
 - **Progressive disclosure**: Search `--depth` controls output verbosity: `titles` (one line per result), `summary` (default, current behavior), `full` (all metadata including recall stats, timestamps, tags).
+- **Documents layer**: Long-form content (plans, specs, runbooks, session summaries) stored separately from atomic memories. Summary-based hybrid retrieval: semantic search on summary embedding + FTS5 on full body. No confidence decay (reference material). Version tracking on body updates. `content_hash` is SHA256 of body.
 
 ## Skills & Hooks
 
 Skills and hooks live in this repo and are symlinked into `~/.claude/` by `install.sh`.
 
 **`skills/`** — Claude Code slash commands (symlinked to `~/.claude/skills/`):
-- **`recall/`** — `/recall [query]`: search memories or generate briefing
-- **`remember/`** — `/remember <content>`: store facts with tag taxonomy
-- **`forget/`** — `/forget <query>`: find and delete memories with confirmation
-- **`memory-status/`** — `/memory-status`: health check, stats, briefing
+- **`recall/`** — `/recall [query]`: search memories and documents, or generate briefing
+- **`remember/`** — `/remember <content>`: store facts with tag taxonomy (includes `doc` subcommand reference)
+- **`forget/`** — `/forget <query>`: find and delete memories or documents with confirmation
+- **`memory-status/`** — `/memory-status`: health check, stats, document listing
 
 **`hooks/`** — Claude Code event hooks (symlinked to `~/.claude/hooks/`):
 - **`memory-session-start.sh`** — SessionStart: health check, daily cleanup, codebase map check
