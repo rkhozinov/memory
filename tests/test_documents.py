@@ -349,3 +349,28 @@ class TestDocumentCLI:
         # Verify get works
         doc = store.get_doc(h)
         assert doc["title"] == "CLI Test"
+
+
+class TestDocFtsHyphenatedQuery:
+    """FTS search on documents with special-character queries."""
+
+    def test_search_docs_fts_hyphenated(self, store):
+        """search_docs with FTS mode should handle hyphenated queries."""
+        store.store_doc(
+            title="Video Processing",
+            body="video-processing pipeline for live streaming with low latency",
+            summary="video processing pipeline",
+        )
+        results = store.search_docs("video-processing", mode="fts", limit=5)
+        assert len(results) >= 1
+        assert "video-processing" in results[0]["body"]
+
+    def test_search_docs_auto_hyphenated(self, store):
+        """search_docs with auto mode should handle hyphenated queries."""
+        store.store_doc(
+            title="Video Processing",
+            body="video-processing pipeline for live streaming with low latency",
+            summary="video processing pipeline",
+        )
+        results = store.search_docs("video-processing", mode="auto", limit=5)
+        assert len(results) >= 1

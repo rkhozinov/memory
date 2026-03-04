@@ -107,6 +107,25 @@ def _parse_time_expr(expr: str) -> datetime:
     raise ValueError(f"Cannot parse time expression: {expr!r}")
 
 
+def _sanitize_fts_query(query: str) -> str:
+    """Escape user input for safe use in FTS5 MATCH expressions.
+
+    Wraps each whitespace-delimited token in double quotes so FTS5
+    treats hyphens, colons, asterisks, and boolean keywords as literals.
+    """
+    query = query.strip()
+    if not query:
+        return ""
+    tokens = query.split()
+    quoted = []
+    for token in tokens:
+        if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+            quoted.append(token)
+        else:
+            quoted.append(f'"{token.replace(chr(34), chr(34)*2)}"')
+    return " ".join(quoted)
+
+
 def infer_importance(content: str, memory_type: str) -> float:
     """Auto-infer importance from content keywords and memory type."""
     # Keyword rules take priority (highest match wins)
@@ -752,11 +771,15 @@ class MemoryStore:
         if not query:
             return []
 
+        safe_query = _sanitize_fts_query(query)
+        if not safe_query:
+            return []
+
         fetch_limit = max(limit * 5, 50) if (tags or time_expr or after or before) else max(limit * 3, 30)
 
         fts_rows = conn.execute(
             "SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, fetch_limit),
+            (safe_query, fetch_limit),
         ).fetchall()
 
         if not fts_rows:
@@ -1954,12 +1977,16 @@ class MemoryStore:
         limit: int,
     ) -> list[dict]:
         """BM25 full-text search on document title and body via FTS5."""
+        safe_query = _sanitize_fts_query(query)
+        if not safe_query:
+            return []
+
         fetch_limit = max(limit * 3, 30)
 
         fts_rows = conn.execute(
             "SELECT rowid, rank FROM document_fts "
             "WHERE document_fts MATCH ? ORDER BY rank LIMIT ?",
-            (query, fetch_limit),
+            (safe_query, fetch_limit),
         ).fetchall()
 
         if not fts_rows:

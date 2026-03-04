@@ -7,6 +7,7 @@ import pytest
 from memory.core import (
     MemoryStore,
     _parse_time_expr,
+    _sanitize_fts_query,
     compute_confidence,
     compute_recency,
     infer_importance,
@@ -711,3 +712,63 @@ def test_update_content_preserves_metadata(store):
     assert new_mem["memory_type"] == "decision"
     assert "keep" in new_mem["tags"]
     assert new_mem["recall_count"] == 5
+
+
+# --- FTS query sanitization tests ---
+
+
+class TestSanitizeFtsQuery:
+    def test_empty_string(self):
+        assert _sanitize_fts_query("") == ""
+
+    def test_whitespace_only(self):
+        assert _sanitize_fts_query("   ") == ""
+
+    def test_single_word(self):
+        assert _sanitize_fts_query("hello") == '"hello"'
+
+    def test_multi_word(self):
+        assert _sanitize_fts_query("hello world") == '"hello" "world"'
+
+    def test_hyphenated(self):
+        assert _sanitize_fts_query("video-processing") == '"video-processing"'
+
+    def test_colon(self):
+        assert _sanitize_fts_query("title:foo") == '"title:foo"'
+
+    def test_asterisk(self):
+        assert _sanitize_fts_query("test*") == '"test*"'
+
+    def test_boolean_keyword(self):
+        assert _sanitize_fts_query("NOT important") == '"NOT" "important"'
+        assert _sanitize_fts_query("foo AND bar") == '"foo" "AND" "bar"'
+
+    def test_already_quoted_single_token(self):
+        assert _sanitize_fts_query('"hello"') == '"hello"'
+
+    def test_already_quoted_multi_word_re_quoted(self):
+        # Multi-word quoted phrase is split by whitespace; each part gets re-quoted
+        result = _sanitize_fts_query('"already quoted"')
+        assert result == '"""already" "quoted"""'
+
+    def test_mixed_quoted_and_unquoted(self):
+        assert _sanitize_fts_query('"keep" unquoted') == '"keep" "unquoted"'
+
+    def test_embedded_double_quote(self):
+        # A token with an internal quote gets it doubled
+        assert _sanitize_fts_query('say"hello') == '"say""hello"'
+
+
+def test_fts_search_hyphenated_query(store):
+    """FTS search with hyphenated query should not crash."""
+    store.store("video-processing pipeline for streaming", tags=["media"])
+    results = store.search("video-processing", mode="fts", limit=5)
+    assert len(results) >= 1
+    assert "video-processing" in results[0]["content"]
+
+
+def test_fts_search_colon_query(store):
+    """FTS search with colon in query should not crash."""
+    store.store("config key:value pair setting", tags=["config"])
+    results = store.search("key:value", mode="fts", limit=5)
+    assert len(results) >= 1
