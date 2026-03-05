@@ -355,10 +355,7 @@ def _fmt_doc_full(d: dict) -> str:
         lines.append(f"  metadata: {json.dumps(meta)}")
     body = d.get("body", "")
     if body:
-        preview = body[:500]
-        if len(body) > 500:
-            preview += f"... ({len(body)} chars total)"
-        lines.append(f"  body:\n    {preview.replace(chr(10), chr(10) + '    ')}")
+        lines.append(f"  body:\n    {body.replace(chr(10), chr(10) + '    ')}")
     return "\n".join(lines)
 
 

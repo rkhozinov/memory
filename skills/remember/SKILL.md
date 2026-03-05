@@ -77,6 +77,20 @@ Analyze each piece of content and **automatically route** to the right store:
    - **type**: `plan`, `spec`, `runbook`, `session`, `reference`, or `document` (default)
    - **body**: The full content via `--body-file -` (stdin) to avoid shell quoting issues with long text
 
+   #### Writing session documents
+
+   Session documents (type `session`) capture a full working session. They must be **comprehensive** — never summarize from fading context when the full conversation data is available. Include:
+
+   - All raw command outputs and data points collected during the session
+   - Tables with exact values (signal readings, benchmark numbers, config parameters)
+   - Every A/B comparison and test result with actual numbers
+   - Each phase of investigation, what was tried, and what the result was
+   - Dead ends and wrong assumptions — these are valuable for future sessions
+   - The final configuration and how to reproduce it
+   - TODOs and open questions
+
+   Think of session docs as a lab notebook: someone continuing this work next week (or you in a future session) should be able to pick up exactly where things left off without guessing.
+
 ### Mixed content (common case)
 
 When the user says "remember all of this", you'll often have both atomic facts AND long-form content. Store them in a **single chained Bash call**:
