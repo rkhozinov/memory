@@ -46,6 +46,30 @@ memory -f text list-tags
 ```
 Shows all unique tags with frequency counts — useful for finding tag inconsistencies or discovering available filters.
 
+### Tag management
+```bash
+# Rename a tag across all memories and documents
+memory -f text rename-tag "old:tag" "new:tag"
+
+# Merge multiple tags into one
+memory -f text merge-tags "tag1,tag2,tag3" "merged:tag"
+```
+
+### Export/Import (backup & restore)
+```bash
+# Export all memories and documents to JSON
+memory -f json export --output /tmp/memory-backup.json
+
+# Export without documents
+memory -f json export --output /tmp/memory-backup.json --no-documents
+
+# Import from a backup file
+memory -f text import --file /tmp/memory-backup.json
+
+# Force import (skip dedup checks)
+memory -f text import --file /tmp/memory-backup.json --force
+```
+
 ### Cleanup duplicate entries
 ```bash
 memory -f text cleanup

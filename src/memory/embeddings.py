@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import time
 import urllib.request
 from pathlib import Path
 
@@ -40,6 +41,7 @@ class EmbeddingModel:
         self._l1: dict[str, np.ndarray] = {}
         self._cache_db_path = Path(cache_db) if cache_db else CACHE_DB_PATH
         self._cache_conn: sqlite3.Connection | None = None
+        self._store_count: int = 0
 
     def _ensure_model(self) -> Path:
         """Download model files if not present."""
@@ -89,8 +91,15 @@ class EmbeddingModel:
             self._cache_conn.execute("PRAGMA synchronous=NORMAL")
             self._cache_conn.execute(
                 "CREATE TABLE IF NOT EXISTS cache "
-                "(text_hash TEXT PRIMARY KEY, embedding BLOB)"
+                "(text_hash TEXT PRIMARY KEY, embedding BLOB, last_accessed_at REAL)"
             )
+            # Idempotent migration for existing DBs
+            try:
+                self._cache_conn.execute(
+                    "ALTER TABLE cache ADD COLUMN last_accessed_at REAL"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         return self._cache_conn
 
     def _l2_get_many(self, text_hashes: list[str]) -> dict[str, np.ndarray]:
@@ -103,21 +112,56 @@ class EmbeddingModel:
             f"SELECT text_hash, embedding FROM cache WHERE text_hash IN ({placeholders})",
             text_hashes,
         ).fetchall()
-        return {
+        result = {
             row[0]: np.frombuffer(row[1], dtype=np.float32).copy()
             for row in rows
         }
+        # Update last_accessed_at for cache hits
+        if result:
+            now = time.time()
+            hit_hashes = list(result.keys())
+            hit_ph = ",".join("?" * len(hit_hashes))
+            conn.execute(
+                f"UPDATE cache SET last_accessed_at = ? WHERE text_hash IN ({hit_ph})",
+                [now] + hit_hashes,
+            )
+            conn.commit()
+        return result
 
     def _l2_put_many(self, items: list[tuple[str, np.ndarray]]) -> None:
         """Write multiple embeddings to disk cache."""
         if not items:
             return
         conn = self._get_cache_conn()
+        now = time.time()
         conn.executemany(
-            "INSERT OR REPLACE INTO cache (text_hash, embedding) VALUES (?, ?)",
-            [(h, emb.tobytes()) for h, emb in items],
+            "INSERT OR REPLACE INTO cache (text_hash, embedding, last_accessed_at) VALUES (?, ?, ?)",
+            [(h, emb.tobytes(), now) for h, emb in items],
         )
         conn.commit()
+        self._maybe_evict()
+
+    def _maybe_evict(self) -> None:
+        """Trigger eviction every 100 stores."""
+        self._store_count += 1
+        if self._store_count % 100 == 0:
+            self.evict_cache()
+
+    def evict_cache(self, max_entries: int = 10000) -> int:
+        """Evict oldest cache entries by last_accessed_at when count exceeds max."""
+        conn = self._get_cache_conn()
+        count = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
+        if count <= max_entries:
+            return 0
+        to_delete = count - max_entries
+        conn.execute(
+            "DELETE FROM cache WHERE text_hash IN ("
+            "  SELECT text_hash FROM cache ORDER BY COALESCE(last_accessed_at, 0) ASC LIMIT ?"
+            ")",
+            (to_delete,),
+        )
+        conn.commit()
+        return to_delete
 
     def embed(self, text: str) -> np.ndarray:
         """Generate embedding for a single text. Returns shape (384,)."""

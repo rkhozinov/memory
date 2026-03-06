@@ -585,27 +585,41 @@ class MemoryStore:
         after: str | None = None,
         before: str | None = None,
         scoring_weights: tuple[float, float, float] | None = None,
+        exclude_tags: list[str] | None = None,
+        memory_types: list[str] | None = None,
+        min_importance: float | None = None,
     ) -> list[dict]:
         """Search memories. Modes: semantic, exact, hybrid.
 
         scoring_weights: (similarity_w, importance_w, recency_w) for composite
         scoring. Defaults to (0.6, 0.2, 0.2). Only applies to semantic/hybrid.
+        exclude_tags: tags to exclude from results.
+        memory_types: filter to only these memory types (plural).
+        min_importance: filter results below this importance threshold.
         """
         start = time.time()
         conn = self._get_conn()
 
         # Read phase — no write lock needed yet
         if mode == "exact":
-            results = self._search_exact(conn, query, limit, tags, time_expr, after, before)
+            results = self._search_exact(
+                conn, query, limit, tags, time_expr, after, before,
+                exclude_tags=exclude_tags, memory_types=memory_types,
+                min_importance=min_importance,
+            )
         elif mode in ("semantic", "hybrid"):
             results = self._search_semantic(
                 conn, query, limit, tags, time_expr, after, before,
                 scoring_weights=scoring_weights,
+                exclude_tags=exclude_tags, memory_types=memory_types,
+                min_importance=min_importance,
             )
         elif mode == "fts":
             results = self._search_fts(
                 conn, query, limit, tags, time_expr, after, before,
                 scoring_weights=scoring_weights,
+                exclude_tags=exclude_tags, memory_types=memory_types,
+                min_importance=min_importance,
             )
         else:
             raise ValueError(f"Unknown search mode: {mode}")
@@ -636,6 +650,61 @@ class MemoryStore:
             raise
         return results
 
+    def search_batch(
+        self,
+        queries: list[str],
+        limit: int = 10,
+        tags: list[str] | None = None,
+        exclude_tags: list[str] | None = None,
+        min_importance: float | None = None,
+    ) -> dict:
+        """Batch semantic search — embed all queries in one pass.
+
+        Returns {query: [results]} dict.
+        """
+        if not queries:
+            return {}
+
+        from .embeddings import get_model
+        embeddings = get_model().embed_batch(queries)
+
+        conn = self._get_conn()
+        all_results: dict[str, list[dict]] = {}
+        all_hashes: set[str] = set()
+
+        for i, query in enumerate(queries):
+            results = self._search_semantic(
+                conn, query, limit, tags, None, None, None,
+                _embedding=embeddings[i],
+                exclude_tags=exclude_tags,
+                min_importance=min_importance,
+            )
+            all_results[query] = results
+            for m in results:
+                all_hashes.add(m["content_hash"])
+
+        # Single recall-tracking transaction for all unique hashes
+        if all_hashes:
+            now = time.time()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for h in all_hashes:
+                    conn.execute(
+                        "UPDATE memories SET recall_count = recall_count + 1, "
+                        "last_recalled_at = ?, confidence = 1.0 WHERE content_hash = ? AND deleted_at IS NULL",
+                        (now, h),
+                    )
+                self._track_event(conn, "search_batch",
+                    query=f"batch({len(queries)})",
+                    result_count=sum(len(r) for r in all_results.values()),
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                self._rollback_safe(conn)
+                raise
+
+        return all_results
+
     def _build_time_filter(
         self,
         time_expr: str | None,
@@ -663,16 +732,26 @@ class MemoryStore:
 
         return (" AND ".join(clauses), params) if clauses else ("", [])
 
-    def _filter_by_tags(self, memories: list[dict], tags: list[str]) -> list[dict]:
-        """Filter memory dicts by tags (any match)."""
-        if not tags:
-            return memories
-        tag_set = {t.lower() for t in tags}
-        return [
-            m
-            for m in memories
-            if any(t.lower() in tag_set for t in m.get("tags", []))
-        ]
+    def _filter_by_tags(
+        self, memories: list[dict], tags: list[str],
+        exclude_tags: list[str] | None = None,
+    ) -> list[dict]:
+        """Filter memory dicts by tags (any match) and optionally exclude tags."""
+        result = memories
+        if tags:
+            tag_set = {t.lower() for t in tags}
+            result = [
+                m
+                for m in result
+                if any(t.lower() in tag_set for t in m.get("tags", []))
+            ]
+        if exclude_tags:
+            excl_set = {t.lower() for t in exclude_tags}
+            result = [
+                m for m in result
+                if not any(t.lower() in excl_set for t in m.get("tags", []))
+            ]
+        return result
 
     def _search_semantic(
         self,
@@ -685,6 +764,9 @@ class MemoryStore:
         before: str | None,
         _embedding: object | None = None,
         scoring_weights: tuple[float, float, float] | None = None,
+        exclude_tags: list[str] | None = None,
+        memory_types: list[str] | None = None,
+        min_importance: float | None = None,
     ) -> list[dict]:
         if _embedding is not None:
             embedding = _embedding
@@ -694,7 +776,8 @@ class MemoryStore:
         else:
             return []
         # Fetch more than needed to allow post-filtering and re-ranking
-        fetch_limit = max(limit * 5, 50) if (tags or time_expr or after or before) else max(limit * 3, 30)
+        has_filters = tags or time_expr or after or before or exclude_tags or memory_types or min_importance
+        fetch_limit = max(limit * 5, 50) if has_filters else max(limit * 3, 30)
 
         rows = conn.execute(
             """
@@ -725,6 +808,13 @@ class MemoryStore:
         if time_clause:
             sql += f" AND {time_clause}"
             params.extend(time_params)
+        if memory_types:
+            type_ph = ",".join("?" * len(memory_types))
+            sql += f" AND m.memory_type IN ({type_ph})"
+            params.extend(memory_types)
+        if min_importance is not None:
+            sql += " AND m.importance >= ?"
+            params.append(min_importance)
 
         mem_rows = conn.execute(sql, params).fetchall()
         # Build lookup by id, then iterate in original distance order
@@ -735,7 +825,7 @@ class MemoryStore:
         for rid in rowids:
             row = row_by_id.get(rid)
             if row is None:
-                continue  # filtered out by time/deleted_at
+                continue  # filtered out by time/deleted_at/type/importance
             mem = Memory.from_row(row)
             d = mem.to_dict()
             similarity = round(1.0 - distances.get(rid, 1.0), 4)
@@ -757,10 +847,15 @@ class MemoryStore:
             d["score"] = round(
                 w_sim * similarity + w_imp * mem.importance + w_rec * recency, 4
             )
+            d["score_breakdown"] = {
+                "similarity": similarity,
+                "importance": round(mem.importance, 4),
+                "recency": round(recency, 4),
+            }
             memories.append(d)
 
-        if tags:
-            memories = self._filter_by_tags(memories, tags)
+        if tags or exclude_tags:
+            memories = self._filter_by_tags(memories, tags or [], exclude_tags=exclude_tags)
 
         # Re-rank by composite score
         memories.sort(key=lambda m: m["score"], reverse=True)
@@ -776,6 +871,9 @@ class MemoryStore:
         time_expr: str | None,
         after: str | None,
         before: str | None,
+        exclude_tags: list[str] | None = None,
+        memory_types: list[str] | None = None,
+        min_importance: float | None = None,
     ) -> list[dict]:
         time_clause, time_params = self._build_time_filter(time_expr, after, before)
 
@@ -790,8 +888,18 @@ class MemoryStore:
             sql += f" AND {time_clause}"
             params.extend(time_params)
 
+        if memory_types:
+            type_ph = ",".join("?" * len(memory_types))
+            sql += f" AND m.memory_type IN ({type_ph})"
+            params.extend(memory_types)
+
+        if min_importance is not None:
+            sql += " AND m.importance >= ?"
+            params.append(min_importance)
+
+        has_post_filters = tags or exclude_tags
         sql += " ORDER BY m.created_at DESC LIMIT ?"
-        params.append(limit * 5 if tags else limit)
+        params.append(limit * 5 if has_post_filters else limit)
 
         rows = conn.execute(sql, params).fetchall()
         memories = []
@@ -802,8 +910,8 @@ class MemoryStore:
             d["last_recalled_at"] = row_dict.get("last_recalled_at")
             memories.append(d)
 
-        if tags:
-            memories = self._filter_by_tags(memories, tags)
+        if tags or exclude_tags:
+            memories = self._filter_by_tags(memories, tags or [], exclude_tags=exclude_tags)
 
         return memories[:limit]
 
@@ -817,6 +925,9 @@ class MemoryStore:
         after: str | None,
         before: str | None,
         scoring_weights: tuple[float, float, float] | None = None,
+        exclude_tags: list[str] | None = None,
+        memory_types: list[str] | None = None,
+        min_importance: float | None = None,
     ) -> list[dict]:
         """BM25 full-text search via FTS5. No embedding model required."""
         if not query:
@@ -826,7 +937,8 @@ class MemoryStore:
         if not safe_query:
             return []
 
-        fetch_limit = max(limit * 5, 50) if (tags or time_expr or after or before) else max(limit * 3, 30)
+        has_filters = tags or time_expr or after or before or exclude_tags or memory_types or min_importance
+        fetch_limit = max(limit * 5, 50) if has_filters else max(limit * 3, 30)
 
         fts_rows = conn.execute(
             "SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
@@ -856,6 +968,13 @@ class MemoryStore:
         if time_clause:
             sql += f" AND {time_clause}"
             params.extend(time_params)
+        if memory_types:
+            type_ph = ",".join("?" * len(memory_types))
+            sql += f" AND m.memory_type IN ({type_ph})"
+            params.extend(memory_types)
+        if min_importance is not None:
+            sql += " AND m.importance >= ?"
+            params.append(min_importance)
 
         mem_rows = conn.execute(sql, params).fetchall()
 
@@ -883,10 +1002,15 @@ class MemoryStore:
             d["score"] = round(
                 w_sim * similarity + w_imp * mem.importance + w_rec * recency, 4
             )
+            d["score_breakdown"] = {
+                "similarity": similarity,
+                "importance": round(mem.importance, 4),
+                "recency": round(recency, 4),
+            }
             memories.append(d)
 
-        if tags:
-            memories = self._filter_by_tags(memories, tags)
+        if tags or exclude_tags:
+            memories = self._filter_by_tags(memories, tags or [], exclude_tags=exclude_tags)
 
         memories.sort(key=lambda m: m["score"], reverse=True)
         return memories[:limit]
@@ -950,6 +1074,159 @@ class MemoryStore:
             "tags": [{"tag": t, "count": c} for t, c in sorted_tags],
         }
 
+    def rename_tag(self, old_tag: str, new_tag: str) -> dict:
+        """Rename a tag across all memories and documents."""
+        conn = self._begin_immediate()
+        try:
+            memories_updated = 0
+            documents_updated = 0
+
+            # Update memories
+            rows = conn.execute(
+                "SELECT id, tags FROM memories WHERE deleted_at IS NULL"
+            ).fetchall()
+            for r in rows:
+                tags = _safe_tags(r["tags"])
+                if old_tag.lower() not in [t.lower() for t in tags]:
+                    continue
+                new_tags = []
+                for t in tags:
+                    if t.lower() == old_tag.lower():
+                        if new_tag.lower() not in [nt.lower() for nt in new_tags]:
+                            new_tags.append(new_tag)
+                    else:
+                        new_tags.append(t)
+                # Dedup case-insensitively
+                seen = set()
+                deduped = []
+                for t in new_tags:
+                    if t.lower() not in seen:
+                        seen.add(t.lower())
+                        deduped.append(t)
+                conn.execute(
+                    "UPDATE memories SET tags = ? WHERE id = ?",
+                    (json.dumps(deduped), r["id"]),
+                )
+                memories_updated += 1
+
+            # Update documents
+            rows = conn.execute(
+                "SELECT id, tags FROM documents WHERE deleted_at IS NULL"
+            ).fetchall()
+            for r in rows:
+                tags = _safe_tags(r["tags"])
+                if old_tag.lower() not in [t.lower() for t in tags]:
+                    continue
+                new_tags = []
+                for t in tags:
+                    if t.lower() == old_tag.lower():
+                        if new_tag.lower() not in [nt.lower() for nt in new_tags]:
+                            new_tags.append(new_tag)
+                    else:
+                        new_tags.append(t)
+                seen = set()
+                deduped = []
+                for t in new_tags:
+                    if t.lower() not in seen:
+                        seen.add(t.lower())
+                        deduped.append(t)
+                conn.execute(
+                    "UPDATE documents SET tags = ? WHERE id = ?",
+                    (json.dumps(deduped), r["id"]),
+                )
+                documents_updated += 1
+
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return {
+            "old_tag": old_tag,
+            "new_tag": new_tag,
+            "memories_updated": memories_updated,
+            "documents_updated": documents_updated,
+        }
+
+    def merge_tags(self, source_tags: list[str], target_tag: str) -> dict:
+        """Merge multiple source tags into a single target tag."""
+        conn = self._begin_immediate()
+        try:
+            source_set = {t.lower() for t in source_tags}
+            memories_updated = 0
+            documents_updated = 0
+
+            # Update memories
+            rows = conn.execute(
+                "SELECT id, tags FROM memories WHERE deleted_at IS NULL"
+            ).fetchall()
+            for r in rows:
+                tags = _safe_tags(r["tags"])
+                if not any(t.lower() in source_set for t in tags):
+                    continue
+                new_tags = []
+                replaced = False
+                for t in tags:
+                    if t.lower() in source_set:
+                        if not replaced:
+                            new_tags.append(target_tag)
+                            replaced = True
+                    else:
+                        new_tags.append(t)
+                # Dedup
+                seen = set()
+                deduped = []
+                for t in new_tags:
+                    if t.lower() not in seen:
+                        seen.add(t.lower())
+                        deduped.append(t)
+                conn.execute(
+                    "UPDATE memories SET tags = ? WHERE id = ?",
+                    (json.dumps(deduped), r["id"]),
+                )
+                memories_updated += 1
+
+            # Update documents
+            rows = conn.execute(
+                "SELECT id, tags FROM documents WHERE deleted_at IS NULL"
+            ).fetchall()
+            for r in rows:
+                tags = _safe_tags(r["tags"])
+                if not any(t.lower() in source_set for t in tags):
+                    continue
+                new_tags = []
+                replaced = False
+                for t in tags:
+                    if t.lower() in source_set:
+                        if not replaced:
+                            new_tags.append(target_tag)
+                            replaced = True
+                    else:
+                        new_tags.append(t)
+                seen = set()
+                deduped = []
+                for t in new_tags:
+                    if t.lower() not in seen:
+                        seen.add(t.lower())
+                        deduped.append(t)
+                conn.execute(
+                    "UPDATE documents SET tags = ? WHERE id = ?",
+                    (json.dumps(deduped), r["id"]),
+                )
+                documents_updated += 1
+
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return {
+            "source_tags": source_tags,
+            "target_tag": target_tag,
+            "memories_updated": memories_updated,
+            "documents_updated": documents_updated,
+        }
+
     # --- Delete ---
 
     def delete(
@@ -964,7 +1241,11 @@ class MemoryStore:
         start = time.time()
 
         if not any([content_hash, tags, before, after]):
-            return {"error": "No filter specified — refusing to delete all memories"}
+            return {
+                "error": "No filter specified — refusing to delete all memories. "
+                "Provide at least one of: content_hash, tags, before, after. "
+                "Example: memory delete <hash> | memory delete --tags \"scope:temp\" | memory delete --before 2025-01-01 --dry-run"
+            }
 
         # Use IMMEDIATE for the entire delete — read+write must be atomic
         # to avoid deleting rows another agent inserted between SELECT and UPDATE
@@ -983,7 +1264,7 @@ class MemoryStore:
                     ).fetchall()
                     if len(rows) > 1:
                         conn.execute("ROLLBACK")
-                        return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+                        return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
             else:
                 sql = "SELECT id, content_hash, tags, created_at FROM memories WHERE deleted_at IS NULL"
                 params: list = []
@@ -1055,9 +1336,9 @@ class MemoryStore:
             if len(rows) == 1:
                 row = rows[0]
             elif len(rows) > 1:
-                return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+                return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
         if not row:
-            return {"error": f"Memory not found: {content_hash}"}
+            return {"error": f"Memory not found: {content_hash}. The hash may be incorrect, or the memory was deleted. Use 'memory list' to see existing memories, or 'memory search <query>' to find by content."}
         row_dict = dict(row)
         d = Memory.from_row(row_dict).to_dict()
         d["recall_count"] = row_dict.get("recall_count", 0) or 0
@@ -1088,10 +1369,10 @@ class MemoryStore:
                     row = rows[0]
                 elif len(rows) > 1:
                     conn.execute("ROLLBACK")
-                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
             if not row:
                 conn.execute("ROLLBACK")
-                return {"error": f"Memory not found: {content_hash}"}
+                return {"error": f"Memory not found: {content_hash}. The hash may be incorrect, or the memory was deleted. Use 'memory list' to see existing memories, or 'memory search <query>' to find by content."}
 
             sets = []
             params: list = []
@@ -1153,7 +1434,7 @@ class MemoryStore:
 
             if not sets:
                 conn.execute("ROLLBACK")
-                return {"error": "No valid updates provided"}
+                return {"error": "No valid updates provided. Supported fields: content, tags, memory_type, metadata, importance, confidence. Example: memory update <hash> --content 'new text' --tags 'tag1,tag2'"}
 
             params.append(row["id"])
             conn.execute(
@@ -1917,9 +2198,9 @@ class MemoryStore:
             if len(rows) == 1:
                 row = rows[0]
             elif len(rows) > 1:
-                return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+                return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
         if not row:
-            return {"error": f"Document not found: {content_hash}"}
+            return {"error": f"Document not found: {content_hash}. The hash may be incorrect, or the document was deleted. Use 'memory doc list' to see existing documents, or 'memory doc search <query>' to find by content."}
         row_dict = dict(row)
         d = Document.from_row(row_dict).to_dict()
         d["recall_count"] = row_dict.get("recall_count", 0) or 0
@@ -2161,10 +2442,10 @@ class MemoryStore:
                     row = rows[0]
                 elif len(rows) > 1:
                     conn.execute("ROLLBACK")
-                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
             if not row:
                 conn.execute("ROLLBACK")
-                return {"error": f"Document not found: {content_hash}"}
+                return {"error": f"Document not found: {content_hash}. The hash may be incorrect, or the document was deleted. Use 'memory doc list' to see existing documents, or 'memory doc search <query>' to find by content."}
 
             row_dict = dict(row)
             doc_id = row_dict["id"]
@@ -2217,7 +2498,7 @@ class MemoryStore:
 
             if not sets:
                 conn.execute("ROLLBACK")
-                return {"error": "No valid updates provided"}
+                return {"error": "No valid updates provided. Supported fields: content, tags, memory_type, metadata, importance, confidence. Example: memory update <hash> --content 'new text' --tags 'tag1,tag2'"}
 
             # Always update timestamps
             now = time.time()
@@ -2288,11 +2569,11 @@ class MemoryStore:
                 ).fetchall()
                 if len(rows) > 1:
                     conn.execute("ROLLBACK")
-                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries"}
+                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
 
             if not rows:
                 conn.execute("ROLLBACK")
-                return {"error": f"Document not found: {content_hash}"}
+                return {"error": f"Document not found: {content_hash}. The hash may be incorrect, or the document was deleted. Use 'memory doc list' to see existing documents, or 'memory doc search <query>' to find by content."}
 
             if dry_run:
                 conn.execute("ROLLBACK")
@@ -2326,3 +2607,93 @@ class MemoryStore:
             self._rollback_safe(conn)
             raise
         return {"deleted": 1, "content_hash": full_hash}
+
+    # --- Export / Import ---
+
+    def export_all(self, include_documents: bool = True) -> dict:
+        """Export all non-deleted memories (and optionally documents).
+
+        Returns a portable dict suitable for JSON serialization.
+        """
+        conn = self._get_conn()
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Export memories
+        mem_rows = conn.execute(
+            "SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY created_at"
+        ).fetchall()
+        memories = []
+        for r in mem_rows:
+            row_dict = dict(r)
+            d = Memory.from_row(row_dict).to_dict()
+            d["recall_count"] = row_dict.get("recall_count", 0) or 0
+            d["last_recalled_at"] = row_dict.get("last_recalled_at")
+            memories.append(d)
+
+        result: dict = {
+            "version": 1,
+            "exported_at": now_iso,
+            "memories": memories,
+        }
+
+        # Export documents
+        if include_documents:
+            doc_rows = conn.execute(
+                "SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY created_at"
+            ).fetchall()
+            documents = [Document.from_row(dict(r)).to_dict() for r in doc_rows]
+            result["documents"] = documents
+        else:
+            result["documents"] = []
+
+        return result
+
+    def import_all(self, data: dict, force: bool = False) -> dict:
+        """Import memories and documents from an export dict.
+
+        force=True skips dedup (sets dedup_threshold=None).
+        Returns counts of imported/skipped items.
+        """
+        memories = data.get("memories", [])
+        documents = data.get("documents", [])
+
+        dedup_threshold = None if force else 0.90
+
+        memories_imported = 0
+        memories_skipped = 0
+        for m in memories:
+            result = self.store(
+                content=m["content"],
+                tags=m.get("tags", []),
+                memory_type=m.get("memory_type", "note"),
+                metadata=m.get("metadata", {}),
+                dedup_threshold=dedup_threshold,
+                importance=m.get("importance"),
+            )
+            if result.get("status") in ("stored", "revived"):
+                memories_imported += 1
+            else:
+                memories_skipped += 1
+
+        documents_imported = 0
+        documents_skipped = 0
+        for d in documents:
+            result = self.store_doc(
+                title=d.get("title", ""),
+                body=d.get("body", ""),
+                summary=d.get("summary", ""),
+                doc_type=d.get("doc_type", "document"),
+                tags=d.get("tags", []),
+                metadata=d.get("metadata", {}),
+            )
+            if result.get("status") in ("stored", "revived"):
+                documents_imported += 1
+            else:
+                documents_skipped += 1
+
+        return {
+            "memories_imported": memories_imported,
+            "memories_skipped": memories_skipped,
+            "documents_imported": documents_imported,
+            "documents_skipped": documents_skipped,
+        }

@@ -772,3 +772,354 @@ def test_fts_search_colon_query(store):
     store.store("config key:value pair setting", tags=["config"])
     results = store.search("key:value", mode="fts", limit=5)
     assert len(results) >= 1
+
+
+# --- Stage 1: Search filter enhancements + score breakdown ---
+
+
+def test_search_exclude_tags(store):
+    """exclude_tags filters out matching memories."""
+    store.store("keep this memory", tags=["keep"])
+    store.store("exclude this one", tags=["temp"])
+    store.store("also keep", tags=["keep", "other"])
+
+    results = store.search("memory", mode="exact", exclude_tags=["temp"])
+    contents = [r["content"] for r in results]
+    assert "exclude this one" not in contents
+    assert any("keep" in c for c in contents)
+
+
+def test_search_include_and_exclude_tags(store):
+    """Include and exclude tags work together."""
+    store.store("aws infra note", tags=["cloud:aws", "scope:temp"])
+    store.store("aws prod note", tags=["cloud:aws", "scope:prod"])
+    store.store("gcp note", tags=["cloud:gcp"])
+
+    results = store.search(
+        "note", mode="exact",
+        tags=["cloud:aws"], exclude_tags=["scope:temp"],
+    )
+    assert len(results) == 1
+    assert "prod" in results[0]["content"]
+
+
+def test_search_min_importance(store):
+    """min_importance filters out low-importance memories."""
+    store.store("low importance", importance=0.2)
+    store.store("high importance", importance=0.9)
+
+    results = store.search("importance", mode="exact", min_importance=0.5)
+    assert len(results) == 1
+    assert "high" in results[0]["content"]
+
+
+def test_search_memory_types_plural(store):
+    """memory_types filters to multiple types."""
+    store.store("decision content", memory_type="decision")
+    store.store("pattern content", memory_type="pattern")
+    store.store("note content", memory_type="note")
+
+    results = store.search("content", mode="exact", memory_types=["decision", "pattern"])
+    types = {r["memory_type"] for r in results}
+    assert types <= {"decision", "pattern"}
+    assert "note" not in types
+    assert len(results) == 2
+
+
+def test_search_score_breakdown(store):
+    """Semantic search results include score_breakdown with correct keys."""
+    store.store("Kubernetes pods run containers", tags=["k8s"])
+    results = store.search("kubernetes pods", limit=5)
+    assert len(results) >= 1
+    r = results[0]
+    assert "score_breakdown" in r
+    sb = r["score_breakdown"]
+    assert "similarity" in sb
+    assert "importance" in sb
+    assert "recency" in sb
+    assert isinstance(sb["similarity"], float)
+    assert isinstance(sb["importance"], float)
+    assert isinstance(sb["recency"], float)
+
+
+def test_search_fts_score_breakdown(store):
+    """FTS search results include score_breakdown."""
+    store.store("terraform infrastructure management config", tags=["terraform"])
+    results = store.search("terraform infrastructure", mode="fts", limit=5)
+    assert len(results) >= 1
+    assert "score_breakdown" in results[0]
+
+
+def test_search_exclude_tags_semantic(store):
+    """Exclude tags works with semantic search."""
+    store.store("Terraform uses HCL for configuration", tags=["terraform", "scope:temp"])
+    store.store("Terraform modules for AWS", tags=["terraform", "scope:prod"])
+
+    results = store.search("terraform", exclude_tags=["scope:temp"])
+    for r in results:
+        assert "scope:temp" not in r.get("tags", [])
+
+
+def test_search_min_importance_semantic(store):
+    """min_importance works with semantic search."""
+    store.store("low importance terraform note", importance=0.1)
+    store.store("CRITICAL terraform decision", importance=0.9)
+
+    results = store.search("terraform", min_importance=0.5)
+    for r in results:
+        assert r["importance"] >= 0.5
+
+
+# --- Stage 4: Embedding cache eviction ---
+
+
+def test_cache_eviction_lru(tmp_path):
+    """Insert > max_entries, verify oldest are evicted."""
+    from memory.embeddings import EmbeddingModel
+    import numpy as np
+
+    cache_db = tmp_path / "test_cache.db"
+    model = EmbeddingModel(cache_db=cache_db)
+
+    # Insert 15 entries with sequential timestamps
+    items = []
+    for i in range(15):
+        h = f"hash_{i:04d}"
+        emb = np.random.rand(384).astype(np.float32)
+        items.append((h, emb))
+    model._l2_put_many(items)
+
+    # Now evict with max_entries=10
+    evicted = model.evict_cache(max_entries=10)
+    assert evicted == 5
+
+    # Verify count is now 10
+    conn = model._get_cache_conn()
+    count = conn.execute("SELECT COUNT(*) FROM cache").fetchone()[0]
+    assert count == 10
+
+    # The oldest 5 (hash_0000 through hash_0004) should be gone
+    row = conn.execute(
+        "SELECT COUNT(*) FROM cache WHERE text_hash = 'hash_0000'"
+    ).fetchone()[0]
+    assert row == 0
+
+    # The newest should still be present
+    row = conn.execute(
+        "SELECT COUNT(*) FROM cache WHERE text_hash = 'hash_0014'"
+    ).fetchone()[0]
+    assert row == 1
+
+
+def test_cache_access_updates_timestamp(tmp_path):
+    """Verify reads update last_accessed_at."""
+    from memory.embeddings import EmbeddingModel
+    import numpy as np
+    import time as time_mod
+
+    cache_db = tmp_path / "test_cache_access.db"
+    model = EmbeddingModel(cache_db=cache_db)
+
+    # Insert an entry
+    emb = np.random.rand(384).astype(np.float32)
+    model._l2_put_many([("test_hash", emb)])
+
+    # Get initial timestamp
+    conn = model._get_cache_conn()
+    row = conn.execute(
+        "SELECT last_accessed_at FROM cache WHERE text_hash = 'test_hash'"
+    ).fetchone()
+    initial_ts = row[0]
+
+    # Small delay to ensure timestamp differs
+    time_mod.sleep(0.01)
+
+    # Access the entry
+    model._l2_get_many(["test_hash"])
+
+    # Check timestamp was updated
+    row = conn.execute(
+        "SELECT last_accessed_at FROM cache WHERE text_hash = 'test_hash'"
+    ).fetchone()
+    assert row[0] > initial_ts
+
+
+# --- Stage 2B: Batch semantic search ---
+
+
+def test_search_batch(store):
+    """search_batch returns per-query results."""
+    store.store("Python asyncio for concurrent IO", tags=["python"])
+    store.store("Terraform infrastructure management", tags=["terraform"])
+    store.store("Kubernetes container orchestration", tags=["k8s"])
+
+    results = store.search_batch(["python asyncio", "kubernetes containers"], limit=5)
+    assert isinstance(results, dict)
+    assert "python asyncio" in results
+    assert "kubernetes containers" in results
+    assert len(results["python asyncio"]) >= 1
+    assert len(results["kubernetes containers"]) >= 1
+
+
+def test_search_batch_empty(store):
+    """search_batch with empty list returns empty dict."""
+    results = store.search_batch([])
+    assert results == {}
+
+
+def test_search_batch_recall_tracking(store):
+    """search_batch updates recall counts once per unique hash."""
+    store.store("shared result content for batch", tags=["test"])
+
+    # Search with two queries that will likely return the same memory
+    store.search_batch(["shared result", "batch content"], limit=5)
+
+    conn = store._get_conn()
+    row = conn.execute(
+        "SELECT recall_count FROM memories WHERE deleted_at IS NULL"
+    ).fetchone()
+    # Should be incremented exactly once (single transaction for unique hashes)
+    assert row["recall_count"] == 1
+
+
+# --- Stage 2A: Tag rename/merge ---
+
+
+def test_rename_tag(store):
+    """rename_tag replaces across memories and documents."""
+    store.store("memory with old tag", tags=["old:tag", "keep"])
+    store.store_doc(title="doc", body="doc body", summary="doc summary", tags=["old:tag"])
+
+    result = store.rename_tag("old:tag", "new:tag")
+    assert result["memories_updated"] == 1
+    assert result["documents_updated"] == 1
+
+    # Verify memory tags updated
+    listing = store.list()
+    mem = listing["memories"][0]
+    assert "new:tag" in mem["tags"]
+    assert "old:tag" not in mem["tags"]
+    assert "keep" in mem["tags"]
+
+
+def test_rename_tag_dedup(store):
+    """Renaming to an already-present tag deduplicates."""
+    store.store("memory with both", tags=["old:tag", "new:tag", "other"])
+    result = store.rename_tag("old:tag", "new:tag")
+    assert result["memories_updated"] == 1
+
+    listing = store.list()
+    mem = listing["memories"][0]
+    assert mem["tags"].count("new:tag") == 1
+    assert "old:tag" not in mem["tags"]
+
+
+def test_merge_tags(store):
+    """merge_tags merges multiple sources into target."""
+    store.store("tagged alpha", tags=["alpha", "other"])
+    store.store("tagged beta", tags=["beta"])
+    store.store("no match", tags=["gamma"])
+
+    result = store.merge_tags(["alpha", "beta"], "merged")
+    assert result["memories_updated"] == 2
+
+    listing = store.list()
+    for mem in listing["memories"]:
+        if mem["content"] == "no match":
+            assert "merged" not in mem["tags"]
+        else:
+            assert "merged" in mem["tags"]
+            assert "alpha" not in mem["tags"]
+            assert "beta" not in mem["tags"]
+
+
+def test_rename_tag_no_matches(store):
+    """rename_tag with no matching tags returns 0 updated."""
+    store.store("no matching tags", tags=["unrelated"])
+    result = store.rename_tag("nonexistent", "new")
+    assert result["memories_updated"] == 0
+    assert result["documents_updated"] == 0
+
+
+# --- Stage 3: Export/Import ---
+
+
+def test_export_all(store):
+    """export_all returns correct structure with non-deleted only."""
+    store.store("memory one", tags=["test"], memory_type="decision")
+    store.store("memory two", tags=["test"])
+    r = store.store("to delete")
+    store.delete(content_hash=r["content_hash"])
+    store.store_doc(title="Doc", body="doc body", summary="doc summary", tags=["test"])
+
+    export = store.export_all()
+    assert export["version"] == 1
+    assert "exported_at" in export
+    assert len(export["memories"]) == 2  # deleted one excluded
+    assert len(export["documents"]) == 1
+    # Verify recall_count included
+    assert "recall_count" in export["memories"][0]
+
+
+def test_export_no_documents(store):
+    """export_all with include_documents=False excludes documents."""
+    store.store("a memory")
+    store.store_doc(title="Doc", body="body", summary="summary")
+
+    export = store.export_all(include_documents=False)
+    assert len(export["memories"]) == 1
+    assert export["documents"] == []
+
+
+def test_import_basic(store):
+    """import_all imports memories and documents."""
+    data = {
+        "version": 1,
+        "exported_at": "2025-01-01T00:00:00",
+        "memories": [
+            {"content": "imported memory", "tags": ["imported"], "memory_type": "note", "metadata": {}, "importance": 0.7},
+        ],
+        "documents": [
+            {"title": "Imported Doc", "body": "doc body text", "summary": "doc summary", "doc_type": "document", "tags": ["imported"], "metadata": {}},
+        ],
+    }
+    result = store.import_all(data)
+    assert result["memories_imported"] == 1
+    assert result["documents_imported"] == 1
+
+    listing = store.list()
+    assert listing["total"] == 1
+    assert listing["memories"][0]["content"] == "imported memory"
+
+
+def test_roundtrip_export_import(store):
+    """Export → clear → import → verify same content."""
+    store.store("roundtrip memory 1", tags=["rt"], memory_type="decision", importance=0.9)
+    store.store("roundtrip memory 2", tags=["rt"], memory_type="pattern")
+    store.store_doc(title="RT Doc", body="roundtrip body", summary="rt summary", tags=["rt"])
+
+    export = store.export_all()
+    assert len(export["memories"]) == 2
+    assert len(export["documents"]) == 1
+
+    # Delete all
+    for m in export["memories"]:
+        store.delete(content_hash=m["content_hash"])
+    for d in export["documents"]:
+        store.delete_doc(content_hash=d["content_hash"])
+
+    # Verify empty
+    listing = store.list()
+    assert listing["total"] == 0
+
+    # Import with force (skip dedup since we deleted, not purged)
+    result = store.import_all(export, force=True)
+    assert result["memories_imported"] == 2
+    assert result["documents_imported"] == 1
+
+    # Verify content restored
+    listing = store.list()
+    assert listing["total"] == 2
+    contents = {m["content"] for m in listing["memories"]}
+    assert "roundtrip memory 1" in contents
+    assert "roundtrip memory 2" in contents

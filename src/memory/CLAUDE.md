@@ -48,7 +48,7 @@ The codebase lives entirely in `src/memory/` (~2000 lines across 5 modules):
 - Uses IMMEDIATE transactions to prevent TOCTOU races in multi-agent scenarios
 - Database at `~/.claude/tools/memory/data/sqlite_vec.db` (WAL mode, 15s busy timeout)
 
-**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `list`, `delete`, `update`, `health`, `cleanup`, `consolidate`, `decay`, `briefing`, `stats`, `doc`. The `doc` subcommand group has: `store`, `get`, `search`, `list`, `update`, `delete`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure.
+**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `search-batch`, `list`, `delete`, `update`, `health`, `cleanup`, `list-tags`, `rename-tag`, `merge-tags`, `export`, `import`, `purge`, `consolidate`, `decay`, `briefing`, `stats`, `doc`. The `doc` subcommand group has: `store`, `get`, `search`, `list`, `update`, `delete`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure, `--exclude-tags`, `--min-importance`, `--types` for advanced filtering, and returns `score_breakdown` in full depth.
 
 **`mcp_server.py`** — MCP stdio server exposing the same operations as tools. Handles type coercion (string→int/bool/JSON) since MCP clients send everything as strings. Input validation is intentionally disabled.
 
@@ -62,7 +62,6 @@ Eight tables in SQLite:
 - **`document_embeddings`** — sqlite-vec virtual table, 384-dim float vectors on summary embedding
 - **`document_fts`** — FTS5 virtual table for BM25 keyword search on document title + body
 - **`operation_events`** — analytics log (operation type, duration, result counts, dedup info)
-- **`memory_graph`** — relationship edges between memories (source_hash ↔ target_hash)
 
 ## Key Patterns
 

@@ -128,7 +128,7 @@ Always include at least a scope tag.
 
 ## CLI Quick Reference
 
-Available commands: `store`, `store-batch`, `get`, `search`, `list`, `delete`, `update`, `health`, `cleanup`, `consolidate`, `decay`, `briefing`, `stats`, `doc`.
+Available commands: `store`, `store-batch`, `get`, `search`, `search-batch`, `list`, `delete`, `update`, `health`, `cleanup`, `list-tags`, `rename-tag`, `merge-tags`, `export`, `import`, `purge`, `consolidate`, `decay`, `briefing`, `stats`, `doc`.
 
 ### Gotchas
 
@@ -163,6 +163,10 @@ memory -f text doc search "query" --limit 5
 ### New in this version
 
 - **`list-tags`**: Discover all tags and their frequencies: `memory -f text list-tags`
+- **`rename-tag OLD NEW`**: Rename a tag across all memories and documents: `memory -f text rename-tag "old:tag" "new:tag"`
+- **`merge-tags SOURCES TARGET`**: Merge multiple tags into one: `memory -f text merge-tags "tag1,tag2" "merged:tag"`
+- **`export`**: Export all memories and documents to JSON: `memory -f json export --output backup.json`
+- **`import`**: Import from an export file: `memory -f text import --file backup.json [--force]`
 - **`purge`**: Hard-delete old soft-deleted entries: `memory -f text purge --retention-days 30 --dry-run`
 - **`type` field in batch JSON**: `store-batch` now accepts both `"memory_type"` and `"type"` keys
 - **String tags in batch JSON**: `store-batch` now accepts `"tags": "tag:a,tag:b"` (comma-separated string) in addition to arrays

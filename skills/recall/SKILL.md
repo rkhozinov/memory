@@ -55,6 +55,35 @@ Use `--mode` to control how search works:
 
 For documents, modes are `semantic`, `fts`, and `auto` (default, combines both).
 
+## Advanced search filters
+
+```bash
+# Exclude specific tags from results
+memory -f text search "query" --exclude-tags "scope:temp,scope:draft"
+
+# Filter by minimum importance threshold
+memory -f text search "query" --min-importance 0.5
+
+# Filter to specific memory types (comma-separated)
+memory -f text search "query" --types "decision,pattern"
+
+# Combine all filters
+memory -f text search "query" --tags "project:infra" --exclude-tags "scope:temp" --min-importance 0.7 --types "decision,error"
+
+# View score breakdown (similarity, importance, recency components)
+memory -f text search "query" --depth full
+```
+
+## Batch search
+
+Search for multiple queries in a single pass (one embedding batch, one recall transaction):
+
+```bash
+echo '["query one", "query two", "query three"]' | memory -f text search-batch --limit 5
+# Or from a file:
+memory -f text search-batch --file queries.json --limit 5 --tags "project:infra"
+```
+
 ## Time filtering
 
 Filter results by date:
