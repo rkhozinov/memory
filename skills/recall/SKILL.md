@@ -41,3 +41,37 @@ memory -f text search "TODO" --tags "todo" --limit 20
 ```
 
 This returns items stored with the `[TODO]` prefix and `todo` tag. Status markers in content (DONE, BLOCKED, PENDING) indicate progress.
+
+## Search modes
+
+Use `--mode` to control how search works:
+
+| Mode | When to use | Example |
+|------|------------|---------|
+| `semantic` (default) | Find by meaning — best for general queries | `memory search "deployment process"` |
+| `exact` | Substring match — when you know the exact phrase | `memory search "UNIQUE constraint" --mode exact` |
+| `fts` | Full-text keyword search — technical terms, specific identifiers | `memory search "terraform backend" --mode fts` |
+| `hybrid` | Combined semantic + exact | `memory search "IAM policy" --mode hybrid` |
+
+For documents, modes are `semantic`, `fts`, and `auto` (default, combines both).
+
+## Time filtering
+
+Filter results by date:
+```bash
+memory -f text search "query" --time-expr "last 7 days"
+memory -f text search "query" --after 2025-01-01 --before 2025-03-01
+```
+
+## Tag discovery
+
+List all tags and their frequencies to find the right filter:
+```bash
+memory -f text list-tags
+```
+
+## Reading document content
+
+Search results show only summaries. To read the full body of a document:
+1. Find it: `memory -f text doc search "query"`
+2. Read it: `memory -f text doc get <hash>`

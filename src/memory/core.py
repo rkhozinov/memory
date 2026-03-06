@@ -375,6 +375,9 @@ class MemoryStore:
         importance: explicit 0-1 score. If None, auto-inferred from content/type.
         """
         start = time.time()
+        # Normalize string tags to list (defensive — callers may pass comma-separated strings)
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
         imp = importance if importance is not None else infer_importance(content, memory_type)
         mem = Memory(
             content=content,
@@ -405,6 +408,50 @@ class MemoryStore:
                     "status": "duplicate",
                     "message": "Memory with this content already exists",
                 }
+
+            # Check for soft-deleted entry with same hash — revive it
+            tombstone = conn.execute(
+                "SELECT id FROM memories WHERE content_hash = ? AND deleted_at IS NOT NULL",
+                (mem.content_hash,),
+            ).fetchone()
+            if tombstone:
+                tomb_id = tombstone["id"]
+                # Compute embedding for the revived entry
+                if _embedding is not None:
+                    embedding = _embedding
+                else:
+                    from .embeddings import get_model
+                    embedding = get_model().embed(content)
+                conn.execute(
+                    """UPDATE memories
+                       SET content = ?, tags = ?, memory_type = ?, metadata = ?,
+                           updated_at = ?, updated_at_iso = ?,
+                           confidence = ?, importance = ?,
+                           deleted_at = NULL
+                       WHERE id = ?""",
+                    (mem.content, json.dumps(mem.tags), mem.memory_type,
+                     json.dumps(mem.metadata), mem.updated_at, mem.updated_at_iso,
+                     mem.confidence, mem.importance, tomb_id),
+                )
+                # Re-insert embedding
+                conn.execute(
+                    "INSERT OR REPLACE INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                    (tomb_id, _serialize_f32(embedding)),
+                )
+                # Re-insert FTS
+                conn.execute(
+                    "INSERT OR REPLACE INTO memory_fts(rowid, content) VALUES (?, ?)",
+                    (tomb_id, content),
+                )
+                duration_ms = (time.time() - start) * 1000
+                self._track_event(conn, "store",
+                    duration_ms=duration_ms,
+                    content_hash=mem.content_hash,
+                    dedup_used=dedup_threshold is not None,
+                    duplicate_detected=False,
+                )
+                conn.execute("COMMIT")
+                return {"content_hash": mem.content_hash, "status": "revived"}
 
             # Only compute embedding after confirming not an exact duplicate
             if _embedding is not None:
@@ -510,10 +557,14 @@ class MemoryStore:
 
         results = []
         for item, embedding in zip(items, embeddings):
+            # Normalize string tags to list
+            raw_tags = item.get("tags", [])
+            if isinstance(raw_tags, str):
+                raw_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
             result = self.store(
                 content=item["content"],
-                tags=item.get("tags", []),
-                memory_type=item.get("memory_type", "note"),
+                tags=raw_tags,
+                memory_type=item.get("memory_type") or item.get("type") or "note",
                 metadata=item.get("metadata", {}),
                 dedup_threshold=dedup_threshold,
                 importance=item.get("importance"),
@@ -883,6 +934,22 @@ class MemoryStore:
             "page_size": page_size,
         }
 
+    def list_tags(self) -> dict:
+        """Return all unique tags with their frequency counts."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT tags FROM memories WHERE deleted_at IS NULL"
+        ).fetchall()
+        counter: Counter = Counter()
+        for r in rows:
+            for t in _safe_tags(r["tags"]):
+                counter[t] += 1
+        sorted_tags = counter.most_common()
+        return {
+            "total_unique": len(sorted_tags),
+            "tags": [{"tag": t, "count": c} for t, c in sorted_tags],
+        }
+
     # --- Delete ---
 
     def delete(
@@ -951,9 +1018,12 @@ class MemoryStore:
                     "UPDATE memories SET deleted_at = ? WHERE id = ?",
                     (time.time(), mem_id),
                 )
-                # Remove embedding
+                # Remove embedding and FTS
                 conn.execute(
                     "DELETE FROM memory_embeddings WHERE rowid = ?", (mem_id,)
+                )
+                conn.execute(
+                    "DELETE FROM memory_fts WHERE rowid = ?", (mem_id,)
                 )
                 deleted_hashes.append(r["content_hash"])
 
@@ -1037,11 +1107,15 @@ class MemoryStore:
                 params.append(new_content)
                 sets.append("content_hash = ?")
                 params.append(new_hash)
-                # Update embedding
+                # Update embedding and FTS
                 mem_id = row["id"]
                 conn.execute(
                     "UPDATE memory_embeddings SET content_embedding = ? WHERE rowid = ?",
                     (_serialize_f32(new_embedding), mem_id),
+                )
+                conn.execute(
+                    "UPDATE memory_fts SET content = ? WHERE rowid = ?",
+                    (new_content, mem_id),
                 )
 
             if "tags" in updates:
@@ -1332,12 +1406,52 @@ class MemoryStore:
                     (time.time(), mid),
                 )
                 conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (mid,))
+                conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (mid,))
 
             conn.execute("COMMIT")
         except BaseException:
             self._rollback_safe(conn)
             raise
         return {"duplicates_removed": len(to_delete)}
+
+    def purge(self, retention_days: int = 30, dry_run: bool = False) -> dict:
+        """Hard-delete soft-deleted rows older than retention_days.
+
+        Removes rows from memories, memory_embeddings, and memory_fts
+        where deleted_at is set and older than the retention period.
+        """
+        cutoff = time.time() - (retention_days * 86400)
+        conn = self._begin_immediate()
+        try:
+            rows = conn.execute(
+                "SELECT id, content_hash FROM memories WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+                (cutoff,),
+            ).fetchall()
+
+            if dry_run:
+                conn.execute("ROLLBACK")
+                return {
+                    "dry_run": True,
+                    "would_purge": len(rows),
+                    "retention_days": retention_days,
+                    "hashes": [r["content_hash"] for r in rows],
+                }
+
+            for r in rows:
+                mid = r["id"]
+                conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (mid,))
+                conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (mid,))
+                conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
+
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+        return {
+            "purged": len(rows),
+            "retention_days": retention_days,
+            "purged_hashes": [r["content_hash"] for r in rows],
+        }
 
     def consolidate(
         self,
@@ -1476,6 +1590,9 @@ class MemoryStore:
                 )
                 conn.execute(
                     "DELETE FROM memory_embeddings WHERE rowid = ?", (remove_row["id"],)
+                )
+                conn.execute(
+                    "DELETE FROM memory_fts WHERE rowid = ?", (remove_row["id"],)
                 )
 
             duration_ms = (time.time() - start) * 1000
@@ -1674,6 +1791,9 @@ class MemoryStore:
                     )
                     conn.execute(
                         "DELETE FROM memory_embeddings WHERE rowid = ?", (r["id"],)
+                    )
+                    conn.execute(
+                        "DELETE FROM memory_fts WHERE rowid = ?", (r["id"],)
                     )
                     pruned += 1
                 elif abs(new_conf - (r["confidence"] or 1.0)) > 0.0001:

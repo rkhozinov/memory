@@ -37,3 +37,50 @@ memory -f text briefing [--budget N]
 ```
 
 Default budget is 150 lines. Use `--budget 50` for a compact summary.
+
+## Maintenance
+
+### Tag discovery
+```bash
+memory -f text list-tags
+```
+Shows all unique tags with frequency counts — useful for finding tag inconsistencies or discovering available filters.
+
+### Cleanup duplicate entries
+```bash
+memory -f text cleanup
+```
+Removes exact-hash duplicates (keeps the first entry).
+
+### Consolidate near-duplicates
+```bash
+# Preview what would be merged
+memory -f text consolidate --dry-run
+
+# Merge memories with >0.92 similarity (default threshold)
+memory -f text consolidate
+
+# Custom threshold, exclude specific types
+memory -f text consolidate --threshold 0.90 --exclude-types "reference,decision"
+```
+Merges near-duplicate memories: keeps the older one, unions tags from both, soft-deletes the duplicate.
+
+### Confidence decay
+```bash
+# Apply decay (no pruning)
+memory -f text decay
+
+# Apply decay and prune memories below threshold
+memory -f text decay --min-confidence 0.3
+```
+Decays confidence scores based on memory type (decisions decay slowest, observations fastest). Optionally prunes below a threshold.
+
+### Purge soft-deleted entries
+```bash
+# Preview entries deleted >30 days ago
+memory -f text purge --dry-run
+
+# Hard-delete with custom retention
+memory -f text purge --retention-days 7
+```
+Permanently removes soft-deleted entries from the database to reclaim space and prevent UNIQUE constraint issues.

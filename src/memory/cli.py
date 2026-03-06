@@ -195,6 +195,26 @@ def _fmt_cleanup(d: dict) -> str:
     return f"{d.get('duplicates_removed', 0)} duplicates removed"
 
 
+def _fmt_list_tags(d: dict) -> str:
+    total = d.get("total_unique", 0)
+    tags = d.get("tags", [])
+    if not tags:
+        return "no tags"
+    lines = [f"{total} unique tags:"]
+    for entry in tags:
+        lines.append(f"  {entry['tag']}: {entry['count']}")
+    return "\n".join(lines)
+
+
+def _fmt_purge(d: dict) -> str:
+    if d.get("dry_run"):
+        hashes = ", ".join(_short_hash(h) for h in d.get("hashes", []))
+        return f"would purge {d['would_purge']} (retention: {d['retention_days']}d): {hashes}"
+    count = d.get("purged", 0)
+    hashes = ", ".join(_short_hash(h) for h in d.get("purged_hashes", []))
+    return f"purged {count} (retention: {d['retention_days']}d): {hashes}" if hashes else f"purged {count}"
+
+
 def _fmt_consolidate(d: dict) -> str:
     if d.get("dry_run"):
         lines = [f"would consolidate {d.get('would_consolidate', 0)} pairs:"]
@@ -521,6 +541,15 @@ def cmd_cleanup(args, store: MemoryStore, fmt: str) -> None:
     _out(fmt, store.cleanup(), _fmt_cleanup)
 
 
+def cmd_list_tags(args, store: MemoryStore, fmt: str) -> None:
+    _out(fmt, store.list_tags(), _fmt_list_tags)
+
+
+def cmd_purge(args, store: MemoryStore, fmt: str) -> None:
+    result = store.purge(retention_days=args.retention_days, dry_run=args.dry_run)
+    _out(fmt, result, _fmt_purge)
+
+
 def cmd_consolidate(args, store: MemoryStore, fmt: str) -> None:
     exclude = [t.strip() for t in args.exclude_types.split(",") if t.strip()] if args.exclude_types else []
     result = store.consolidate(threshold=args.threshold, dry_run=args.dry_run, exclude_types=exclude)
@@ -741,6 +770,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # cleanup
     sub.add_parser("cleanup", help="Remove duplicate entries")
 
+    # list-tags
+    sub.add_parser("list-tags", help="List all unique tags with frequency counts")
+
+    # purge
+    p = sub.add_parser("purge", help="Hard-delete soft-deleted memories older than retention period")
+    p.add_argument("--retention-days", default=30, type=int,
+                   help="Only purge entries deleted more than N days ago (default: 30)")
+    p.add_argument("--dry-run", action="store_true", help="Preview without executing")
+
     # consolidate
     p = sub.add_parser("consolidate", help="Merge near-duplicate memories (deterministic)")
     p.add_argument("--threshold", default=0.92, type=float,
@@ -831,6 +869,8 @@ _DISPATCH = {
     "update": cmd_update,
     "health": cmd_health,
     "cleanup": cmd_cleanup,
+    "list-tags": cmd_list_tags,
+    "purge": cmd_purge,
     "consolidate": cmd_consolidate,
     "decay": cmd_decay,
     "briefing": cmd_briefing,

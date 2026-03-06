@@ -17,3 +17,36 @@ allowed-tools: Bash, AskUserQuestion
    - Memories: `memory -f text delete <hash_prefix>`
    - Documents: `memory -f text doc delete <hash_prefix>`
 5. **Report** — what was deleted
+
+## Batch delete
+
+For bulk cleanup by tags or date range, always preview first:
+
+```bash
+# Preview what would be deleted
+memory -f text delete --tags "project:old-project" --dry-run
+
+# Delete all memories with specific tags
+memory -f text delete --tags "project:old-project"
+
+# Delete memories older than a date
+memory -f text delete --before 2025-01-01 --dry-run
+
+# Combine filters
+memory -f text delete --tags "scope:temp" --before 2025-06-01
+```
+
+## Purge (hard-delete)
+
+After soft-deleting, entries remain in the DB (blocking re-insertion with same content). To permanently remove old deleted entries:
+
+```bash
+# Preview entries that would be purged (deleted >30 days ago)
+memory -f text purge --dry-run
+
+# Purge with custom retention
+memory -f text purge --retention-days 7
+
+# Default: purge entries deleted >30 days ago
+memory -f text purge
+```

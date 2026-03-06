@@ -55,7 +55,7 @@ Analyze each piece of content and **automatically route** to the right store:
    cat <<'ENDJSON' | memory -f text store-batch --dedup 0.85
    [
      {"content": "...", "tags": ["project:X", "topic"], "memory_type": "decision"},
-     {"content": "...", "tags": ["project:X"], "memory_type": "pattern"}
+     {"content": "...", "tags": ["project:X"], "type": "pattern"}
    ]
    ENDJSON
    ```
@@ -159,5 +159,13 @@ memory -f text doc update <hash> --body-file updated.md --summary "updated summa
 memory -f text search "query" --limit 10
 memory -f text doc search "query" --limit 5
 ```
+
+### New in this version
+
+- **`list-tags`**: Discover all tags and their frequencies: `memory -f text list-tags`
+- **`purge`**: Hard-delete old soft-deleted entries: `memory -f text purge --retention-days 30 --dry-run`
+- **`type` field in batch JSON**: `store-batch` now accepts both `"memory_type"` and `"type"` keys
+- **String tags in batch JSON**: `store-batch` now accepts `"tags": "tag:a,tag:b"` (comma-separated string) in addition to arrays
+- **Tombstone revival**: Re-storing content after deletion now revives the entry instead of failing with UNIQUE constraint
 
 Report: count stored (memories + documents), brief list, scope, any skipped duplicates.
