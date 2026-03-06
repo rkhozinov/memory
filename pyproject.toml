@@ -19,9 +19,46 @@ dependencies = [
 [dependency-groups]
 test = ["pytest>=8.0"]
 bench = ["mlx>=0.22.0", "safetensors>=0.4.0"]
+lint = ["ruff>=0.9.0", "bandit>=1.8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+src = ["src", "tests"]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "A",      # flake8-builtins
+    "S",      # flake8-bandit (security)
+    "T20",    # flake8-print
+    "SIM",    # flake8-simplify
+    "RUF",    # ruff-specific rules
+]
+ignore = [
+    "S101",   # assert in tests is fine
+    "T201",   # print() is used in CLI
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S603", "S607", "S310"]  # asserts + subprocess + URL downloads in tests OK
+"src/memory/core.py" = ["S608"]  # parameterized SQL with ? placeholders is safe
+"src/memory/embeddings.py" = ["S608", "S310"]  # parameterized SQL + known URL downloads
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.bandit]
+exclude_dirs = ["tests"]
 
 [project.scripts]
 memory = "memory.cli:main"

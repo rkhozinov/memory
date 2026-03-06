@@ -19,14 +19,12 @@ Models tested:
 from __future__ import annotations
 
 import json
-import os
 import statistics
-import sys
 import time
 import tracemalloc
 import urllib.request
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -284,9 +282,12 @@ class OnnxAdapter(BaseAdapter):
 
         if self.use_coreml:
             providers = [
-                ("CoreMLExecutionProvider", {
-                    "MLComputeUnits": "ALL",
-                }),
+                (
+                    "CoreMLExecutionProvider",
+                    {
+                        "MLComputeUnits": "ALL",
+                    },
+                ),
                 "CPUExecutionProvider",
             ]
         else:
@@ -342,9 +343,9 @@ class MlxAdapter(BaseAdapter):
 
     def load(self) -> None:
         import mlx.core as mx
-        from tokenizers import Tokenizer
-        from huggingface_hub import snapshot_download
         import safetensors.numpy
+        from huggingface_hub import snapshot_download
+        from tokenizers import Tokenizer
 
         hf_ids = {
             "all-MiniLM-L6-v2": "sentence-transformers/all-MiniLM-L6-v2",
@@ -368,9 +369,7 @@ class MlxAdapter(BaseAdapter):
         # Load weights from safetensors
         safetensors_file = model_path / "model.safetensors"
         if not safetensors_file.exists():
-            raise FileNotFoundError(
-                f"No model.safetensors in {model_path} (torch weights not supported)"
-            )
+            raise FileNotFoundError(f"No model.safetensors in {model_path} (torch weights not supported)")
         state_dict = safetensors.numpy.load_file(str(safetensors_file))
 
         self._weights = {k: mx.array(v) for k, v in state_dict.items()}
@@ -447,9 +446,7 @@ class MlxAdapter(BaseAdapter):
             ff2_b = self._weights[f"{prefix}.output.dense.bias"]
 
             ff_out = hidden @ ff1_w.T + ff1_b
-            ff_out = ff_out * 0.5 * (1.0 + mx.tanh(
-                mx.sqrt(mx.array(2.0 / np.pi)) * (ff_out + 0.044715 * ff_out ** 3)
-            ))
+            ff_out = ff_out * 0.5 * (1.0 + mx.tanh(mx.sqrt(mx.array(2.0 / np.pi)) * (ff_out + 0.044715 * ff_out**3)))
             ff_out = ff_out @ ff2_w.T + ff2_b
 
             hidden = hidden + ff_out
@@ -550,6 +547,7 @@ def check_coreml_available() -> bool:
     """Check if CoreML execution provider is available."""
     try:
         import onnxruntime as ort
+
         return "CoreMLExecutionProvider" in ort.get_available_providers()
     except ImportError:
         return False
@@ -558,7 +556,8 @@ def check_coreml_available() -> bool:
 def check_mlx_available() -> bool:
     """Check if MLX is installed."""
     try:
-        import mlx.core
+        import mlx.core  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -572,37 +571,47 @@ def build_adapters() -> list[tuple[str, BaseAdapter]]:
 
     for model_name in MODELS:
         # 1. ONNX CPU FP32 single-threaded (baseline)
-        adapters.append((
-            f"onnx-cpu-fp32-1t | {model_name}",
-            OnnxAdapter(model_name, intra_threads=1, inter_threads=1),
-        ))
+        adapters.append(
+            (
+                f"onnx-cpu-fp32-1t | {model_name}",
+                OnnxAdapter(model_name, intra_threads=1, inter_threads=1),
+            )
+        )
 
         # 2. ONNX CPU FP32 multi-threaded
-        adapters.append((
-            f"onnx-cpu-fp32-8t | {model_name}",
-            OnnxAdapter(model_name, intra_threads=8, inter_threads=2),
-        ))
+        adapters.append(
+            (
+                f"onnx-cpu-fp32-8t | {model_name}",
+                OnnxAdapter(model_name, intra_threads=8, inter_threads=2),
+            )
+        )
 
         # 3. ONNX CPU INT8 multi-threaded (only if quantized model exists)
         if model_name in INT8_ONNX_URLS:
-            adapters.append((
-                f"onnx-cpu-int8-8t | {model_name}",
-                OnnxAdapter(model_name, intra_threads=8, inter_threads=2, use_int8=True),
-            ))
+            adapters.append(
+                (
+                    f"onnx-cpu-int8-8t | {model_name}",
+                    OnnxAdapter(model_name, intra_threads=8, inter_threads=2, use_int8=True),
+                )
+            )
 
         # 4. ONNX CoreML
         if has_coreml:
-            adapters.append((
-                f"onnx-coreml-fp32 | {model_name}",
-                OnnxAdapter(model_name, use_coreml=True),
-            ))
+            adapters.append(
+                (
+                    f"onnx-coreml-fp32 | {model_name}",
+                    OnnxAdapter(model_name, use_coreml=True),
+                )
+            )
 
         # 5. MLX
         if has_mlx:
-            adapters.append((
-                f"mlx | {model_name}",
-                MlxAdapter(model_name),
-            ))
+            adapters.append(
+                (
+                    f"mlx | {model_name}",
+                    MlxAdapter(model_name),
+                )
+            )
 
     return adapters
 
@@ -628,22 +637,31 @@ def print_table(results: list[BenchResult]) -> None:
     rows = []
     for r in results:
         if r.error:
-            rows.append([
-                f"{r.runtime} | {r.model}" if "|" not in r.runtime else r.runtime,
-                "ERR", "ERR", "ERR", "ERR", "ERR", "ERR",
-                r.error[:40],
-            ])
+            rows.append(
+                [
+                    f"{r.runtime} | {r.model}" if "|" not in r.runtime else r.runtime,
+                    "ERR",
+                    "ERR",
+                    "ERR",
+                    "ERR",
+                    "ERR",
+                    "ERR",
+                    r.error[:40],
+                ]
+            )
         else:
-            rows.append([
-                f"{r.runtime} | {r.model}" if "|" not in r.runtime else r.runtime,
-                f"{r.cold_start_ms:.1f}",
-                f"{r.warm_median_ms:.2f}",
-                f"{r.warm_p95_ms:.2f}",
-                f"{r.batch_total_ms:.1f}",
-                f"{r.batch_per_item_ms:.2f}",
-                f"{r.peak_memory_mb:.1f}",
-                str(r.embedding_dim),
-            ])
+            rows.append(
+                [
+                    f"{r.runtime} | {r.model}" if "|" not in r.runtime else r.runtime,
+                    f"{r.cold_start_ms:.1f}",
+                    f"{r.warm_median_ms:.2f}",
+                    f"{r.warm_p95_ms:.2f}",
+                    f"{r.batch_total_ms:.1f}",
+                    f"{r.batch_per_item_ms:.2f}",
+                    f"{r.peak_memory_mb:.1f}",
+                    str(r.embedding_dim),
+                ]
+            )
 
     # Calculate column widths
     col_widths = [len(h) for h in headers]
@@ -653,14 +671,14 @@ def print_table(results: list[BenchResult]) -> None:
 
     # Print
     sep = "+-" + "-+-".join("-" * w for w in col_widths) + "-+"
-    header_line = "| " + " | ".join(h.ljust(w) for h, w in zip(headers, col_widths)) + " |"
+    header_line = "| " + " | ".join(h.ljust(w) for h, w in zip(headers, col_widths, strict=True)) + " |"
 
     print()
     print(sep)
     print(header_line)
     print(sep)
     for row in rows:
-        line = "| " + " | ".join(cell.ljust(w) for cell, w in zip(row, col_widths)) + " |"
+        line = "| " + " | ".join(cell.ljust(w) for cell, w in zip(row, col_widths, strict=True)) + " |"
         print(line)
     print(sep)
     print()
@@ -691,8 +709,8 @@ def main():
     has_coreml = check_coreml_available()
     has_mlx = check_mlx_available()
 
-    print(f"\nRuntimes available:")
-    print(f"  ONNX CPU:    yes")
+    print("\nRuntimes available:")
+    print("  ONNX CPU:    yes")
     print(f"  ONNX CoreML: {'yes' if has_coreml else 'no (CoreMLExecutionProvider not found)'}")
     print(f"  MLX:         {'yes' if has_mlx else 'no (mlx not installed)'}")
     print(f"\nModels: {', '.join(MODELS.keys())}")
@@ -703,17 +721,19 @@ def main():
     results = []
 
     for label, adapter in adapters:
-        print(f"[{len(results)+1}/{len(adapters)}] Benchmarking: {label}")
+        print(f"[{len(results) + 1}/{len(adapters)}] Benchmarking: {label}")
         result = run_benchmark(adapter, label)
         results.append(result)
 
         if result.error:
             print(f"  ERROR: {result.error}")
         else:
-            print(f"  Cold: {result.cold_start_ms:.1f}ms | "
-                  f"Warm: {result.warm_median_ms:.2f}ms | "
-                  f"Batch: {result.batch_total_ms:.1f}ms | "
-                  f"Mem: {result.peak_memory_mb:.1f}MB")
+            print(
+                f"  Cold: {result.cold_start_ms:.1f}ms | "
+                f"Warm: {result.warm_median_ms:.2f}ms | "
+                f"Batch: {result.batch_total_ms:.1f}ms | "
+                f"Mem: {result.peak_memory_mb:.1f}MB"
+            )
 
     print_table(results)
     save_results(results)

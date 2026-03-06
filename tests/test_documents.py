@@ -1,13 +1,8 @@
 """Tests for document operations in MemoryStore."""
 
 import hashlib
-import time
 
-import pytest
-
-from memory.core import MemoryStore
 from memory.models import Document
-
 
 # --- Model tests ---
 
@@ -220,11 +215,15 @@ class TestDocumentSearch:
 
     def test_search_filter_by_type(self, store):
         store.store_doc(
-            title="Plan A", body="plan content", summary="a plan",
+            title="Plan A",
+            body="plan content",
+            summary="a plan",
             doc_type="plan",
         )
         store.store_doc(
-            title="Spec A", body="spec content", summary="a spec",
+            title="Spec A",
+            body="spec content",
+            summary="a spec",
             doc_type="spec",
         )
 
@@ -233,11 +232,15 @@ class TestDocumentSearch:
 
     def test_search_filter_by_tags(self, store):
         store.store_doc(
-            title="Doc X", body="tagged content", summary="S",
+            title="Doc X",
+            body="tagged content",
+            summary="S",
             tags=["project:alpha"],
         )
         store.store_doc(
-            title="Doc Y", body="tagged content y", summary="S",
+            title="Doc Y",
+            body="tagged content y",
+            summary="S",
             tags=["project:beta"],
         )
 
@@ -311,7 +314,9 @@ class TestDocumentUpdate:
 
     def test_update_metadata_merges(self, store):
         result = store.store_doc(
-            title="T", body="body", summary="S",
+            title="T",
+            body="body",
+            summary="S",
             metadata={"key1": "val1"},
         )
         h = result["content_hash"]
@@ -338,11 +343,12 @@ class TestDocumentUpdate:
 
 class TestDocumentCLI:
     def test_cli_doc_store_and_get(self, store, capsys):
-        from memory.cli import main
 
         # Store via CLI args simulation
         result = store.store_doc(
-            title="CLI Test", body="cli body", summary="cli summary",
+            title="CLI Test",
+            body="cli body",
+            summary="cli summary",
         )
         h = result["content_hash"]
 

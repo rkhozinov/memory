@@ -6,7 +6,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -34,13 +34,9 @@ class Memory:
         if not self.updated_at:
             self.updated_at = now
         if not self.created_at_iso:
-            self.created_at_iso = datetime.fromtimestamp(
-                self.created_at, tz=timezone.utc
-            ).isoformat()
+            self.created_at_iso = datetime.fromtimestamp(self.created_at, tz=UTC).isoformat()
         if not self.updated_at_iso:
-            self.updated_at_iso = datetime.fromtimestamp(
-                self.updated_at, tz=timezone.utc
-            ).isoformat()
+            self.updated_at_iso = datetime.fromtimestamp(self.updated_at, tz=UTC).isoformat()
 
     def to_row(self) -> tuple:
         """Return values for SQL INSERT."""
@@ -115,8 +111,8 @@ class Document:
     title: str
     body: str
     summary: str
-    content_hash: str = ""          # SHA256 of body
-    doc_type: str = "document"      # plan|spec|runbook|session|reference
+    content_hash: str = ""  # SHA256 of body
+    doc_type: str = "document"  # plan|spec|runbook|session|reference
     tags: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     created_at: float = 0.0
@@ -137,13 +133,9 @@ class Document:
         if not self.updated_at:
             self.updated_at = now
         if not self.created_at_iso:
-            self.created_at_iso = datetime.fromtimestamp(
-                self.created_at, tz=timezone.utc
-            ).isoformat()
+            self.created_at_iso = datetime.fromtimestamp(self.created_at, tz=UTC).isoformat()
         if not self.updated_at_iso:
-            self.updated_at_iso = datetime.fromtimestamp(
-                self.updated_at, tz=timezone.utc
-            ).isoformat()
+            self.updated_at_iso = datetime.fromtimestamp(self.updated_at, tz=UTC).isoformat()
 
     def to_row(self) -> tuple:
         """Return values for SQL INSERT into the documents table."""

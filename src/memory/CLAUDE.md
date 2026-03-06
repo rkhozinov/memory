@@ -9,17 +9,23 @@ memory — a lean memory service for Claude Code. Provides an MCP server and CLI
 ## Commands
 
 ```bash
-# Full install: pip package + symlink skills & hooks into ~/.claude/
-./install.sh
+# Full install: sync deps, symlink skills/hooks, run all checks
+make install
 
-# Install just the Python package (editable, with test deps)
-uv pip install -e ".[test]"
+# Run ALL quality checks (lint + format + security + tests) — use this by default
+make check
 
-# Run tests
-pytest tests/
+# Individual targets
+make sync          # uv sync (deps only)
+make link          # symlink skills/hooks into ~/.claude/
+make lint          # ruff check src/ tests/
+make format        # ruff format (auto-fix)
+make format-check  # ruff format --check (dry-run)
+make security      # bandit -r src/
+make test          # pytest -q
 
 # Run a single test
-pytest tests/test_core.py::test_name -v
+uv run pytest tests/test_core.py::test_name -v
 
 # CLI entry point
 memory --help
@@ -80,7 +86,7 @@ Eight tables in SQLite:
 
 ## Skills & Hooks
 
-Skills and hooks live in this repo and are symlinked into `~/.claude/` by `install.sh`.
+Skills and hooks live in this repo and are symlinked into `~/.claude/` by ``make install``.
 
 **`skills/`** — Claude Code slash commands (symlinked to `~/.claude/skills/`):
 - **`recall/`** — `/recall [query]`: search memories and documents, or generate briefing
@@ -95,6 +101,19 @@ Skills and hooks live in this repo and are symlinked into `~/.claude/` by `insta
 
 After editing any skill or hook in this repo, changes take effect immediately (symlinks).
 
+## Code Quality
+
+Tooling: **ruff** (lint + format), **bandit** (security). Config in `pyproject.toml`, convenience targets in `Makefile`.
+
+**Always run `make check` before considering work done.** It runs lint, format check, security scan, and all tests in one command. Output is quiet on success — only failures produce verbose output.
+
+Known suppressions:
+- `S608` (SQL injection) — all flagged queries use `?` parameterized placeholders, not string interpolation of user input. Skipped globally via `make security`.
+- `B310` (URL open) — `urlretrieve` in `embeddings.py` uses hardcoded HuggingFace URLs. Suppressed inline with `# nosec B310`.
+- `T201` (print) — CLI uses `print()` for output by design.
+
 ## Testing
 
 Tests use a temp SQLite database (created per-test via the `store` fixture in `conftest.py`). The fixture sets up the full schema including the sqlite-vec virtual table. Tests are synchronous — `MemoryStore` methods are synchronous.
+
+Run all tests: `make test` (uses `pytest -q` for compact output). Run a single test: `uv run pytest tests/test_core.py::test_name -v`.

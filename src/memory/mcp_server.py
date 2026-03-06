@@ -243,7 +243,10 @@ TOOLS = [
     ),
     Tool(
         name="memory_consolidate",
-        description="Merge near-duplicate memories deterministically. Keeps the higher-recall memory, unions tags, soft-deletes the other. Excludes 'reference' type by default.",
+        description=(
+            "Merge near-duplicate memories deterministically. Keeps the higher-recall memory, unions tags, "
+            "soft-deletes the other. Excludes 'reference' type by default."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -283,7 +286,9 @@ TOOLS = [
     ),
     Tool(
         name="memory_briefing",
-        description="Generate a compact markdown briefing of top memories, ranked by confidence * importance * recency.",
+        description=(
+            "Generate a compact markdown briefing of top memories, ranked by confidence * importance * recency."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -297,7 +302,10 @@ TOOLS = [
     ),
     Tool(
         name="document_store",
-        description="Store a long-form document (plan, spec, runbook, session summary). Provide a short summary for semantic search.",
+        description=(
+            "Store a long-form document (plan, spec, runbook, session summary). "
+            "Provide a short summary for semantic search."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -329,7 +337,10 @@ TOOLS = [
     ),
     Tool(
         name="document_search",
-        description="Search documents by topic. Modes: semantic (summary embedding), fts (full-text on body), auto (both merged, default).",
+        description=(
+            "Search documents by topic. "
+            "Modes: semantic (summary embedding), fts (full-text on body), auto (both merged, default)."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -403,7 +414,10 @@ TOOLS = [
     ),
     Tool(
         name="document_update",
-        description="Update a document's title, body, summary, type, tags, or metadata. Body changes increment version and rehash. Summary changes re-embed.",
+        description=(
+            "Update a document's title, body, summary, type, tags, or metadata. "
+            "Body changes increment version and rehash. Summary changes re-embed."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -518,9 +532,8 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
     depth = args.get("depth", "summary")
     if depth == "titles":
         import re
-        _pfx = re.compile(
-            r"^\[(Pattern|Observation|Decision|Learning|Error|Note|Reference)\]\s*"
-        )
+
+        _pfx = re.compile(r"^\[(Pattern|Observation|Decision|Learning|Error|Note|Reference)\]\s*")
         return [
             {
                 "content_hash": m["content_hash"],

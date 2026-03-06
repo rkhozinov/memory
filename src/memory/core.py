@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
-import math
 import re
 import sqlite3
 import struct
 import time
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import numpy as np
+    pass
 
 from .models import Document, Memory
 
@@ -78,7 +78,7 @@ _TIME_DELTA_RE = re.compile(r"(\d+)\s+(day|week|month|year)s?\s+ago")
 def _parse_time_expr(expr: str) -> datetime:
     """Parse natural language time expressions into a datetime."""
     expr = expr.lower().strip()
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     mappings = {
         "today": timedelta(days=0),
@@ -122,7 +122,7 @@ def _sanitize_fts_query(query: str) -> str:
         if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
             quoted.append(token)
         else:
-            quoted.append(f'"{token.replace(chr(34), chr(34)*2)}"')
+            quoted.append(f'"{token.replace(chr(34), chr(34) * 2)}"')
     return " ".join(quoted)
 
 
@@ -146,7 +146,7 @@ def compute_confidence(
     rate = DECAY_RATES.get(memory_type, DEFAULT_DECAY_RATE)
     anchor = last_recalled_at if last_recalled_at else created_at
     days = max(0.0, (time.time() - anchor) / 86400)
-    return base_confidence * (rate ** days)
+    return base_confidence * (rate**days)
 
 
 def compute_recency(created_at: float) -> float:
@@ -173,10 +173,12 @@ class MemoryStore:
     def _sqlite_vec_path() -> str:
         """Resolve the sqlite-vec loadable extension path without importing numpy."""
         from importlib.util import find_spec
+
         spec = find_spec("sqlite_vec")
         if spec is None or spec.origin is None:
             raise ImportError("sqlite_vec package not found")
         from os.path import dirname, join, normpath
+
         return normpath(join(dirname(spec.origin), "vec0"))
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -238,10 +240,8 @@ class MemoryStore:
             "ALTER TABLE memories ADD COLUMN confidence REAL DEFAULT 1.0",
             "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 0.5",
         ):
-            try:
+            with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(col_sql)
-            except sqlite3.OperationalError:
-                pass
 
         # FTS5 virtual table for BM25 keyword search (zero cold start, no model)
         conn.executescript(
@@ -252,9 +252,7 @@ class MemoryStore:
             """
         )
         # Backfill existing rows — only if memories table already exists
-        memories_exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'"
-        ).fetchone()
+        memories_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'").fetchone()
         if memories_exists:
             conn.execute(
                 "INSERT OR IGNORE INTO memory_fts(rowid, content) "
@@ -309,9 +307,7 @@ class MemoryStore:
         )
 
         # Backfill FTS for existing documents
-        docs_exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
-        ).fetchone()
+        docs_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").fetchone()
         if docs_exists:
             conn.execute(
                 "INSERT OR IGNORE INTO document_fts(rowid, title, body) "
@@ -321,10 +317,8 @@ class MemoryStore:
     @staticmethod
     def _rollback_safe(conn: sqlite3.Connection) -> None:
         """Roll back the current transaction, ignoring errors if none is active."""
-        try:
+        with contextlib.suppress(Exception):
             conn.execute("ROLLBACK")
-        except Exception:
-            pass
 
     def close(self) -> None:
         if self._conn:
@@ -341,17 +335,20 @@ class MemoryStore:
                 result_count, top_similarity, content_hash,
                 dedup_used, duplicate_detected, duplicate_similarity, chars_returned)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (time.time(), operation,
-             kwargs.get("duration_ms"),
-             kwargs.get("query"),
-             kwargs.get("search_mode"),
-             kwargs.get("result_count"),
-             kwargs.get("top_similarity"),
-             kwargs.get("content_hash"),
-             kwargs.get("dedup_used", False),
-             kwargs.get("duplicate_detected", False),
-             kwargs.get("duplicate_similarity"),
-             kwargs.get("chars_returned")),
+            (
+                time.time(),
+                operation,
+                kwargs.get("duration_ms"),
+                kwargs.get("query"),
+                kwargs.get("search_mode"),
+                kwargs.get("result_count"),
+                kwargs.get("top_similarity"),
+                kwargs.get("content_hash"),
+                kwargs.get("dedup_used", False),
+                kwargs.get("duplicate_detected", False),
+                kwargs.get("duplicate_similarity"),
+                kwargs.get("chars_returned"),
+            ),
         )
 
     # --- Store ---
@@ -396,7 +393,9 @@ class MemoryStore:
             ).fetchone()
             if existing:
                 duration_ms = (time.time() - start) * 1000
-                self._track_event(conn, "store",
+                self._track_event(
+                    conn,
+                    "store",
                     duration_ms=duration_ms,
                     content_hash=mem.content_hash,
                     dedup_used=dedup_threshold is not None,
@@ -421,6 +420,7 @@ class MemoryStore:
                     embedding = _embedding
                 else:
                     from .embeddings import get_model
+
                     embedding = get_model().embed(content)
                 conn.execute(
                     """UPDATE memories
@@ -429,9 +429,17 @@ class MemoryStore:
                            confidence = ?, importance = ?,
                            deleted_at = NULL
                        WHERE id = ?""",
-                    (mem.content, json.dumps(mem.tags), mem.memory_type,
-                     json.dumps(mem.metadata), mem.updated_at, mem.updated_at_iso,
-                     mem.confidence, mem.importance, tomb_id),
+                    (
+                        mem.content,
+                        json.dumps(mem.tags),
+                        mem.memory_type,
+                        json.dumps(mem.metadata),
+                        mem.updated_at,
+                        mem.updated_at_iso,
+                        mem.confidence,
+                        mem.importance,
+                        tomb_id,
+                    ),
                 )
                 # Re-insert embedding
                 conn.execute(
@@ -444,7 +452,9 @@ class MemoryStore:
                     (tomb_id, content),
                 )
                 duration_ms = (time.time() - start) * 1000
-                self._track_event(conn, "store",
+                self._track_event(
+                    conn,
+                    "store",
                     duration_ms=duration_ms,
                     content_hash=mem.content_hash,
                     dedup_used=dedup_threshold is not None,
@@ -458,13 +468,19 @@ class MemoryStore:
                 embedding = _embedding
             else:
                 from .embeddings import get_model
+
                 embedding = get_model().embed(content)
 
             # Similarity-based dedup (scoped to same memory_type)
             if dedup_threshold is not None:
                 similar = self._search_semantic(
-                    conn, query=None, limit=5, tags=None,
-                    time_expr=None, after=None, before=None,
+                    conn,
+                    query=None,
+                    limit=5,
+                    tags=None,
+                    time_expr=None,
+                    after=None,
+                    before=None,
                     _embedding=embedding,
                 )
                 # Only dedup against same memory_type to avoid false positives
@@ -474,13 +490,12 @@ class MemoryStore:
                 # against memories sharing at least one tag (prevents cross-project
                 # false positives from shared sentence structure)
                 if mem.tags:
-                    same_type = [
-                        s for s in same_type
-                        if any(t in s.get("tags", []) for t in mem.tags)
-                    ]
+                    same_type = [s for s in same_type if any(t in s.get("tags", []) for t in mem.tags)]
                 if same_type and same_type[0].get("similarity", 0) >= dedup_threshold:
                     duration_ms = (time.time() - start) * 1000
-                    self._track_event(conn, "store",
+                    self._track_event(
+                        conn,
+                        "store",
                         duration_ms=duration_ms,
                         content_hash=mem.content_hash,
                         dedup_used=True,
@@ -506,9 +521,9 @@ class MemoryStore:
                 """,
                 mem.to_row(),
             )
-            mem_id = conn.execute(
-                "SELECT id FROM memories WHERE content_hash = ?", (mem.content_hash,)
-            ).fetchone()["id"]
+            mem_id = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (mem.content_hash,)).fetchone()[
+                "id"
+            ]
 
             # Store pre-computed embedding
             conn.execute(
@@ -523,7 +538,9 @@ class MemoryStore:
             )
 
             duration_ms = (time.time() - start) * 1000
-            self._track_event(conn, "store",
+            self._track_event(
+                conn,
+                "store",
                 duration_ms=duration_ms,
                 content_hash=mem.content_hash,
                 dedup_used=dedup_threshold is not None,
@@ -541,7 +558,9 @@ class MemoryStore:
         }
 
     def store_batch(
-        self, items: list[dict], dedup_threshold: float | None = None,
+        self,
+        items: list[dict],
+        dedup_threshold: float | None = None,
     ) -> list[dict]:
         """Store multiple memories. Each item: {content, tags?, memory_type?, metadata?}.
 
@@ -552,11 +571,12 @@ class MemoryStore:
 
         # Batch-compute all embeddings once
         from .embeddings import get_model
+
         contents = [item["content"] for item in items]
         embeddings = get_model().embed_batch(contents)
 
         results = []
-        for item, embedding in zip(items, embeddings):
+        for item, embedding in zip(items, embeddings, strict=True):
             # Normalize string tags to list
             raw_tags = item.get("tags", [])
             if isinstance(raw_tags, str):
@@ -603,22 +623,43 @@ class MemoryStore:
         # Read phase — no write lock needed yet
         if mode == "exact":
             results = self._search_exact(
-                conn, query, limit, tags, time_expr, after, before,
-                exclude_tags=exclude_tags, memory_types=memory_types,
+                conn,
+                query,
+                limit,
+                tags,
+                time_expr,
+                after,
+                before,
+                exclude_tags=exclude_tags,
+                memory_types=memory_types,
                 min_importance=min_importance,
             )
         elif mode in ("semantic", "hybrid"):
             results = self._search_semantic(
-                conn, query, limit, tags, time_expr, after, before,
+                conn,
+                query,
+                limit,
+                tags,
+                time_expr,
+                after,
+                before,
                 scoring_weights=scoring_weights,
-                exclude_tags=exclude_tags, memory_types=memory_types,
+                exclude_tags=exclude_tags,
+                memory_types=memory_types,
                 min_importance=min_importance,
             )
         elif mode == "fts":
             results = self._search_fts(
-                conn, query, limit, tags, time_expr, after, before,
+                conn,
+                query,
+                limit,
+                tags,
+                time_expr,
+                after,
+                before,
                 scoring_weights=scoring_weights,
-                exclude_tags=exclude_tags, memory_types=memory_types,
+                exclude_tags=exclude_tags,
+                memory_types=memory_types,
                 min_importance=min_importance,
             )
         else:
@@ -628,7 +669,9 @@ class MemoryStore:
         duration_ms = (time.time() - start) * 1000
         conn.execute("BEGIN IMMEDIATE")
         try:
-            self._track_event(conn, "search",
+            self._track_event(
+                conn,
+                "search",
                 duration_ms=duration_ms,
                 query=query,
                 search_mode=mode,
@@ -666,6 +709,7 @@ class MemoryStore:
             return {}
 
         from .embeddings import get_model
+
         embeddings = get_model().embed_batch(queries)
 
         conn = self._get_conn()
@@ -674,7 +718,13 @@ class MemoryStore:
 
         for i, query in enumerate(queries):
             results = self._search_semantic(
-                conn, query, limit, tags, None, None, None,
+                conn,
+                query,
+                limit,
+                tags,
+                None,
+                None,
+                None,
                 _embedding=embeddings[i],
                 exclude_tags=exclude_tags,
                 min_importance=min_importance,
@@ -694,7 +744,9 @@ class MemoryStore:
                         "last_recalled_at = ?, confidence = 1.0 WHERE content_hash = ? AND deleted_at IS NULL",
                         (now, h),
                     )
-                self._track_event(conn, "search_batch",
+                self._track_event(
+                    conn,
+                    "search_batch",
                     query=f"batch({len(queries)})",
                     result_count=sum(len(r) for r in all_results.values()),
                 )
@@ -721,36 +773,31 @@ class MemoryStore:
             params.append(dt.timestamp())
 
         if after:
-            dt = datetime.fromisoformat(after).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(after).replace(tzinfo=UTC)
             clauses.append("m.created_at >= ?")
             params.append(dt.timestamp())
 
         if before:
-            dt = datetime.fromisoformat(before).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(before).replace(tzinfo=UTC)
             clauses.append("m.created_at <= ?")
             params.append(dt.timestamp())
 
         return (" AND ".join(clauses), params) if clauses else ("", [])
 
     def _filter_by_tags(
-        self, memories: list[dict], tags: list[str],
+        self,
+        memories: list[dict],
+        tags: list[str],
         exclude_tags: list[str] | None = None,
     ) -> list[dict]:
         """Filter memory dicts by tags (any match) and optionally exclude tags."""
         result = memories
         if tags:
             tag_set = {t.lower() for t in tags}
-            result = [
-                m
-                for m in result
-                if any(t.lower() in tag_set for t in m.get("tags", []))
-            ]
+            result = [m for m in result if any(t.lower() in tag_set for t in m.get("tags", []))]
         if exclude_tags:
             excl_set = {t.lower() for t in exclude_tags}
-            result = [
-                m for m in result
-                if not any(t.lower() in excl_set for t in m.get("tags", []))
-            ]
+            result = [m for m in result if not any(t.lower() in excl_set for t in m.get("tags", []))]
         return result
 
     def _search_semantic(
@@ -772,6 +819,7 @@ class MemoryStore:
             embedding = _embedding
         elif query:
             from .embeddings import get_model
+
             embedding = get_model().embed(query)
         else:
             return []
@@ -833,8 +881,10 @@ class MemoryStore:
 
             # Compute decayed confidence
             conf = compute_confidence(
-                mem.confidence, mem.memory_type,
-                row.get("last_recalled_at"), mem.created_at,
+                mem.confidence,
+                mem.memory_type,
+                row.get("last_recalled_at"),
+                mem.created_at,
             )
             d["confidence"] = round(conf, 4)
 
@@ -844,9 +894,7 @@ class MemoryStore:
 
             # Composite score
             recency = compute_recency(mem.created_at)
-            d["score"] = round(
-                w_sim * similarity + w_imp * mem.importance + w_rec * recency, 4
-            )
+            d["score"] = round(w_sim * similarity + w_imp * mem.importance + w_rec * recency, 4)
             d["score_breakdown"] = {
                 "similarity": similarity,
                 "importance": round(mem.importance, 4),
@@ -991,17 +1039,17 @@ class MemoryStore:
             d["similarity"] = similarity
 
             conf = compute_confidence(
-                mem.confidence, mem.memory_type,
-                row_dict.get("last_recalled_at"), mem.created_at,
+                mem.confidence,
+                mem.memory_type,
+                row_dict.get("last_recalled_at"),
+                mem.created_at,
             )
             d["confidence"] = round(conf, 4)
             d["recall_count"] = row_dict.get("recall_count", 0) or 0
             d["last_recalled_at"] = row_dict.get("last_recalled_at")
 
             recency = compute_recency(mem.created_at)
-            d["score"] = round(
-                w_sim * similarity + w_imp * mem.importance + w_rec * recency, 4
-            )
+            d["score"] = round(w_sim * similarity + w_imp * mem.importance + w_rec * recency, 4)
             d["score_breakdown"] = {
                 "similarity": similarity,
                 "importance": round(mem.importance, 4),
@@ -1061,9 +1109,7 @@ class MemoryStore:
     def list_tags(self) -> dict:
         """Return all unique tags with their frequency counts."""
         conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT tags FROM memories WHERE deleted_at IS NULL"
-        ).fetchall()
+        rows = conn.execute("SELECT tags FROM memories WHERE deleted_at IS NULL").fetchall()
         counter: Counter = Counter()
         for r in rows:
             for t in _safe_tags(r["tags"]):
@@ -1082,9 +1128,7 @@ class MemoryStore:
             documents_updated = 0
 
             # Update memories
-            rows = conn.execute(
-                "SELECT id, tags FROM memories WHERE deleted_at IS NULL"
-            ).fetchall()
+            rows = conn.execute("SELECT id, tags FROM memories WHERE deleted_at IS NULL").fetchall()
             for r in rows:
                 tags = _safe_tags(r["tags"])
                 if old_tag.lower() not in [t.lower() for t in tags]:
@@ -1110,9 +1154,7 @@ class MemoryStore:
                 memories_updated += 1
 
             # Update documents
-            rows = conn.execute(
-                "SELECT id, tags FROM documents WHERE deleted_at IS NULL"
-            ).fetchall()
+            rows = conn.execute("SELECT id, tags FROM documents WHERE deleted_at IS NULL").fetchall()
             for r in rows:
                 tags = _safe_tags(r["tags"])
                 if old_tag.lower() not in [t.lower() for t in tags]:
@@ -1157,9 +1199,7 @@ class MemoryStore:
             documents_updated = 0
 
             # Update memories
-            rows = conn.execute(
-                "SELECT id, tags FROM memories WHERE deleted_at IS NULL"
-            ).fetchall()
+            rows = conn.execute("SELECT id, tags FROM memories WHERE deleted_at IS NULL").fetchall()
             for r in rows:
                 tags = _safe_tags(r["tags"])
                 if not any(t.lower() in source_set for t in tags):
@@ -1187,9 +1227,7 @@ class MemoryStore:
                 memories_updated += 1
 
             # Update documents
-            rows = conn.execute(
-                "SELECT id, tags FROM documents WHERE deleted_at IS NULL"
-            ).fetchall()
+            rows = conn.execute("SELECT id, tags FROM documents WHERE deleted_at IS NULL").fetchall()
             for r in rows:
                 tags = _safe_tags(r["tags"])
                 if not any(t.lower() in source_set for t in tags):
@@ -1244,7 +1282,8 @@ class MemoryStore:
             return {
                 "error": "No filter specified — refusing to delete all memories. "
                 "Provide at least one of: content_hash, tags, before, after. "
-                "Example: memory delete <hash> | memory delete --tags \"scope:temp\" | memory delete --before 2025-01-01 --dry-run"
+                "Example: memory delete <hash> | memory delete --tags "
+                '"scope:temp" | memory delete --before 2025-01-01 --dry-run'
             }
 
         # Use IMMEDIATE for the entire delete — read+write must be atomic
@@ -1264,7 +1303,11 @@ class MemoryStore:
                     ).fetchall()
                     if len(rows) > 1:
                         conn.execute("ROLLBACK")
-                        return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
+                        return {
+                            "error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. "
+                            "Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. "
+                            "Run 'memory list' or 'memory search' to find exact hashes."
+                        }
             else:
                 sql = "SELECT id, content_hash, tags, created_at FROM memories WHERE deleted_at IS NULL"
                 params: list = []
@@ -1300,16 +1343,14 @@ class MemoryStore:
                     (time.time(), mem_id),
                 )
                 # Remove embedding and FTS
-                conn.execute(
-                    "DELETE FROM memory_embeddings WHERE rowid = ?", (mem_id,)
-                )
-                conn.execute(
-                    "DELETE FROM memory_fts WHERE rowid = ?", (mem_id,)
-                )
+                conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (mem_id,))
+                conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (mem_id,))
                 deleted_hashes.append(r["content_hash"])
 
             duration_ms = (time.time() - start) * 1000
-            self._track_event(conn, "delete",
+            self._track_event(
+                conn,
+                "delete",
                 duration_ms=duration_ms,
                 result_count=len(deleted_hashes),
             )
@@ -1336,9 +1377,16 @@ class MemoryStore:
             if len(rows) == 1:
                 row = rows[0]
             elif len(rows) > 1:
-                return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
+                return {
+                    "error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. "
+                    "Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. "
+                    "Run 'memory list' or 'memory search' to find exact hashes."
+                }
         if not row:
-            return {"error": f"Memory not found: {content_hash}. The hash may be incorrect, or the memory was deleted. Use 'memory list' to see existing memories, or 'memory search <query>' to find by content."}
+            return {
+                "error": f"Memory not found: {content_hash}. The hash may be incorrect, or the memory was deleted. "
+                "Use 'memory list' to see existing memories, or 'memory search <query>' to find by content."
+            }
         row_dict = dict(row)
         d = Memory.from_row(row_dict).to_dict()
         d["recall_count"] = row_dict.get("recall_count", 0) or 0
@@ -1369,10 +1417,17 @@ class MemoryStore:
                     row = rows[0]
                 elif len(rows) > 1:
                     conn.execute("ROLLBACK")
-                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
+                    return {
+                        "error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. "
+                        "Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. "
+                        "Run 'memory list' or 'memory search' to find exact hashes."
+                    }
             if not row:
                 conn.execute("ROLLBACK")
-                return {"error": f"Memory not found: {content_hash}. The hash may be incorrect, or the memory was deleted. Use 'memory list' to see existing memories, or 'memory search <query>' to find by content."}
+                return {
+                    "error": f"Memory not found: {content_hash}. The hash may be incorrect, or the memory was deleted. "
+                    "Use 'memory list' to see existing memories, or 'memory search <query>' to find by content."
+                }
 
             sets = []
             params: list = []
@@ -1383,6 +1438,7 @@ class MemoryStore:
                 new_hash = hashlib.sha256(new_content.encode()).hexdigest()
                 # Recompute embedding
                 from .embeddings import get_model
+
                 new_embedding = get_model().embed(new_content)
                 sets.append("content = ?")
                 params.append(new_content)
@@ -1426,7 +1482,7 @@ class MemoryStore:
 
             if not preserve_timestamps or sets:
                 now = time.time()
-                now_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+                now_iso = datetime.fromtimestamp(now, tz=UTC).isoformat()
                 sets.append("updated_at = ?")
                 params.append(now)
                 sets.append("updated_at_iso = ?")
@@ -1434,7 +1490,10 @@ class MemoryStore:
 
             if not sets:
                 conn.execute("ROLLBACK")
-                return {"error": "No valid updates provided. Supported fields: content, tags, memory_type, metadata, importance, confidence. Example: memory update <hash> --content 'new text' --tags 'tag1,tag2'"}
+                return {
+                    "error": "No valid updates provided. Supported fields: content, tags, memory_type, metadata, "
+                    "importance, confidence. Example: memory update <hash> --content 'new text' --tags 'tag1,tag2'"
+                }
 
             params.append(row["id"])
             conn.execute(
@@ -1463,10 +1522,8 @@ class MemoryStore:
         try:
             return self._stats_inner(conn, after, before, top_recalled, never_recalled, stale)
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 conn.execute("ROLLBACK")  # read-only, nothing to commit
-            except Exception:
-                pass
 
     def _stats_inner(
         self,
@@ -1481,19 +1538,17 @@ class MemoryStore:
         ev_clauses: list[str] = []
         ev_params: list = []
         if after:
-            dt = datetime.fromisoformat(after).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(after).replace(tzinfo=UTC)
             ev_clauses.append("timestamp >= ?")
             ev_params.append(dt.timestamp())
         if before:
-            dt = datetime.fromisoformat(before).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(before).replace(tzinfo=UTC)
             ev_clauses.append("timestamp <= ?")
             ev_params.append(dt.timestamp())
         ev_where = (" AND " + " AND ".join(ev_clauses)) if ev_clauses else ""
 
         # --- Memory counts ---
-        total = conn.execute(
-            "SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL"
-        ).fetchone()["cnt"]
+        total = conn.execute("SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL").fetchone()["cnt"]
         recalled = conn.execute(
             "SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL AND recall_count > 0"
         ).fetchone()["cnt"]
@@ -1510,11 +1565,11 @@ class MemoryStore:
             sql = f"SELECT COUNT(*) as cnt FROM operation_events WHERE operation = ?{ev_where}"
             if extra:
                 sql += f" AND {extra}"
-            return conn.execute(sql, [op] + ev_params).fetchone()["cnt"]
+            return conn.execute(sql, [op, *ev_params]).fetchone()["cnt"]
 
         def _ev_avg(op: str, col: str) -> float | None:
             sql = f"SELECT AVG({col}) as val FROM operation_events WHERE operation = ? AND {col} IS NOT NULL{ev_where}"
-            row = conn.execute(sql, [op] + ev_params).fetchone()
+            row = conn.execute(sql, [op, *ev_params]).fetchone()
             v = row["val"]
             return round(v, 2) if v is not None else None
 
@@ -1532,24 +1587,29 @@ class MemoryStore:
         ).fetchone()["ts"]
         days_active = max(1.0, (time.time() - first_ts) / 86400) if first_ts else 1.0
 
-        result.update({
-            "stores_total": stores_total,
-            "stores_per_day": round(stores_total / days_active, 1),
-            "duplicates_total": duplicates_total,
-            "dedup_rate": round(duplicates_total / dedup_attempts, 3) if dedup_attempts else None,
-            "searches_total": searches_total,
-            "searches_no_results": searches_no_results,
-            "search_hit_rate": round((searches_total - searches_no_results) / searches_total, 3) if searches_total else None,
-            "avg_top_similarity": _ev_avg("search", "top_similarity"),
-            "avg_results_per_search": _ev_avg("search", "result_count"),
-            "total_chars_returned": conn.execute(
-                f"SELECT COALESCE(SUM(chars_returned), 0) as val FROM operation_events WHERE operation = 'search'{ev_where}",
-                ev_params,
-            ).fetchone()["val"],
-            "deletes_total": deletes_total,
-            "avg_store_ms": _ev_avg("store", "duration_ms"),
-            "avg_search_ms": _ev_avg("search", "duration_ms"),
-        })
+        result.update(
+            {
+                "stores_total": stores_total,
+                "stores_per_day": round(stores_total / days_active, 1),
+                "duplicates_total": duplicates_total,
+                "dedup_rate": round(duplicates_total / dedup_attempts, 3) if dedup_attempts else None,
+                "searches_total": searches_total,
+                "searches_no_results": searches_no_results,
+                "search_hit_rate": round((searches_total - searches_no_results) / searches_total, 3)
+                if searches_total
+                else None,
+                "avg_top_similarity": _ev_avg("search", "top_similarity"),
+                "avg_results_per_search": _ev_avg("search", "result_count"),
+                "total_chars_returned": conn.execute(
+                    f"SELECT COALESCE(SUM(chars_returned), 0) as val FROM operation_events "
+                    f"WHERE operation = 'search'{ev_where}",
+                    ev_params,
+                ).fetchone()["val"],
+                "deletes_total": deletes_total,
+                "avg_store_ms": _ev_avg("store", "duration_ms"),
+                "avg_search_ms": _ev_avg("search", "duration_ms"),
+            }
+        )
 
         # --- Top recalled memories ---
         if top_recalled:
@@ -1582,7 +1642,9 @@ class MemoryStore:
                     "content_hash": r["content_hash"],
                     "memory_type": r["memory_type"],
                     "content_preview": r["content"][:120],
-                    "created_at_iso": datetime.fromtimestamp(r["created_at"], tz=timezone.utc).isoformat() if r["created_at"] else None,
+                    "created_at_iso": datetime.fromtimestamp(r["created_at"], tz=UTC).isoformat()
+                    if r["created_at"]
+                    else None,
                     "tags": _safe_tags(r["tags"]),
                 }
                 for r in rows
@@ -1600,16 +1662,16 @@ class MemoryStore:
                     "content_hash": r["content_hash"],
                     "memory_type": r["memory_type"],
                     "content_preview": r["content"][:120],
-                    "created_at_iso": datetime.fromtimestamp(r["created_at"], tz=timezone.utc).isoformat() if r["created_at"] else None,
+                    "created_at_iso": datetime.fromtimestamp(r["created_at"], tz=UTC).isoformat()
+                    if r["created_at"]
+                    else None,
                     "tags": _safe_tags(r["tags"]),
                 }
                 for r in rows
             ]
 
         # --- Top tags across recalled memories ---
-        tag_rows = conn.execute(
-            "SELECT tags FROM memories WHERE deleted_at IS NULL AND recall_count > 0"
-        ).fetchall()
+        tag_rows = conn.execute("SELECT tags FROM memories WHERE deleted_at IS NULL AND recall_count > 0").fetchall()
         tags_flat = (t for r in tag_rows for t in _safe_tags(r["tags"]))
         result["top_tags"] = Counter(tags_flat).most_common(15)
 
@@ -1620,21 +1682,14 @@ class MemoryStore:
     def health(self) -> dict:
         """Database health and stats."""
         conn = self._get_conn()
-        total = conn.execute(
-            "SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL"
-        ).fetchone()["cnt"]
-        deleted = conn.execute(
-            "SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NOT NULL"
-        ).fetchone()["cnt"]
-        embeddings = conn.execute(
-            "SELECT COUNT(*) as cnt FROM memory_embeddings_rowids"
-        ).fetchone()["cnt"]
+        total = conn.execute("SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL").fetchone()["cnt"]
+        deleted = conn.execute("SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NOT NULL").fetchone()["cnt"]
+        embeddings = conn.execute("SELECT COUNT(*) as cnt FROM memory_embeddings_rowids").fetchone()["cnt"]
 
         db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
 
         types = conn.execute(
-            "SELECT memory_type, COUNT(*) as cnt FROM memories "
-            "WHERE deleted_at IS NULL GROUP BY memory_type"
+            "SELECT memory_type, COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL GROUP BY memory_type"
         ).fetchall()
 
         return {
@@ -1821,11 +1876,13 @@ class MemoryStore:
                         keep, remove = ri, rj
                     else:
                         keep, remove = rj, ri
-                    pairs.append({
-                        "keep_hash": keep["content_hash"],
-                        "remove_hash": remove["content_hash"],
-                        "similarity": round(sim, 4),
-                    })
+                    pairs.append(
+                        {
+                            "keep_hash": keep["content_hash"],
+                            "remove_hash": remove["content_hash"],
+                            "similarity": round(sim, 4),
+                        }
+                    )
                     merged_ids.add(remove["id"])
 
         if dry_run:
@@ -1847,14 +1904,10 @@ class MemoryStore:
                 remove_h = p["remove_hash"]
                 # Union tags
                 keep_tags = _safe_tags(
-                    conn.execute(
-                        "SELECT tags FROM memories WHERE content_hash = ?", (keep_h,)
-                    ).fetchone()["tags"]
+                    conn.execute("SELECT tags FROM memories WHERE content_hash = ?", (keep_h,)).fetchone()["tags"]
                 )
                 remove_tags = _safe_tags(
-                    conn.execute(
-                        "SELECT tags FROM memories WHERE content_hash = ?", (remove_h,)
-                    ).fetchone()["tags"]
+                    conn.execute("SELECT tags FROM memories WHERE content_hash = ?", (remove_h,)).fetchone()["tags"]
                 )
                 merged_tags = list(dict.fromkeys(keep_tags + remove_tags))  # preserve order, dedup
                 conn.execute(
@@ -1862,22 +1915,18 @@ class MemoryStore:
                     (json.dumps(merged_tags), keep_h),
                 )
                 # Soft-delete the removed memory
-                remove_row = conn.execute(
-                    "SELECT id FROM memories WHERE content_hash = ?", (remove_h,)
-                ).fetchone()
+                remove_row = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (remove_h,)).fetchone()
                 conn.execute(
                     "UPDATE memories SET deleted_at = ? WHERE id = ?",
                     (now, remove_row["id"]),
                 )
-                conn.execute(
-                    "DELETE FROM memory_embeddings WHERE rowid = ?", (remove_row["id"],)
-                )
-                conn.execute(
-                    "DELETE FROM memory_fts WHERE rowid = ?", (remove_row["id"],)
-                )
+                conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (remove_row["id"],))
+                conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (remove_row["id"],))
 
             duration_ms = (time.time() - start) * 1000
-            self._track_event(conn, "consolidate",
+            self._track_event(
+                conn,
+                "consolidate",
                 duration_ms=duration_ms,
                 result_count=len(pairs),
             )
@@ -1913,7 +1962,9 @@ class MemoryStore:
             }
             conn.execute("BEGIN IMMEDIATE")
             try:
-                self._track_event(conn, "briefing",
+                self._track_event(
+                    conn,
+                    "briefing",
                     duration_ms=(time.time() - start) * 1000,
                     result_count=0,
                 )
@@ -1930,19 +1981,23 @@ class MemoryStore:
         scored = []
         for r in rows:
             conf = compute_confidence(
-                r["confidence"] or 1.0, r["memory_type"],
-                r["last_recalled_at"], r["created_at"],
+                r["confidence"] or 1.0,
+                r["memory_type"],
+                r["last_recalled_at"],
+                r["created_at"],
             )
             imp = r["importance"] or 0.5
             days = max(0.0, (now - r["created_at"]) / 86400)
             recency = 1.0 / (1.0 + days)
             score = conf * imp * recency
-            scored.append({
-                "content": r["content"],
-                "memory_type": r["memory_type"],
-                "score": score,
-                "created_at": r["created_at"],
-            })
+            scored.append(
+                {
+                    "content": r["content"],
+                    "memory_type": r["memory_type"],
+                    "score": score,
+                    "created_at": r["created_at"],
+                }
+            )
 
         # Section budgets
         section_budgets = {
@@ -1962,9 +2017,7 @@ class MemoryStore:
             section_budgets[k] = max(1, int(section_budgets[k] * scale))
 
         # Group memories into sections
-        _TYPE_PREFIX_RE = re.compile(
-            r"^\[(Pattern|Observation|Decision|Learning|Error|Note|Reference)\]\s*"
-        )
+        type_prefix_re = re.compile(r"^\[(Pattern|Observation|Decision|Learning|Error|Note|Reference)\]\s*")
         known_sections = {"decision", "pattern", "error", "learning", "reference"}
         groups: dict[str, list] = {k: [] for k in section_budgets}
 
@@ -1991,7 +2044,7 @@ class MemoryStore:
                 if len(lines) >= line_budget:
                     break
                 first_line = m["content"].split("\n")[0]
-                first_line = _TYPE_PREFIX_RE.sub("", first_line)
+                first_line = type_prefix_re.sub("", first_line)
                 if len(first_line) > 120:
                     first_line = first_line[:117] + "..."
                 lines.append(first_line)
@@ -2032,7 +2085,9 @@ class MemoryStore:
         duration_ms = (time.time() - start) * 1000
         conn.execute("BEGIN IMMEDIATE")
         try:
-            self._track_event(conn, "briefing",
+            self._track_event(
+                conn,
+                "briefing",
                 duration_ms=duration_ms,
                 result_count=total_lines,
             )
@@ -2062,20 +2117,18 @@ class MemoryStore:
             now = time.time()
             for r in rows:
                 new_conf = compute_confidence(
-                    r["confidence"] or 1.0, r["memory_type"],
-                    r["last_recalled_at"], r["created_at"],
+                    r["confidence"] or 1.0,
+                    r["memory_type"],
+                    r["last_recalled_at"],
+                    r["created_at"],
                 )
                 if min_confidence > 0 and new_conf < min_confidence:
                     conn.execute(
                         "UPDATE memories SET deleted_at = ? WHERE id = ?",
                         (now, r["id"]),
                     )
-                    conn.execute(
-                        "DELETE FROM memory_embeddings WHERE rowid = ?", (r["id"],)
-                    )
-                    conn.execute(
-                        "DELETE FROM memory_fts WHERE rowid = ?", (r["id"],)
-                    )
+                    conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (r["id"],))
+                    conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (r["id"],))
                     pruned += 1
                 elif abs(new_conf - (r["confidence"] or 1.0)) > 0.0001:
                     conn.execute(
@@ -2123,7 +2176,9 @@ class MemoryStore:
             ).fetchone()
             if existing:
                 duration_ms = (time.time() - start) * 1000
-                self._track_event(conn, "doc_store",
+                self._track_event(
+                    conn,
+                    "doc_store",
                     duration_ms=duration_ms,
                     content_hash=doc.content_hash,
                     duplicate_detected=True,
@@ -2137,6 +2192,7 @@ class MemoryStore:
 
             # Compute embedding of summary
             from .embeddings import get_model
+
             embedding = get_model().embed(summary)
 
             # Insert document
@@ -2150,9 +2206,9 @@ class MemoryStore:
                 """,
                 doc.to_row(),
             )
-            doc_id = conn.execute(
-                "SELECT id FROM documents WHERE content_hash = ?", (doc.content_hash,)
-            ).fetchone()["id"]
+            doc_id = conn.execute("SELECT id FROM documents WHERE content_hash = ?", (doc.content_hash,)).fetchone()[
+                "id"
+            ]
 
             # Store embedding
             conn.execute(
@@ -2167,7 +2223,9 @@ class MemoryStore:
             )
 
             duration_ms = (time.time() - start) * 1000
-            self._track_event(conn, "doc_store",
+            self._track_event(
+                conn,
+                "doc_store",
                 duration_ms=duration_ms,
                 content_hash=doc.content_hash,
                 duplicate_detected=False,
@@ -2198,9 +2256,17 @@ class MemoryStore:
             if len(rows) == 1:
                 row = rows[0]
             elif len(rows) > 1:
-                return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
+                return {
+                    "error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. "
+                    "Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. "
+                    "Run 'memory list' or 'memory search' to find exact hashes."
+                }
         if not row:
-            return {"error": f"Document not found: {content_hash}. The hash may be incorrect, or the document was deleted. Use 'memory doc list' to see existing documents, or 'memory doc search <query>' to find by content."}
+            return {
+                "error": f"Document not found: {content_hash}. The hash may be incorrect, "
+                "or the document was deleted. Use 'memory doc list' to see existing documents, "
+                "or 'memory doc search <query>' to find by content."
+            }
         row_dict = dict(row)
         d = Document.from_row(row_dict).to_dict()
         d["recall_count"] = row_dict.get("recall_count", 0) or 0
@@ -2265,14 +2331,18 @@ class MemoryStore:
 
         if mode in ("semantic", "auto"):
             sem_results = self._search_docs_semantic(
-                conn, query, limit=limit * 2 if mode == "auto" else limit,
+                conn,
+                query,
+                limit=limit * 2 if mode == "auto" else limit,
             )
             for r in sem_results:
                 results_by_hash[r["content_hash"]] = r
 
         if mode in ("fts", "auto"):
             fts_results = self._search_docs_fts(
-                conn, query, limit=limit * 2 if mode == "auto" else limit,
+                conn,
+                query,
+                limit=limit * 2 if mode == "auto" else limit,
             )
             for r in fts_results:
                 h = r["content_hash"]
@@ -2280,7 +2350,8 @@ class MemoryStore:
                     # Merge: take max similarity, add scores
                     existing = results_by_hash[h]
                     existing["similarity"] = max(
-                        existing.get("similarity", 0), r.get("similarity", 0),
+                        existing.get("similarity", 0),
+                        r.get("similarity", 0),
                     )
                     existing["score"] = existing.get("score", 0) + r.get("score", 0)
                 else:
@@ -2307,7 +2378,9 @@ class MemoryStore:
                     "last_recalled_at = ? WHERE content_hash = ? AND deleted_at IS NULL",
                     (now, r["content_hash"]),
                 )
-            self._track_event(conn, "doc_search",
+            self._track_event(
+                conn,
+                "doc_search",
                 query=query,
                 search_mode=mode,
                 result_count=len(results[:limit]),
@@ -2328,6 +2401,7 @@ class MemoryStore:
     ) -> list[dict]:
         """Cosine similarity search on document summary embeddings."""
         from .embeddings import get_model
+
         embedding = get_model().embed(query)
 
         fetch_limit = max(limit * 3, 30)
@@ -2385,8 +2459,7 @@ class MemoryStore:
         fetch_limit = max(limit * 3, 30)
 
         fts_rows = conn.execute(
-            "SELECT rowid, rank FROM document_fts "
-            "WHERE document_fts MATCH ? ORDER BY rank LIMIT ?",
+            "SELECT rowid, rank FROM document_fts WHERE document_fts MATCH ? ORDER BY rank LIMIT ?",
             (safe_query, fetch_limit),
         ).fetchall()
 
@@ -2442,10 +2515,18 @@ class MemoryStore:
                     row = rows[0]
                 elif len(rows) > 1:
                     conn.execute("ROLLBACK")
-                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
+                    return {
+                        "error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. "
+                        "Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. "
+                        "Run 'memory list' or 'memory search' to find exact hashes."
+                    }
             if not row:
                 conn.execute("ROLLBACK")
-                return {"error": f"Document not found: {content_hash}. The hash may be incorrect, or the document was deleted. Use 'memory doc list' to see existing documents, or 'memory doc search <query>' to find by content."}
+                return {
+                    "error": f"Document not found: {content_hash}. The hash may be incorrect, "
+                    "or the document was deleted. Use 'memory doc list' to see existing documents, "
+                    "or 'memory doc search <query>' to find by content."
+                }
 
             row_dict = dict(row)
             doc_id = row_dict["id"]
@@ -2498,11 +2579,14 @@ class MemoryStore:
 
             if not sets:
                 conn.execute("ROLLBACK")
-                return {"error": "No valid updates provided. Supported fields: content, tags, memory_type, metadata, importance, confidence. Example: memory update <hash> --content 'new text' --tags 'tag1,tag2'"}
+                return {
+                    "error": "No valid updates provided. Supported fields: content, tags, memory_type, metadata, "
+                    "importance, confidence. Example: memory update <hash> --content 'new text' --tags 'tag1,tag2'"
+                }
 
             # Always update timestamps
             now = time.time()
-            now_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+            now_iso = datetime.fromtimestamp(now, tz=UTC).isoformat()
             sets.append("updated_at = ?")
             params.append(now)
             sets.append("updated_at_iso = ?")
@@ -2517,10 +2601,9 @@ class MemoryStore:
             # Re-embed summary if it changed
             if summary_changed:
                 from .embeddings import get_model
+
                 new_embedding = get_model().embed(kwargs["summary"])
-                conn.execute(
-                    "DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,)
-                )
+                conn.execute("DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,))
                 conn.execute(
                     "INSERT INTO document_embeddings (rowid, summary_embedding) VALUES (?, ?)",
                     (doc_id, _serialize_f32(new_embedding)),
@@ -2531,8 +2614,7 @@ class MemoryStore:
             # with the original values, then re-insert with new values.
             if title_changed or body_changed:
                 conn.execute(
-                    "INSERT INTO document_fts(document_fts, rowid, title, body) "
-                    "VALUES('delete', ?, ?, ?)",
+                    "INSERT INTO document_fts(document_fts, rowid, title, body) VALUES('delete', ?, ?, ?)",
                     (doc_id, row_dict["title"], row_dict["body"]),
                 )
                 new_title = kwargs.get("title", row_dict["title"])
@@ -2569,11 +2651,19 @@ class MemoryStore:
                 ).fetchall()
                 if len(rows) > 1:
                     conn.execute("ROLLBACK")
-                    return {"error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. Run 'memory list' or 'memory search' to find exact hashes."}
+                    return {
+                        "error": f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. "
+                        "Use a longer prefix (or the full 64-char hash) to uniquely identify the entry. "
+                        "Run 'memory list' or 'memory search' to find exact hashes."
+                    }
 
             if not rows:
                 conn.execute("ROLLBACK")
-                return {"error": f"Document not found: {content_hash}. The hash may be incorrect, or the document was deleted. Use 'memory doc list' to see existing documents, or 'memory doc search <query>' to find by content."}
+                return {
+                    "error": f"Document not found: {content_hash}. The hash may be incorrect, "
+                    "or the document was deleted. Use 'memory doc list' to see existing documents, "
+                    "or 'memory doc search <query>' to find by content."
+                }
 
             if dry_run:
                 conn.execute("ROLLBACK")
@@ -2592,12 +2682,12 @@ class MemoryStore:
                 (time.time(), doc_id),
             )
             # Hard-delete embedding
-            conn.execute(
-                "DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,)
-            )
+            conn.execute("DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,))
 
             duration_ms = (time.time() - start) * 1000
-            self._track_event(conn, "doc_delete",
+            self._track_event(
+                conn,
+                "doc_delete",
                 duration_ms=duration_ms,
                 content_hash=full_hash,
                 result_count=1,
@@ -2616,12 +2706,10 @@ class MemoryStore:
         Returns a portable dict suitable for JSON serialization.
         """
         conn = self._get_conn()
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(UTC).isoformat()
 
         # Export memories
-        mem_rows = conn.execute(
-            "SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY created_at"
-        ).fetchall()
+        mem_rows = conn.execute("SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY created_at").fetchall()
         memories = []
         for r in mem_rows:
             row_dict = dict(r)
@@ -2638,9 +2726,7 @@ class MemoryStore:
 
         # Export documents
         if include_documents:
-            doc_rows = conn.execute(
-                "SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY created_at"
-            ).fetchall()
+            doc_rows = conn.execute("SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY created_at").fetchall()
             documents = [Document.from_row(dict(r)).to_dict() for r in doc_rows]
             result["documents"] = documents
         else:

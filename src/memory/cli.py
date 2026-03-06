@@ -6,7 +6,8 @@ import argparse
 import json
 import re
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .core import MemoryStore
 
@@ -35,9 +36,7 @@ def _short_hash(h: str) -> str:
     return h[:16]
 
 
-_TYPE_PREFIX_RE = re.compile(
-    r"^\[(Pattern|Observation|Decision|Learning|Error|Note|Reference)\]\s*"
-)
+_TYPE_PREFIX_RE = re.compile(r"^\[(Pattern|Observation|Decision|Learning|Error|Note|Reference)\]\s*")
 
 
 def _fmt_health(d: dict) -> str:
@@ -158,7 +157,9 @@ def _fmt_list(d: dict, depth: str = "summary") -> str:
 
 def _fmt_store(d: dict) -> str:
     if d.get("similar_hash"):
-        return f"duplicate {_short_hash(d['content_hash'])} (similar to {_short_hash(d['similar_hash'])} {d['message']})"
+        return (
+            f"duplicate {_short_hash(d['content_hash'])} (similar to {_short_hash(d['similar_hash'])} {d['message']})"
+        )
     return f"{d['status']} {_short_hash(d['content_hash'])}"
 
 
@@ -276,14 +277,16 @@ def _fmt_consolidate(d: dict) -> str:
     if d.get("dry_run"):
         lines = [f"would consolidate {d.get('would_consolidate', 0)} pairs:"]
         for p in d.get("pairs", []):
-            lines.append(f"  keep {_short_hash(p['keep_hash'])} ← remove {_short_hash(p['remove_hash'])} (sim={p['similarity']:.2f})")
+            keep, remove = _short_hash(p["keep_hash"]), _short_hash(p["remove_hash"])
+            lines.append(f"  keep {keep} ← remove {remove} (sim={p['similarity']:.2f})")
         return "\n".join(lines)
     count = d.get("consolidated", 0)
     if not count:
         return "0 pairs consolidated"
     lines = [f"{count} pairs consolidated:"]
     for p in d.get("pairs", []):
-        lines.append(f"  keep {_short_hash(p['keep_hash'])} ← remove {_short_hash(p['remove_hash'])} (sim={p['similarity']:.2f})")
+        keep, remove = _short_hash(p["keep_hash"]), _short_hash(p["remove_hash"])
+        lines.append(f"  keep {keep} ← remove {remove} (sim={p['similarity']:.2f})")
     return "\n".join(lines)
 
 
@@ -305,7 +308,8 @@ def _fmt_stats(d: dict) -> str:
     lines = [
         "=== Memory Statistics ===",
         "",
-        f"Memories: {total} total, {recalled} recalled ({recalled_pct:.1f}%), {never} never recalled ({never_pct:.1f}%)",
+        f"Memories: {total} total, {recalled} recalled ({recalled_pct:.1f}%), "
+        f"{never} never recalled ({never_pct:.1f}%)",
         "",
         "Operations:",
     ]
@@ -482,6 +486,7 @@ def _fmt_doc_get(d: dict) -> str:
 
 # --- Command handlers ---
 
+
 def cmd_store(args, store: MemoryStore, fmt: str) -> None:
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
     try:
@@ -490,8 +495,11 @@ def cmd_store(args, store: MemoryStore, fmt: str) -> None:
         meta = {}
     dedup = None if args.force else args.dedup_threshold
     result = store.store(
-        args.content, tags=tag_list, memory_type=args.memory_type,
-        metadata=meta, dedup_threshold=dedup,
+        args.content,
+        tags=tag_list,
+        memory_type=args.memory_type,
+        metadata=meta,
+        dedup_threshold=dedup,
         importance=args.importance,
     )
     _out(fmt, result, _fmt_store)
@@ -507,16 +515,22 @@ def cmd_store_batch(args, store: MemoryStore, fmt: str) -> None:
     except json.JSONDecodeError as e:
         print(f"Error: Invalid JSON at line {e.lineno}, column {e.colno}: {e.msg}", file=sys.stderr)
         if args.file_path == "-":
-            print("\nHint: Use a heredoc to avoid shell quoting issues:", file=sys.stderr)
-            print("  cat <<'ENDJSON' | memory -f text store-batch --dedup 0.85", file=sys.stderr)
-            print('  [{"content": "...", "tags": ["t"], "memory_type": "decision"}]', file=sys.stderr)
-            print("  ENDJSON", file=sys.stderr)
+            print(
+                "\nHint: Use a heredoc to avoid shell quoting issues:\n"
+                "  cat <<'ENDJSON' | memory -f text store-batch --dedup 0.85\n"
+                '  [{"content": "...", "tags": ["t"], "memory_type": "decision"}]\n'
+                "  ENDJSON",
+                file=sys.stderr,
+            )
         sys.exit(1)
     if not isinstance(data, list):
-        print("Error: expected a JSON array of memory objects.", file=sys.stderr)
-        print("\nExpected format:", file=sys.stderr)
-        print('  [{"content": "...", "tags": ["tag1"], "memory_type": "decision"}, ...]', file=sys.stderr)
-        print("\nUsage: cat items.json | memory store-batch --dedup 0.85", file=sys.stderr)
+        print(
+            "Error: expected a JSON array of memory objects.\n"
+            "\nExpected format:\n"
+            '  [{"content": "...", "tags": ["tag1"], "memory_type": "decision"}, ...]\n'
+            "\nUsage: cat items.json | memory store-batch --dedup 0.85",
+            file=sys.stderr,
+        )
         sys.exit(1)
     results = store.store_batch(data, dedup_threshold=args.dedup_threshold)
     _out(fmt, results, _fmt_store_batch)
@@ -527,9 +541,15 @@ def cmd_search(args, store: MemoryStore, fmt: str) -> None:
     exclude_tag_list = [t.strip() for t in args.exclude_tags.split(",") if t.strip()] if args.exclude_tags else None
     type_list = [t.strip() for t in args.types.split(",") if t.strip()] if args.types else None
     results = store.search(
-        query=args.query, mode=args.mode, limit=args.limit, tags=tag_list,
-        time_expr=args.time_expr, after=args.after, before=args.before,
-        exclude_tags=exclude_tag_list, memory_types=type_list,
+        query=args.query,
+        mode=args.mode,
+        limit=args.limit,
+        tags=tag_list,
+        time_expr=args.time_expr,
+        after=args.after,
+        before=args.before,
+        exclude_tags=exclude_tag_list,
+        memory_types=type_list,
         min_importance=args.min_importance,
     )
     if args.min_similarity is not None:
@@ -557,18 +577,26 @@ def cmd_search_batch(args, store: MemoryStore, fmt: str) -> None:
             with open(args.file_path) as f:
                 data = json.load(f)
     except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON: {e.msg}", file=sys.stderr)
-        print('\nExpected format: ["query one", "query two", ...]', file=sys.stderr)
-        print("\nUsage: echo '[\"terraform\", \"kubernetes\"]' | memory search-batch --limit 5", file=sys.stderr)
+        print(
+            f"Error: Invalid JSON: {e.msg}\n"
+            '\nExpected format: ["query one", "query two", ...]\n'
+            '\nUsage: echo \'["terraform", "kubernetes"]\' | memory search-batch --limit 5',
+            file=sys.stderr,
+        )
         sys.exit(1)
     if not isinstance(data, list):
-        print("Error: expected a JSON array of query strings.", file=sys.stderr)
-        print('\nExpected format: ["query one", "query two", ...]', file=sys.stderr)
-        print("\nUsage: echo '[\"terraform\", \"kubernetes\"]' | memory search-batch --limit 5", file=sys.stderr)
+        print(
+            "Error: expected a JSON array of query strings.\n"
+            '\nExpected format: ["query one", "query two", ...]\n'
+            '\nUsage: echo \'["terraform", "kubernetes"]\' | memory search-batch --limit 5',
+            file=sys.stderr,
+        )
         sys.exit(1)
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     results = store.search_batch(
-        queries=data, limit=args.limit, tags=tag_list,
+        queries=data,
+        limit=args.limit,
+        tags=tag_list,
     )
     _out(fmt, results, _fmt_search_batch)
 
@@ -584,8 +612,11 @@ def cmd_delete(args, store: MemoryStore, fmt: str) -> None:
     content_hash = args.hash_arg or args.content_hash
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     result = store.delete(
-        content_hash=content_hash, tags=tag_list,
-        before=args.before, after=args.after, dry_run=args.dry_run,
+        content_hash=content_hash,
+        tags=tag_list,
+        before=args.before,
+        after=args.after,
+        dry_run=args.dry_run,
     )
     _out(fmt, result, _fmt_delete)
 
@@ -608,19 +639,26 @@ def cmd_update(args, store: MemoryStore, fmt: str) -> None:
         try:
             updates["metadata"] = json.loads(args.metadata)
         except json.JSONDecodeError:
-            print("Error: --metadata must be valid JSON (e.g. '{\"key\": \"value\"}').", file=sys.stderr)
-            print("\nUsage: memory update <hash> --metadata '{\"source\": \"manual\"}'", file=sys.stderr)
+            print(
+                'Error: --metadata must be valid JSON (e.g. \'{"key": "value"}\').\n'
+                '\nUsage: memory update <hash> --metadata \'{"source": "manual"}\'',
+                file=sys.stderr,
+            )
             sys.exit(1)
     if args.importance is not None:
         updates["importance"] = args.importance
     if args.confidence is not None:
         updates["confidence"] = args.confidence
     if not updates:
-        print("Error: no updates specified. Provide at least one of: --content, --tags, --type, --metadata, --importance, --confidence.", file=sys.stderr)
-        print("\nUsage examples:", file=sys.stderr)
-        print("  memory update <hash> --content \"new content\"", file=sys.stderr)
-        print("  memory update <hash> --tags \"tag1,tag2\" --importance 0.9", file=sys.stderr)
-        print("  memory update <hash> --type decision", file=sys.stderr)
+        print(
+            "Error: no updates specified. Provide at least one of: "
+            "--content, --tags, --type, --metadata, --importance, --confidence.\n"
+            "\nUsage examples:\n"
+            '  memory update <hash> --content "new content"\n'
+            '  memory update <hash> --tags "tag1,tag2" --importance 0.9\n'
+            "  memory update <hash> --type decision",
+            file=sys.stderr,
+        )
         sys.exit(1)
     result = store.update(content_hash=args.content_hash, updates=updates)
     _out(fmt, result, _fmt_update)
@@ -646,8 +684,11 @@ def cmd_rename_tag(args, store: MemoryStore, fmt: str) -> None:
 def cmd_merge_tags(args, store: MemoryStore, fmt: str) -> None:
     source_list = [t.strip() for t in args.source_tags.split(",") if t.strip()]
     if not source_list:
-        print("Error: no source tags specified. Provide comma-separated tags to merge.", file=sys.stderr)
-        print("\nUsage: memory merge-tags \"old:tag1,old:tag2\" \"new:tag\"", file=sys.stderr)
+        print(
+            "Error: no source tags specified. Provide comma-separated tags to merge.\n"
+            '\nUsage: memory merge-tags "old:tag1,old:tag2" "new:tag"',
+            file=sys.stderr,
+        )
         sys.exit(1)
     result = store.merge_tags(source_list, args.target_tag)
     _out(fmt, result, _fmt_merge_tags)
@@ -677,15 +718,21 @@ def cmd_import(args, store: MemoryStore, fmt: str) -> None:
             with open(args.file_path) as f:
                 data = json.load(f)
     except json.JSONDecodeError as e:
-        print(f"Error: Invalid JSON: {e.msg}", file=sys.stderr)
-        print("\nThe import file must be a JSON object produced by 'memory export'.", file=sys.stderr)
-        print("Usage: memory import --file /path/to/backup.json [--force]", file=sys.stderr)
+        print(
+            f"Error: Invalid JSON: {e.msg}\n"
+            "\nThe import file must be a JSON object produced by 'memory export'.\n"
+            "Usage: memory import --file /path/to/backup.json [--force]",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if not isinstance(data, dict) or "memories" not in data:
-        print("Error: expected export format with 'memories' key.", file=sys.stderr)
-        print("\nThe import file must be a JSON object with at least a 'memories' array,", file=sys.stderr)
-        print("as produced by 'memory export'. Example structure:", file=sys.stderr)
-        print('  {"version": 1, "memories": [...], "documents": [...]}', file=sys.stderr)
+        print(
+            "Error: expected export format with 'memories' key.\n"
+            "\nThe import file must be a JSON object with at least a 'memories' array,\n"
+            "as produced by 'memory export'. Example structure:\n"
+            '  {"version": 1, "memories": [...], "documents": [...]}',
+            file=sys.stderr,
+        )
         sys.exit(1)
     result = store.import_all(data, force=args.force)
     _out(fmt, result, _fmt_import)
@@ -714,8 +761,10 @@ def cmd_briefing(args, store: MemoryStore, fmt: str) -> None:
 
 def cmd_stats(args, store: MemoryStore, fmt: str) -> None:
     result = store.stats(
-        after=args.after, before=args.before,
-        top_recalled=args.top_recalled, never_recalled=args.never_recalled,
+        after=args.after,
+        before=args.before,
+        top_recalled=args.top_recalled,
+        never_recalled=args.never_recalled,
         stale=args.stale,
     )
     _out(fmt, result, _fmt_stats)
@@ -732,11 +781,14 @@ def cmd_doc_store(args, store: MemoryStore, fmt: str) -> None:
     elif args.body:
         body = args.body
     else:
-        print("Error: --body or --body-file is required to provide document content.", file=sys.stderr)
-        print("\nUsage examples:", file=sys.stderr)
-        print('  memory doc store --title "My Doc" --summary "A summary" --body "Short body text"', file=sys.stderr)
-        print('  cat doc.md | memory doc store --title "My Doc" --summary "A summary" --body-file -', file=sys.stderr)
-        print('  memory doc store --title "My Doc" --summary "A summary" --body-file /path/to/doc.md', file=sys.stderr)
+        print(
+            "Error: --body or --body-file is required to provide document content.\n"
+            "\nUsage examples:\n"
+            '  memory doc store --title "My Doc" --summary "A summary" --body "Short body text"\n'
+            '  cat doc.md | memory doc store --title "My Doc" --summary "A summary" --body-file -\n'
+            '  memory doc store --title "My Doc" --summary "A summary" --body-file /path/to/doc.md',
+            file=sys.stderr,
+        )
         sys.exit(1)
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
     try:
@@ -744,8 +796,12 @@ def cmd_doc_store(args, store: MemoryStore, fmt: str) -> None:
     except json.JSONDecodeError:
         meta = {}
     result = store.store_doc(
-        title=args.title, body=body, summary=args.summary,
-        doc_type=args.doc_type, tags=tag_list, metadata=meta,
+        title=args.title,
+        body=body,
+        summary=args.summary,
+        doc_type=args.doc_type,
+        tags=tag_list,
+        metadata=meta,
     )
     _out(fmt, result, _fmt_doc_store)
 
@@ -758,8 +814,11 @@ def cmd_doc_get(args, store: MemoryStore, fmt: str) -> None:
 def cmd_doc_search(args, store: MemoryStore, fmt: str) -> None:
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     results = store.search_docs(
-        query=args.query, mode=args.mode, limit=args.limit,
-        tags=tag_list, doc_type=args.doc_type,
+        query=args.query,
+        mode=args.mode,
+        limit=args.limit,
+        tags=tag_list,
+        doc_type=args.doc_type,
     )
     _out(fmt, results, _fmt_doc_search)
 
@@ -767,8 +826,10 @@ def cmd_doc_search(args, store: MemoryStore, fmt: str) -> None:
 def cmd_doc_list(args, store: MemoryStore, fmt: str) -> None:
     tag_list = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
     result = store.list_docs(
-        page=args.page, page_size=args.page_size,
-        tags=tag_list, doc_type=args.doc_type,
+        page=args.page,
+        page_size=args.page_size,
+        tags=tag_list,
+        doc_type=args.doc_type,
     )
     _out(fmt, result, _fmt_doc_list)
 
@@ -793,14 +854,18 @@ def cmd_doc_update(args, store: MemoryStore, fmt: str) -> None:
         try:
             kwargs["metadata"] = json.loads(args.metadata)
         except json.JSONDecodeError:
-            print("Error: --metadata must be valid JSON (e.g. '{\"key\": \"value\"}').", file=sys.stderr)
+            print('Error: --metadata must be valid JSON (e.g. \'{"key": "value"}\').', file=sys.stderr)
             sys.exit(1)
     if not kwargs:
-        print("Error: no updates specified. Provide at least one of: --title, --summary, --body-file, --type, --tags, --metadata.", file=sys.stderr)
-        print("\nUsage examples:", file=sys.stderr)
-        print("  memory doc update <hash> --title \"New Title\"", file=sys.stderr)
-        print("  memory doc update <hash> --summary \"Updated summary\" --body-file updated.md", file=sys.stderr)
-        print("  memory doc update <hash> --tags \"tag1,tag2\"", file=sys.stderr)
+        print(
+            "Error: no updates specified. Provide at least one of: "
+            "--title, --summary, --body-file, --type, --tags, --metadata.\n"
+            "\nUsage examples:\n"
+            '  memory doc update <hash> --title "New Title"\n'
+            '  memory doc update <hash> --summary "Updated summary" --body-file updated.md\n'
+            '  memory doc update <hash> --tags "tag1,tag2"',
+            file=sys.stderr,
+        )
         sys.exit(1)
     result = store.update_doc(content_hash=args.content_hash, **kwargs)
     _out(fmt, result, _fmt_doc_update)
@@ -809,9 +874,12 @@ def cmd_doc_update(args, store: MemoryStore, fmt: str) -> None:
 def cmd_doc_delete(args, store: MemoryStore, fmt: str) -> None:
     content_hash = args.hash_arg or args.content_hash
     if not content_hash:
-        print("Error: content hash required. Provide the hash as a positional arg or via --hash.", file=sys.stderr)
-        print("\nUsage: memory doc delete <hash> [--dry-run]", file=sys.stderr)
-        print("\nFind hashes with: memory doc list", file=sys.stderr)
+        print(
+            "Error: content hash required. Provide the hash as a positional arg or via --hash.\n"
+            "\nUsage: memory doc delete <hash> [--dry-run]\n"
+            "\nFind hashes with: memory doc list",
+            file=sys.stderr,
+        )
         sys.exit(1)
     result = store.delete_doc(content_hash=content_hash, dry_run=args.dry_run)
     _out(fmt, result, _fmt_doc_delete)
@@ -846,8 +914,11 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Memory CLI — store, search, and manage memories.",
     )
     parser.add_argument(
-        "--format", "-f", dest="fmt",
-        choices=["json", "text", "hook"], default="json",
+        "--format",
+        "-f",
+        dest="fmt",
+        choices=["json", "text", "hook"],
+        default="json",
         help="Output format",
     )
     sub = parser.add_subparsers(dest="command")
@@ -858,25 +929,38 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--type", dest="memory_type", default="note", help="Memory type")
     p.add_argument("--metadata", "-m", default="{}", help="JSON metadata")
-    p.add_argument("--dedup", dest="dedup_threshold", default=None, type=float,
-                   help="Skip if existing memory has similarity >= threshold (0.0-1.0)")
-    p.add_argument("--importance", default=None, type=float,
-                   help="Importance score (0.0-1.0). Auto-inferred if not set.")
-    p.add_argument("--force", action="store_true", default=False,
-                   help="Store even if dedup detects a similar memory")
+    p.add_argument(
+        "--dedup",
+        dest="dedup_threshold",
+        default=None,
+        type=float,
+        help="Skip if existing memory has similarity >= threshold (0.0-1.0)",
+    )
+    p.add_argument(
+        "--importance", default=None, type=float, help="Importance score (0.0-1.0). Auto-inferred if not set."
+    )
+    p.add_argument("--force", action="store_true", default=False, help="Store even if dedup detects a similar memory")
 
     # store-batch
     p = sub.add_parser("store-batch", help="Store multiple memories from a JSON array")
-    p.add_argument("--file", "-f", dest="file_path", default="-",
-                   help="JSON file with items (- for stdin)")
-    p.add_argument("--dedup", dest="dedup_threshold", default=None, type=float,
-                   help="Skip if existing memory has similarity >= threshold (0.0-1.0)")
+    p.add_argument("--file", "-f", dest="file_path", default="-", help="JSON file with items (- for stdin)")
+    p.add_argument(
+        "--dedup",
+        dest="dedup_threshold",
+        default=None,
+        type=float,
+        help="Skip if existing memory has similarity >= threshold (0.0-1.0)",
+    )
 
     # get
     p = sub.add_parser("get", help="Get a single memory by content hash")
     p.add_argument("content_hash", help="Full or prefix content hash")
-    p.add_argument("--depth", default="summary", choices=["titles", "summary", "full"],
-                   help="Output depth: titles (one-line), summary (default), full (all metadata)")
+    p.add_argument(
+        "--depth",
+        default="summary",
+        choices=["titles", "summary", "full"],
+        help="Output depth: titles (one-line), summary (default), full (all metadata)",
+    )
 
     # search
     p = sub.add_parser("search", help="Search memories")
@@ -888,18 +972,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--time-expr", default=None, help="Natural language time filter")
     p.add_argument("--after", default=None, help="ISO date (YYYY-MM-DD)")
     p.add_argument("--before", default=None, help="ISO date (YYYY-MM-DD)")
-    p.add_argument("--min-similarity", default=None, type=float,
-                   help="Filter results below this similarity threshold")
-    p.add_argument("--min-importance", default=None, type=float,
-                   help="Filter results below this importance threshold")
+    p.add_argument("--min-similarity", default=None, type=float, help="Filter results below this similarity threshold")
+    p.add_argument("--min-importance", default=None, type=float, help="Filter results below this importance threshold")
     p.add_argument("--types", default="", help="Comma-separated memory types to include")
-    p.add_argument("--depth", default="summary", choices=["titles", "summary", "full"],
-                   help="Output depth: titles (one-line), summary (default), full (all metadata)")
+    p.add_argument(
+        "--depth",
+        default="summary",
+        choices=["titles", "summary", "full"],
+        help="Output depth: titles (one-line), summary (default), full (all metadata)",
+    )
 
     # search-batch
     p = sub.add_parser("search-batch", help="Batch semantic search from JSON array of queries")
-    p.add_argument("--file", "-f", dest="file_path", default="-",
-                   help="JSON file with query strings (- for stdin)")
+    p.add_argument("--file", "-f", dest="file_path", default="-", help="JSON file with query strings (- for stdin)")
     p.add_argument("--limit", "-n", default=10, type=int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
 
@@ -909,8 +994,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--page-size", default=20, type=int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--type", dest="memory_type", default=None, help="Filter by memory type")
-    p.add_argument("--depth", default="summary", choices=["titles", "summary", "full"],
-                   help="Output depth: titles (one-line), summary (default), full (all metadata)")
+    p.add_argument(
+        "--depth",
+        default="summary",
+        choices=["titles", "summary", "full"],
+        help="Output depth: titles (one-line), summary (default), full (all metadata)",
+    )
 
     # delete
     p = sub.add_parser("delete", help="Delete memories by hash, tags, or time range")
@@ -953,39 +1042,44 @@ def _build_parser() -> argparse.ArgumentParser:
     # export
     p = sub.add_parser("export", help="Export all memories and documents to JSON")
     p.add_argument("--output", "-o", default=None, help="Output file (default: stdout)")
-    p.add_argument("--no-documents", action="store_true",
-                   help="Exclude documents from export")
+    p.add_argument("--no-documents", action="store_true", help="Exclude documents from export")
 
     # import
     p = sub.add_parser("import", help="Import memories and documents from JSON export")
-    p.add_argument("--file", "-f", dest="file_path", default="-",
-                   help="JSON file to import (- for stdin)")
-    p.add_argument("--force", action="store_true",
-                   help="Skip dedup checks during import")
+    p.add_argument("--file", "-f", dest="file_path", default="-", help="JSON file to import (- for stdin)")
+    p.add_argument("--force", action="store_true", help="Skip dedup checks during import")
 
     # purge
     p = sub.add_parser("purge", help="Hard-delete soft-deleted memories older than retention period")
-    p.add_argument("--retention-days", default=30, type=int,
-                   help="Only purge entries deleted more than N days ago (default: 30)")
+    p.add_argument(
+        "--retention-days", default=30, type=int, help="Only purge entries deleted more than N days ago (default: 30)"
+    )
     p.add_argument("--dry-run", action="store_true", help="Preview without executing")
 
     # consolidate
     p = sub.add_parser("consolidate", help="Merge near-duplicate memories (deterministic)")
-    p.add_argument("--threshold", default=0.92, type=float,
-                   help="Cosine similarity threshold for merging (default 0.92)")
+    p.add_argument(
+        "--threshold", default=0.92, type=float, help="Cosine similarity threshold for merging (default 0.92)"
+    )
     p.add_argument("--dry-run", action="store_true", help="Preview without executing")
-    p.add_argument("--exclude-types", default="reference",
-                   help="Comma-separated memory types to skip (default: reference). Use '' to include all.")
+    p.add_argument(
+        "--exclude-types",
+        default="reference",
+        help="Comma-separated memory types to skip (default: reference). Use '' to include all.",
+    )
 
     # decay
     p = sub.add_parser("decay", help="Apply confidence decay and optionally prune low-confidence memories")
-    p.add_argument("--min-confidence", default=0.0, type=float,
-                   help="Prune memories below this confidence (default 0.0 = no pruning)")
+    p.add_argument(
+        "--min-confidence",
+        default=0.0,
+        type=float,
+        help="Prune memories below this confidence (default 0.0 = no pruning)",
+    )
 
     # briefing
     p = sub.add_parser("briefing", help="Generate a compact session briefing of top memories")
-    p.add_argument("--budget", default=150, type=int,
-                   help="Total line budget for the briefing (default 150)")
+    p.add_argument("--budget", default=150, type=int, help="Total line budget for the briefing (default 150)")
 
     # stats
     p = sub.add_parser("stats", help="Show usage statistics and analytics")
@@ -1005,8 +1099,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--summary", required=True, help="Short summary for embedding (~100-200 tokens)")
     p.add_argument("--body", default=None, help="Document body text (use --body-file for files)")
     p.add_argument("--body-file", default=None, help="Read body from file (- for stdin)")
-    p.add_argument("--type", dest="doc_type", default="document",
-                   help="Document type: document, plan, spec, runbook, session, reference")
+    p.add_argument(
+        "--type",
+        dest="doc_type",
+        default="document",
+        help="Document type: document, plan, spec, runbook, session, reference",
+    )
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--metadata", "-m", default="{}", help="JSON metadata")
 
@@ -1017,8 +1115,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # doc search
     p = doc_sub.add_parser("search", help="Search documents")
     p.add_argument("query", help="Search query")
-    p.add_argument("--mode", default="auto", choices=["semantic", "fts", "auto"],
-                   help="Search mode (default: auto = semantic + FTS merged)")
+    p.add_argument(
+        "--mode",
+        default="auto",
+        choices=["semantic", "fts", "auto"],
+        help="Search mode (default: auto = semantic + FTS merged)",
+    )
     p.add_argument("--limit", "-n", default=5, type=int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--type", dest="doc_type", default=None, help="Filter by document type")

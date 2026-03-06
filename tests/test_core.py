@@ -13,7 +13,6 @@ from memory.core import (
     infer_importance,
 )
 
-
 # --- Original tests (fixture now comes from conftest.py) ---
 
 
@@ -164,9 +163,7 @@ def test_search_recall_tracking(store):
     store.search("recall tracking", mode="exact")
 
     conn = store._get_conn()
-    row = conn.execute(
-        "SELECT recall_count, last_recalled_at FROM memories WHERE deleted_at IS NULL"
-    ).fetchone()
+    row = conn.execute("SELECT recall_count, last_recalled_at FROM memories WHERE deleted_at IS NULL").fetchone()
     assert row["recall_count"] == 1
     assert row["last_recalled_at"] is not None
 
@@ -338,9 +335,7 @@ def test_confidence_reset_on_recall(store):
     # Search triggers recall → resets confidence to 1.0
     store.search("confidence reset", mode="exact")
 
-    row = conn.execute(
-        "SELECT confidence FROM memories WHERE deleted_at IS NULL"
-    ).fetchone()
+    row = conn.execute("SELECT confidence FROM memories WHERE deleted_at IS NULL").fetchone()
     assert row["confidence"] == 1.0
 
 
@@ -412,8 +407,7 @@ def test_search_returns_composite_score(store):
 def test_search_composite_reranks(store):
     """Higher importance memory can outrank slightly closer match."""
     store.store("basic note about cats", memory_type="note", importance=0.1)
-    store.store("CRITICAL: always validate user input in API handlers",
-                memory_type="decision", importance=0.9)
+    store.store("CRITICAL: always validate user input in API handlers", memory_type="decision", importance=0.9)
     # Search for something that could match both
     results = store.search("validate input", limit=2)
     # The CRITICAL one should rank higher due to importance boost
@@ -435,8 +429,8 @@ def test_consolidate_dry_run(store):
 
 def test_consolidate_merges(store):
     """Consolidate actually merges and soft-deletes."""
-    r1 = store.store("Terraform uses HCL for infrastructure config", tags=["terraform"])
-    r2 = store.store("Terraform uses HCL for infrastructure configuration", tags=["iac"])
+    store.store("Terraform uses HCL for infrastructure config", tags=["terraform"])
+    store.store("Terraform uses HCL for infrastructure configuration", tags=["iac"])
 
     result = store.consolidate(threshold=0.8)
     assert result["consolidated"] >= 1
@@ -496,9 +490,7 @@ def test_update_importance(store):
     store.update(h, updates={"importance": 0.9})
 
     conn = store._get_conn()
-    row = conn.execute(
-        "SELECT importance FROM memories WHERE content_hash = ?", (h,)
-    ).fetchone()
+    row = conn.execute("SELECT importance FROM memories WHERE content_hash = ?", (h,)).fetchone()
     assert row["importance"] == 0.9
 
 
@@ -509,9 +501,7 @@ def test_update_confidence(store):
     store.update(h, updates={"confidence": 0.75})
 
     conn = store._get_conn()
-    row = conn.execute(
-        "SELECT confidence FROM memories WHERE content_hash = ?", (h,)
-    ).fetchone()
+    row = conn.execute("SELECT confidence FROM memories WHERE content_hash = ?", (h,)).fetchone()
     assert row["confidence"] == 0.75
 
 
@@ -796,8 +786,10 @@ def test_search_include_and_exclude_tags(store):
     store.store("gcp note", tags=["cloud:gcp"])
 
     results = store.search(
-        "note", mode="exact",
-        tags=["cloud:aws"], exclude_tags=["scope:temp"],
+        "note",
+        mode="exact",
+        tags=["cloud:aws"],
+        exclude_tags=["scope:temp"],
     )
     assert len(results) == 1
     assert "prod" in results[0]["content"]
@@ -875,8 +867,9 @@ def test_search_min_importance_semantic(store):
 
 def test_cache_eviction_lru(tmp_path):
     """Insert > max_entries, verify oldest are evicted."""
-    from memory.embeddings import EmbeddingModel
     import numpy as np
+
+    from memory.embeddings import EmbeddingModel
 
     cache_db = tmp_path / "test_cache.db"
     model = EmbeddingModel(cache_db=cache_db)
@@ -899,23 +892,21 @@ def test_cache_eviction_lru(tmp_path):
     assert count == 10
 
     # The oldest 5 (hash_0000 through hash_0004) should be gone
-    row = conn.execute(
-        "SELECT COUNT(*) FROM cache WHERE text_hash = 'hash_0000'"
-    ).fetchone()[0]
+    row = conn.execute("SELECT COUNT(*) FROM cache WHERE text_hash = 'hash_0000'").fetchone()[0]
     assert row == 0
 
     # The newest should still be present
-    row = conn.execute(
-        "SELECT COUNT(*) FROM cache WHERE text_hash = 'hash_0014'"
-    ).fetchone()[0]
+    row = conn.execute("SELECT COUNT(*) FROM cache WHERE text_hash = 'hash_0014'").fetchone()[0]
     assert row == 1
 
 
 def test_cache_access_updates_timestamp(tmp_path):
     """Verify reads update last_accessed_at."""
-    from memory.embeddings import EmbeddingModel
-    import numpy as np
     import time as time_mod
+
+    import numpy as np
+
+    from memory.embeddings import EmbeddingModel
 
     cache_db = tmp_path / "test_cache_access.db"
     model = EmbeddingModel(cache_db=cache_db)
@@ -926,9 +917,7 @@ def test_cache_access_updates_timestamp(tmp_path):
 
     # Get initial timestamp
     conn = model._get_cache_conn()
-    row = conn.execute(
-        "SELECT last_accessed_at FROM cache WHERE text_hash = 'test_hash'"
-    ).fetchone()
+    row = conn.execute("SELECT last_accessed_at FROM cache WHERE text_hash = 'test_hash'").fetchone()
     initial_ts = row[0]
 
     # Small delay to ensure timestamp differs
@@ -938,9 +927,7 @@ def test_cache_access_updates_timestamp(tmp_path):
     model._l2_get_many(["test_hash"])
 
     # Check timestamp was updated
-    row = conn.execute(
-        "SELECT last_accessed_at FROM cache WHERE text_hash = 'test_hash'"
-    ).fetchone()
+    row = conn.execute("SELECT last_accessed_at FROM cache WHERE text_hash = 'test_hash'").fetchone()
     assert row[0] > initial_ts
 
 
@@ -975,9 +962,7 @@ def test_search_batch_recall_tracking(store):
     store.search_batch(["shared result", "batch content"], limit=5)
 
     conn = store._get_conn()
-    row = conn.execute(
-        "SELECT recall_count FROM memories WHERE deleted_at IS NULL"
-    ).fetchone()
+    row = conn.execute("SELECT recall_count FROM memories WHERE deleted_at IS NULL").fetchone()
     # Should be incremented exactly once (single transaction for unique hashes)
     assert row["recall_count"] == 1
 
@@ -1077,10 +1062,23 @@ def test_import_basic(store):
         "version": 1,
         "exported_at": "2025-01-01T00:00:00",
         "memories": [
-            {"content": "imported memory", "tags": ["imported"], "memory_type": "note", "metadata": {}, "importance": 0.7},
+            {
+                "content": "imported memory",
+                "tags": ["imported"],
+                "memory_type": "note",
+                "metadata": {},
+                "importance": 0.7,
+            },
         ],
         "documents": [
-            {"title": "Imported Doc", "body": "doc body text", "summary": "doc summary", "doc_type": "document", "tags": ["imported"], "metadata": {}},
+            {
+                "title": "Imported Doc",
+                "body": "doc body text",
+                "summary": "doc summary",
+                "doc_type": "document",
+                "tags": ["imported"],
+                "metadata": {},
+            },
         ],
     }
     result = store.import_all(data)

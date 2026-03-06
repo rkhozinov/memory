@@ -2,7 +2,6 @@
 
 import io
 import json
-import sys
 from unittest.mock import patch
 
 import pytest
@@ -57,7 +56,7 @@ def _invoke(cli_env, args):
 
 def _invoke_text(cli_env, args):
     """Invoke CLI command in text mode, return captured stdout."""
-    return _invoke(cli_env, ["-f", "text"] + args)
+    return _invoke(cli_env, ["-f", "text", *args])
 
 
 def test_store_json_output(cli_env):
@@ -145,10 +144,12 @@ def test_cleanup_json(cli_env):
 
 def test_store_batch_stdin(cli_env):
     """Pipe JSON array via stdin."""
-    batch = json.dumps([
-        {"content": "batch stdin 1", "tags": ["test"]},
-        {"content": "batch stdin 2"},
-    ])
+    batch = json.dumps(
+        [
+            {"content": "batch stdin 1", "tags": ["test"]},
+            {"content": "batch stdin 2"},
+        ]
+    )
     buf = io.StringIO()
     with patch("sys.stdout", buf), patch("sys.stdin", io.StringIO(batch)):
         main(["store-batch"])
@@ -162,9 +163,12 @@ def test_store_batch_stdin(cli_env):
 def test_store_batch_invalid_json_stdin(cli_env):
     """Invalid JSON shows helpful error, not traceback."""
     err_buf = io.StringIO()
-    with pytest.raises(SystemExit) as exc_info:
-        with patch("sys.stderr", err_buf), patch("sys.stdin", io.StringIO('[{"broken"')):
-            main(["store-batch"])
+    with (
+        pytest.raises(SystemExit) as exc_info,
+        patch("sys.stderr", err_buf),
+        patch("sys.stdin", io.StringIO('[{"broken"')),
+    ):
+        main(["store-batch"])
     assert exc_info.value.code == 1
     err = err_buf.getvalue()
     assert "Invalid JSON" in err
@@ -174,9 +178,12 @@ def test_store_batch_invalid_json_stdin(cli_env):
 def test_store_batch_invalid_json_with_quotes(cli_env):
     """Unescaped quotes (echo shell issue) caught cleanly."""
     err_buf = io.StringIO()
-    with pytest.raises(SystemExit) as exc_info:
-        with patch("sys.stderr", err_buf), patch("sys.stdin", io.StringIO('[{"content":"has "quotes"}]')):
-            main(["store-batch"])
+    with (
+        pytest.raises(SystemExit) as exc_info,
+        patch("sys.stderr", err_buf),
+        patch("sys.stdin", io.StringIO('[{"content":"has "quotes"}]')),
+    ):
+        main(["store-batch"])
     assert exc_info.value.code == 1
     assert "Invalid JSON" in err_buf.getvalue()
 
@@ -184,9 +191,12 @@ def test_store_batch_invalid_json_with_quotes(cli_env):
 def test_store_batch_not_array(cli_env):
     """Non-array JSON shows expected error."""
     err_buf = io.StringIO()
-    with pytest.raises(SystemExit) as exc_info:
-        with patch("sys.stderr", err_buf), patch("sys.stdin", io.StringIO('{"not": "array"}')):
-            main(["store-batch"])
+    with (
+        pytest.raises(SystemExit) as exc_info,
+        patch("sys.stderr", err_buf),
+        patch("sys.stdin", io.StringIO('{"not": "array"}')),
+    ):
+        main(["store-batch"])
     assert exc_info.value.code == 1
     assert "expected a JSON array" in err_buf.getvalue()
 

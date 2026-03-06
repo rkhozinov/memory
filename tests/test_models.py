@@ -1,7 +1,6 @@
 """Tests for Memory dataclass (no DB or embeddings needed)."""
 
 import hashlib
-import json
 import time
 
 from memory.models import Memory
@@ -42,10 +41,17 @@ def test_to_row_roundtrip():
     row_tuple = original.to_row()
     # Simulate what a DB row dict would look like
     keys = [
-        "content_hash", "content", "tags", "memory_type", "metadata",
-        "created_at", "updated_at", "created_at_iso", "updated_at_iso",
+        "content_hash",
+        "content",
+        "tags",
+        "memory_type",
+        "metadata",
+        "created_at",
+        "updated_at",
+        "created_at_iso",
+        "updated_at_iso",
     ]
-    row_dict = dict(zip(keys, row_tuple))
+    row_dict = dict(zip(keys, row_tuple))  # noqa: B905 - intentionally truncating longer tuple
     restored = Memory.from_row(row_dict)
 
     assert restored.content == original.content
@@ -87,7 +93,17 @@ def test_to_dict_structure():
     """to_dict() returns all expected keys."""
     m = Memory(content="test", tags=["x"], memory_type="fact", metadata={"k": 1})
     d = m.to_dict()
-    expected_keys = {"content_hash", "content", "tags", "memory_type", "metadata", "created_at", "updated_at", "confidence", "importance"}
+    expected_keys = {
+        "content_hash",
+        "content",
+        "tags",
+        "memory_type",
+        "metadata",
+        "created_at",
+        "updated_at",
+        "confidence",
+        "importance",
+    }
     assert set(d.keys()) == expected_keys
     assert d["tags"] == ["x"]
     assert d["memory_type"] == "fact"

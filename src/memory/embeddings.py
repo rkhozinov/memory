@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import sqlite3
 import time
@@ -15,14 +16,8 @@ DATA_DIR = Path.home() / ".claude" / "tools" / "memory" / "data"
 CACHE_DB_PATH = DATA_DIR / "embedding_cache.db"
 MODEL_NAME = "e5-small"
 ONNX_MODEL_FILE = "model.onnx"
-ONNX_URL = (
-    f"https://huggingface.co/intfloat/{MODEL_NAME}"
-    f"/resolve/main/{ONNX_MODEL_FILE}"
-)
-TOKENIZER_URL = (
-    f"https://huggingface.co/intfloat/{MODEL_NAME}"
-    "/resolve/main/tokenizer.json"
-)
+ONNX_URL = f"https://huggingface.co/intfloat/{MODEL_NAME}/resolve/main/{ONNX_MODEL_FILE}"
+TOKENIZER_URL = f"https://huggingface.co/intfloat/{MODEL_NAME}/resolve/main/tokenizer.json"
 EMBEDDING_DIM = 384
 MAX_SEQ_LENGTH = 256
 _L1_CACHE_MAX = 256
@@ -53,7 +48,7 @@ class EmbeddingModel:
         for path, url in [(model_path, ONNX_URL), (tokenizer_path, TOKENIZER_URL)]:
             if not path.exists():
                 print(f"Downloading {path.name}...")
-                urllib.request.urlretrieve(url, str(path))
+                urllib.request.urlretrieve(url, str(path))  # nosec B310
 
         return model_dir
 
@@ -68,9 +63,7 @@ class EmbeddingModel:
         from tokenizers import Tokenizer
 
         sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = (
-            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        )
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.intra_op_num_threads = 8
         sess_options.inter_op_num_threads = 2
 
@@ -90,16 +83,11 @@ class EmbeddingModel:
             self._cache_conn.execute("PRAGMA journal_mode=WAL")
             self._cache_conn.execute("PRAGMA synchronous=NORMAL")
             self._cache_conn.execute(
-                "CREATE TABLE IF NOT EXISTS cache "
-                "(text_hash TEXT PRIMARY KEY, embedding BLOB, last_accessed_at REAL)"
+                "CREATE TABLE IF NOT EXISTS cache (text_hash TEXT PRIMARY KEY, embedding BLOB, last_accessed_at REAL)"
             )
             # Idempotent migration for existing DBs
-            try:
-                self._cache_conn.execute(
-                    "ALTER TABLE cache ADD COLUMN last_accessed_at REAL"
-                )
-            except sqlite3.OperationalError:
-                pass  # Column already exists
+            with contextlib.suppress(sqlite3.OperationalError):
+                self._cache_conn.execute("ALTER TABLE cache ADD COLUMN last_accessed_at REAL")
         return self._cache_conn
 
     def _l2_get_many(self, text_hashes: list[str]) -> dict[str, np.ndarray]:
@@ -112,10 +100,7 @@ class EmbeddingModel:
             f"SELECT text_hash, embedding FROM cache WHERE text_hash IN ({placeholders})",
             text_hashes,
         ).fetchall()
-        result = {
-            row[0]: np.frombuffer(row[1], dtype=np.float32).copy()
-            for row in rows
-        }
+        result = {row[0]: np.frombuffer(row[1], dtype=np.float32).copy() for row in rows}
         # Update last_accessed_at for cache hits
         if result:
             now = time.time()
@@ -123,7 +108,7 @@ class EmbeddingModel:
             hit_ph = ",".join("?" * len(hit_hashes))
             conn.execute(
                 f"UPDATE cache SET last_accessed_at = ? WHERE text_hash IN ({hit_ph})",
-                [now] + hit_hashes,
+                [now, *hit_hashes],
             )
             conn.commit()
         return result
