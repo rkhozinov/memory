@@ -38,8 +38,7 @@ if [[ ! -f "$MARKER_FILE" ]] || [[ -n $(find "$MARKER_FILE" -mtime +0 2>/dev/nul
 fi
 
 # 3. Check if codebase map exists
-MEMORY="$HOME/.claude/tools/memory/.venv/bin/memory"
-MAP_COUNT=$("$MEMORY" -f text list --tags "project:$PROJECT_NAME,scope:codebase-map" --page-size 1 2>/dev/null | head -1 || echo "")
+MAP_COUNT=$(memory -f text list --tags "project:$PROJECT_NAME,scope:codebase-map" --page-size 1 2>/dev/null | head -1 || echo "")
 
 # 4. Output status message
 echo "Memory system active. Project: ${PROJECT_NAME}. ${MEMORY_COUNT} memories. Use /recall to browse."
