@@ -74,6 +74,26 @@ memory -f text search "query" --tags "project:infra" --exclude-tags "scope:temp"
 memory -f text search "query" --depth full
 ```
 
+## Cross-encoder reranking
+
+Add `--rerank` to re-score results with a cross-encoder model for higher precision. The reranker jointly encodes (query, candidate) pairs, capturing fine-grained interactions that bi-encoder similarity misses. Adds ~20-50ms latency.
+
+```bash
+# Basic reranking (uses TinyBERT, 4.5MB, fastest)
+memory -f text search "kubernetes deployment" --rerank
+
+# Adjust blend weight (0=ignore reranker, 1=only reranker, default 0.4)
+memory -f text search "query" --rerank --rerank-weight 0.6
+
+# Use higher-quality model (MiniLM-L6, 23MB)
+memory -f text search "query" --rerank --rerank-model minilm6
+
+# View reranker score in breakdown
+memory -f text search "query" --rerank --depth full
+```
+
+Reranking only applies to `semantic`, `fts`, and `hybrid` modes. It is ignored for `exact` and `graph` modes.
+
 ## Batch search
 
 Search for multiple queries in a single pass (one embedding batch, one recall transaction):

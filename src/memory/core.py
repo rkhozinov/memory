@@ -837,6 +837,29 @@ class MemoryStore:
 
     # --- Search ---
 
+    def _apply_rerank(
+        self,
+        query: str,
+        results: list[dict],
+        limit: int,
+        weight: float = 0.4,
+        model_name: str | None = None,
+    ) -> list[dict]:
+        """Re-score results with a cross-encoder reranker."""
+        from .reranker import get_reranker
+
+        scores = get_reranker(model_name).score_pairs(query, [r["content"] for r in results])
+        # Normalize composite scores to [0,1] before blending
+        max_comp = max((r["score"] for r in results), default=1.0) or 1.0
+        for i, r in enumerate(results):
+            rs = float(scores[i])
+            r["score"] = round((1 - weight) * (r["score"] / max_comp) + weight * rs, 4)
+            r["reranker_score"] = round(rs, 4)
+            if "score_breakdown" in r:
+                r["score_breakdown"]["reranker"] = round(rs, 4)
+        results.sort(key=lambda m: m["score"], reverse=True)
+        return results[:limit]
+
     def search(
         self,
         query: str | None = None,
@@ -850,6 +873,9 @@ class MemoryStore:
         exclude_tags: list[str] | None = None,
         memory_types: list[str] | None = None,
         min_importance: float | None = None,
+        rerank: bool = False,
+        rerank_weight: float = 0.4,
+        rerank_model: str | None = None,
     ) -> list[dict]:
         """Search memories. Modes: hybrid (default), semantic, exact, fts.
 
@@ -858,9 +884,15 @@ class MemoryStore:
         exclude_tags: tags to exclude from results.
         memory_types: filter to only these memory types (plural).
         min_importance: filter results below this importance threshold.
+        rerank: if True, re-score top candidates with a cross-encoder.
+        rerank_weight: blend weight for reranker score (0-1).
+        rerank_model: reranker model name ('tinybert' or 'minilm6').
         """
         start = time.time()
         conn = self._get_conn()
+
+        # Overfetch when reranking to give the reranker a broader candidate pool
+        fetch_limit = limit * 3 if rerank and mode in ("semantic", "fts", "hybrid") else limit
 
         # Read phase — no write lock needed yet
         if mode == "exact":
@@ -880,7 +912,7 @@ class MemoryStore:
             results = self._search_semantic(
                 conn,
                 query,
-                limit,
+                fetch_limit,
                 tags,
                 time_expr,
                 after,
@@ -894,7 +926,7 @@ class MemoryStore:
             results = self._search_hybrid(
                 conn,
                 query,
-                limit,
+                fetch_limit,
                 tags,
                 time_expr,
                 after,
@@ -908,7 +940,7 @@ class MemoryStore:
             results = self._search_fts(
                 conn,
                 query,
-                limit,
+                fetch_limit,
                 tags,
                 time_expr,
                 after,
@@ -922,6 +954,10 @@ class MemoryStore:
             results = self._search_graph(conn, query, limit)
         else:
             raise ValueError(f"Unknown search mode: {mode}")
+
+        # Cross-encoder reranking (opt-in)
+        if rerank and mode in ("semantic", "fts", "hybrid") and results and query:
+            results = self._apply_rerank(query, results, limit, rerank_weight, rerank_model)
 
         # Write phase — acquire lock for event + recall tracking
         duration_ms = (time.time() - start) * 1000

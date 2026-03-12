@@ -53,6 +53,7 @@ ignore = [
 "tests/**" = ["S101", "S603", "S607", "S310"]  # asserts + subprocess + URL downloads in tests OK
 "src/memory/core.py" = ["S608"]  # parameterized SQL with ? placeholders is safe
 "src/memory/embeddings.py" = ["S608", "S310"]  # parameterized SQL + known URL downloads
+"src/memory/reranker.py" = ["S310"]  # known HuggingFace URL downloads
 
 [tool.ruff.format]
 quote-style = "double"

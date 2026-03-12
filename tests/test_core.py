@@ -1350,3 +1350,48 @@ def test_build_graph_dry_run(populated_store):
     assert result["dry_run"] is True
     assert result["memories_to_process"] > 0
     assert result["estimated_entities"] > 0
+
+
+# --- Reranking tests ---
+
+
+def test_search_rerank_basic(populated_store):
+    """Reranked results include reranker_score field."""
+    results = populated_store.search("kubernetes deployment", rerank=True, limit=5)
+    assert len(results) >= 1
+    for r in results:
+        assert "reranker_score" in r
+        assert 0.0 <= r["reranker_score"] <= 1.0
+
+
+def test_search_rerank_improves_ranking(populated_store):
+    """Relevant memory ranks at top after reranking."""
+    results = populated_store.search("kubernetes pod crash loop", rerank=True, limit=5)
+    assert len(results) >= 1
+    # The crash loop memory should be at or near the top
+    assert "crash loop" in results[0]["content"].lower() or "kubernetes" in results[0]["content"].lower()
+
+
+def test_search_rerank_weight_zero(populated_store):
+    """weight=0 preserves original composite ordering."""
+    base = populated_store.search("terraform", limit=5)
+    reranked = populated_store.search("terraform", rerank=True, rerank_weight=0.0, limit=5)
+    # With weight=0 the reranker score has no effect; ordering should match
+    assert [r["content_hash"] for r in base] == [r["content_hash"] for r in reranked]
+
+
+def test_search_rerank_not_applied_to_exact(populated_store):
+    """Exact mode ignores rerank flag — no reranker_score in results."""
+    results = populated_store.search("TICKET-24", mode="exact", rerank=True, limit=5)
+    assert len(results) >= 1
+    for r in results:
+        assert "reranker_score" not in r
+
+
+def test_search_rerank_not_applied_to_graph(populated_store):
+    """Graph mode ignores rerank flag — no reranker_score in results."""
+    populated_store.build_graph()
+    results = populated_store.search("TICKET-24", mode="graph", rerank=True, limit=5)
+    # Graph may return results or not depending on graph state, but none should have reranker_score
+    for r in results:
+        assert "reranker_score" not in r

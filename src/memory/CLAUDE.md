@@ -40,11 +40,13 @@ make reinstall
 
 ## Architecture
 
-The codebase lives entirely in `src/memory/` (~2500 lines across 5 modules):
+The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 
 **`models.py`** — `Memory` and `Document` dataclasses. Content is SHA256-hashed (`content_hash`) for exact dedup. Tags are `list[str]`, metadata is `dict`. Both provide `to_row()`/`from_row()`/`to_dict()` for DB serialization. `Document` has `title`, `body`, `summary`, `doc_type`, `version` — no confidence/importance (reference material, no decay).
 
 **`embeddings.py`** — Wraps the `intfloat/e5-small` ONNX model (12-layer, 384-dim vectors, seq_length=256, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/.claude/tools/memory/data/models/`. Mean pooling + L2 normalization. Returns raw numpy arrays to avoid `.tolist()` overhead.
+
+**`reranker.py`** — ONNX cross-encoder reranker for search result re-scoring. Lazy-loaded singleton via `get_reranker()`. Downloads quantized TinyBERT-L-2 (4.5MB) or MiniLM-L-6 model from HuggingFace on first use. Platform-aware: picks `model_qint8_arm64.onnx` on ARM, `model_quint8_avx2.onnx` on x86. Scores `(query, candidate)` pairs jointly via tokenizer pair encoding → ONNX inference → sigmoid. No caching (query-dependent scores).
 
 **`core.py`** — `MemoryStore`, the main logic layer. All operations go through this class:
 - `store()` / `store_batch()` — insert with optional semantic dedup (cosine threshold) and importance scoring
@@ -59,7 +61,7 @@ The codebase lives entirely in `src/memory/` (~2500 lines across 5 modules):
 - Uses IMMEDIATE transactions to prevent TOCTOU races in multi-agent scenarios
 - Database at `~/.claude/tools/memory/data/sqlite_vec.db` (WAL mode, 15s busy timeout)
 
-**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `search-batch`, `list`, `delete`, `update`, `health`, `cleanup`, `list-tags`, `rename-tag`, `merge-tags`, `export`, `import`, `purge`, `consolidate`, `decay`, `briefing`, `stats`, `doc`, `graph`. The `doc` subcommand group has: `store`, `get`, `search`, `list`, `update`, `delete`. The `graph` subcommand group has: `build`, `entities`, `context`, `search`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure, `--exclude-tags`, `--min-importance`, `--types` for advanced filtering, `--mode graph` for graph traversal, and returns `score_breakdown` in full depth.
+**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `search-batch`, `list`, `delete`, `update`, `health`, `cleanup`, `list-tags`, `rename-tag`, `merge-tags`, `export`, `import`, `purge`, `consolidate`, `decay`, `briefing`, `stats`, `doc`, `graph`. The `doc` subcommand group has: `store`, `get`, `search`, `list`, `update`, `delete`. The `graph` subcommand group has: `build`, `entities`, `context`, `search`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure, `--exclude-tags`, `--min-importance`, `--types` for advanced filtering, `--mode graph` for graph traversal, `--rerank` for cross-encoder reranking (with `--rerank-weight` and `--rerank-model`), and returns `score_breakdown` in full depth.
 
 **`mcp_server.py`** — MCP stdio server exposing the same operations as tools. Handles type coercion (string→int/bool/JSON) since MCP clients send everything as strings. Input validation is intentionally disabled.
 
@@ -86,6 +88,7 @@ Eleven tables in SQLite:
 - **Content hash as primary key for API**: External interfaces use `content_hash` (SHA256) to identify memories, not internal row IDs.
 - **Confidence decay**: Memories lose confidence over time at per-type rates (decision/pattern=0.999/day, error/learning=0.99/day, note/observation=0.97/day). Recalled memories reset to 1.0.
 - **Composite retrieval scoring**: `score = w1*similarity + w2*importance + w3*recency` (default 0.6/0.2/0.2). Search results re-ranked by composite score.
+- **Cross-encoder reranking** (opt-in): `--rerank` re-scores top candidates with a cross-encoder. Overfetches 3x candidates, blends `(1-w)*normalized_composite + w*reranker_score` (default w=0.4). Only applies to semantic/fts/hybrid modes. Models: `tinybert` (4.5MB, default), `minilm6` (23MB, higher quality).
 - **Importance auto-inference**: Keywords (IMPORTANT→0.9, NEVER→0.8) override type-based defaults (decision=0.8, error=0.7, note=0.4). Explicit `--importance` overrides both.
 - **Deterministic consolidation**: Pairs with cosine similarity > threshold (default 0.92) are merged — higher recall_count wins, tags are unioned. `reference` type is excluded by default (`--exclude-types=reference`) because templated content like TF layer listings produces false-positive high-similarity matches. Pass `--exclude-types=''` to include all types.
 - **Session briefing**: `briefing(budget=150)` generates a markdown summary grouped by type (decision/pattern/error/learning/reference/recent/other) with per-section line budgets scaled to fit the total budget. Ranked by `confidence * importance * recency`.

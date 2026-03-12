@@ -602,6 +602,9 @@ def cmd_search(args, store: MemoryStore, fmt: str) -> None:
         exclude_tags=exclude_tag_list,
         memory_types=type_list,
         min_importance=args.min_importance,
+        rerank=args.rerank,
+        rerank_weight=args.rerank_weight,
+        rerank_model=args.rerank_model,
     )
     if args.min_similarity is not None:
         results = [m for m in results if m.get("similarity", 0) >= args.min_similarity]
@@ -1080,6 +1083,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-similarity", default=None, type=float, help="Filter results below this similarity threshold")
     p.add_argument("--min-importance", default=None, type=float, help="Filter results below this importance threshold")
     p.add_argument("--types", default="", help="Comma-separated memory types to include")
+    p.add_argument("--rerank", action="store_true", default=False, help="Rerank with cross-encoder")
+    p.add_argument("--rerank-weight", type=float, default=0.4, help="Rerank blend weight (0-1)")
+    p.add_argument("--rerank-model", default=None, choices=["tinybert", "minilm6"])
     p.add_argument(
         "--depth",
         default="summary",
