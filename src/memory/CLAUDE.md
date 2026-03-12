@@ -32,7 +32,11 @@ memory --help
 
 # MCP server (stdio transport)
 memory-mcp-server
+
+make reinstall
 ```
+
+**IMPORTANT: After any code change, always run `make reinstall`.** The `memory` and `memory-mcp-server` binaries on PATH are a `uv tool` install in a separate environment (`~/.local/share/uv/tools/memory/`), NOT the project `.venv`. Source edits do NOT take effect until reinstalled. The `--editable` flag is passed so subsequent reinstalls are fast.
 
 ## Architecture
 

@@ -1,4 +1,4 @@
-.PHONY: install sync link lint format format-check security test check
+.PHONY: install sync link lint format format-check security test check reinstall
 
 CLAUDE_DIR := $(HOME)/.claude
 SKILLS_DIR := $(CLAUDE_DIR)/skills
@@ -43,6 +43,11 @@ security:
 
 test:
 	uv run pytest -q
+
+## Reinstall global tool (memory + memory-mcp-server on PATH)
+## MUST run after any code change — the PATH binary is a separate uv tool install, not the .venv editable copy.
+reinstall:
+	uv tool install --force --editable .
 
 ## Lint + format + security + tests
 check: lint format-check security test
