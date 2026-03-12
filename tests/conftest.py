@@ -47,6 +47,39 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
 CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(doc_type);
 CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created_at);
+
+CREATE TABLE IF NOT EXISTS entities (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    entity_type   TEXT NOT NULL,
+    metadata      TEXT DEFAULT '{}',
+    created_at    REAL NOT NULL,
+    UNIQUE(name, entity_type)
+);
+CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+
+CREATE TABLE IF NOT EXISTS memory_entities (
+    memory_id     INTEGER NOT NULL,
+    entity_id     INTEGER NOT NULL,
+    created_at    REAL NOT NULL,
+    PRIMARY KEY (memory_id, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_me_entity ON memory_entities(entity_id);
+CREATE INDEX IF NOT EXISTS idx_me_memory ON memory_entities(memory_id);
+
+CREATE TABLE IF NOT EXISTS entity_relations (
+    source_id      INTEGER NOT NULL,
+    target_id      INTEGER NOT NULL,
+    relation_type  TEXT NOT NULL,
+    weight         REAL DEFAULT 1.0,
+    created_at     REAL NOT NULL,
+    updated_at     REAL NOT NULL,
+    PRIMARY KEY (source_id, target_id, relation_type)
+);
+CREATE INDEX IF NOT EXISTS idx_er_source ON entity_relations(source_id);
+CREATE INDEX IF NOT EXISTS idx_er_target ON entity_relations(target_id);
 """
 
 

@@ -294,6 +294,57 @@ def _fmt_decay(d: dict) -> str:
     return f"{d.get('updated', 0)} updated, {d.get('pruned', 0)} pruned"
 
 
+# --- Graph formatters ---
+
+
+def _fmt_graph_build(d: dict) -> str:
+    if d.get("dry_run"):
+        return f"would process {d['memories_to_process']} memories, ~{d['estimated_entities']} entities"
+    return (
+        f"processed {d['memories_processed']} memories: "
+        f"{d['entities']} entities ({d['entities_new']} new), "
+        f"{d['links']} links ({d['links_new']} new), "
+        f"{d['edges']} edges ({d['edges_new']} new)"
+    )
+
+
+def _fmt_graph_entities(d: dict) -> str:
+    entities = d.get("entities", [])
+    if not entities:
+        return "no entities"
+    lines = [f"{d['total']} entities:"]
+    for e in entities:
+        lines.append(f"  [{e['type']}] {e['name']} ({e['memory_count']} memories)")
+    return "\n".join(lines)
+
+
+def _fmt_graph_context(d: dict) -> str:
+    if "error" in d:
+        return f"error: {d['error']}"
+    e = d["entity"]
+    lines = [
+        f"Entity: {e['name']} [{e['type']}]",
+        f"Memories: {d['total_memories']}, Related entities: {d['total_related']}",
+        "",
+    ]
+    for m in d.get("memories", []):
+        h = _short_hash(m["content_hash"])
+        mtype = m.get("memory_type", "note")
+        content = _TYPE_PREFIX_RE.sub("", m.get("content", ""))
+        first_line = content.split("\n")[0]
+        if len(first_line) > 80:
+            first_line = first_line[:77] + "..."
+        lines.append(f"  {h} [{mtype}] {first_line}")
+
+    related = d.get("related_entities", [])
+    if related:
+        lines.append("")
+        lines.append("Related entities:")
+        for r in related:
+            lines.append(f"  [{r['type']}] {r['name']} (weight={r['weight']})")
+    return "\n".join(lines)
+
+
 def _fmt_briefing(d: dict) -> str:
     return d.get("markdown", "No memories stored.")
 
@@ -908,6 +959,60 @@ def cmd_doc(args, store: MemoryStore, fmt: str) -> None:
     handler(args, store, fmt)
 
 
+# ---- Graph subcommands ----
+
+
+def cmd_graph_build(args, store: MemoryStore, fmt: str) -> None:
+    result = store.build_graph(dry_run=args.dry_run)
+    _out(fmt, result, _fmt_graph_build)
+
+
+def cmd_graph_entities(args, store: MemoryStore, fmt: str) -> None:
+    result = store.list_entities(
+        entity_type=args.entity_type,
+        limit=args.limit,
+    )
+    _out(fmt, result, _fmt_graph_entities)
+
+
+def cmd_graph_context(args, store: MemoryStore, fmt: str) -> None:
+    result = store.entity_context(
+        entity_name=args.entity,
+        limit=args.limit,
+    )
+    _out(fmt, result, _fmt_graph_context)
+
+
+def cmd_graph_search(args, store: MemoryStore, fmt: str) -> None:
+    results = store.search(
+        query=args.query,
+        mode="graph",
+        limit=args.limit,
+    )
+    _out(fmt, results, _fmt_search)
+
+
+_GRAPH_DISPATCH = {
+    "build": cmd_graph_build,
+    "entities": cmd_graph_entities,
+    "context": cmd_graph_context,
+    "search": cmd_graph_search,
+}
+
+
+def cmd_graph(args, store: MemoryStore, fmt: str) -> None:
+    """Dispatch graph subcommands."""
+    graph_cmd = getattr(args, "graph_command", None)
+    if not graph_cmd:
+        print("Usage: memory graph {build,entities,context,search}", file=sys.stderr)
+        sys.exit(1)
+    handler = _GRAPH_DISPATCH.get(graph_cmd)
+    if not handler:
+        print(f"Unknown graph subcommand: {graph_cmd}", file=sys.stderr)
+        sys.exit(1)
+    handler(args, store, fmt)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="memory",
@@ -965,7 +1070,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # search
     p = sub.add_parser("search", help="Search memories")
     p.add_argument("query", nargs="?", default=None)
-    p.add_argument("--mode", default="hybrid", choices=["semantic", "exact", "hybrid", "fts"])
+    p.add_argument("--mode", default="hybrid", choices=["semantic", "exact", "hybrid", "fts", "graph"])
     p.add_argument("--limit", "-n", default=10, type=int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--exclude-tags", default="", help="Comma-separated tags to exclude")
@@ -1148,6 +1253,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--hash", dest="content_hash", default=None, help="Delete by content hash")
     p.add_argument("--dry-run", action="store_true", help="Preview deletion without executing")
 
+    # graph (subcommand group)
+    graph_parser = sub.add_parser("graph", help="Knowledge graph operations")
+    graph_sub = graph_parser.add_subparsers(dest="graph_command")
+
+    # graph build
+    p = graph_sub.add_parser("build", help="Build/rebuild knowledge graph from all memories")
+    p.add_argument("--dry-run", action="store_true", help="Estimate without writing")
+
+    # graph entities
+    p = graph_sub.add_parser("entities", help="List entities with memory counts")
+    p.add_argument("--type", dest="entity_type", default=None, help="Filter by entity type")
+    p.add_argument("--limit", "-n", default=50, type=int)
+
+    # graph context
+    p = graph_sub.add_parser("context", help="Full context for an entity")
+    p.add_argument("entity", help="Entity name to look up")
+    p.add_argument("--limit", "-n", default=20, type=int)
+
+    # graph search
+    p = graph_sub.add_parser("search", help="Graph traversal search")
+    p.add_argument("query", help="Search query (entity name or keyword)")
+    p.add_argument("--hops", default=2, type=int, help="Max traversal hops (default 2)")
+    p.add_argument("--limit", "-n", default=10, type=int)
+
     return parser
 
 
@@ -1173,6 +1302,7 @@ _DISPATCH = {
     "briefing": cmd_briefing,
     "stats": cmd_stats,
     "doc": cmd_doc,
+    "graph": cmd_graph,
 }
 
 

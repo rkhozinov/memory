@@ -40,7 +40,7 @@ make reinstall
 
 ## Architecture
 
-The codebase lives entirely in `src/memory/` (~2000 lines across 5 modules):
+The codebase lives entirely in `src/memory/` (~2500 lines across 5 modules):
 
 **`models.py`** — `Memory` and `Document` dataclasses. Content is SHA256-hashed (`content_hash`) for exact dedup. Tags are `list[str]`, metadata is `dict`. Both provide `to_row()`/`from_row()`/`to_dict()` for DB serialization. `Document` has `title`, `body`, `summary`, `doc_type`, `version` — no confidence/importance (reference material, no decay).
 
@@ -48,23 +48,24 @@ The codebase lives entirely in `src/memory/` (~2000 lines across 5 modules):
 
 **`core.py`** — `MemoryStore`, the main logic layer. All operations go through this class:
 - `store()` / `store_batch()` — insert with optional semantic dedup (cosine threshold) and importance scoring
-- `search()` — semantic (sqlite-vec cosine distance), exact (LIKE), or hybrid mode with composite scoring. Returns `recall_count` and `last_recalled_at` in results.
+- `search()` — semantic (sqlite-vec cosine distance), exact (LIKE), hybrid, fts, or graph mode with composite scoring. Returns `recall_count` and `last_recalled_at` in results.
 - `delete()` — soft delete via `deleted_at` timestamp; supports dry-run
 - `consolidate()` — deterministic merge of near-duplicate memories (cosine > threshold)
 - `apply_decay()` — recompute confidence decay and optionally prune low-confidence memories
 - `briefing()` — generates a compact markdown briefing ranked by `confidence * importance * recency`, grouped into sections with line budget allocation
 - `stats()` — aggregated analytics from `operation_events` table
 - Document operations: `store_doc()`, `get_doc()`, `list_docs()`, `search_docs()`, `update_doc()`, `delete_doc()` — long-form content (plans, specs, runbooks) with summary-based hybrid retrieval (semantic on summary embedding + FTS5 on body)
+- Knowledge graph: `extract_entities()` (regex-based), `_link_entities()` (auto on store), `list_entities()`, `entity_context()`, `build_graph()`, `_search_graph()` — lightweight entity extraction + co-occurrence graph for relationship traversal
 - Uses IMMEDIATE transactions to prevent TOCTOU races in multi-agent scenarios
 - Database at `~/.claude/tools/memory/data/sqlite_vec.db` (WAL mode, 15s busy timeout)
 
-**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `search-batch`, `list`, `delete`, `update`, `health`, `cleanup`, `list-tags`, `rename-tag`, `merge-tags`, `export`, `import`, `purge`, `consolidate`, `decay`, `briefing`, `stats`, `doc`. The `doc` subcommand group has: `store`, `get`, `search`, `list`, `update`, `delete`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure, `--exclude-tags`, `--min-importance`, `--types` for advanced filtering, and returns `score_breakdown` in full depth.
+**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `search-batch`, `list`, `delete`, `update`, `health`, `cleanup`, `list-tags`, `rename-tag`, `merge-tags`, `export`, `import`, `purge`, `consolidate`, `decay`, `briefing`, `stats`, `doc`, `graph`. The `doc` subcommand group has: `store`, `get`, `search`, `list`, `update`, `delete`. The `graph` subcommand group has: `build`, `entities`, `context`, `search`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure, `--exclude-tags`, `--min-importance`, `--types` for advanced filtering, `--mode graph` for graph traversal, and returns `score_breakdown` in full depth.
 
 **`mcp_server.py`** — MCP stdio server exposing the same operations as tools. Handles type coercion (string→int/bool/JSON) since MCP clients send everything as strings. Input validation is intentionally disabled.
 
 ## Database Schema
 
-Eight tables in SQLite:
+Eleven tables in SQLite:
 - **`memories`** — core storage (content, tags as JSON, soft delete via `deleted_at`, recall tracking via `recall_count`/`last_recalled_at`, `confidence` for decay, `importance` for scoring)
 - **`memory_embeddings`** — sqlite-vec virtual table, 384-dim float vectors with cosine distance
 - **`memory_fts`** — FTS5 virtual table for BM25 keyword search on memory content
@@ -72,6 +73,9 @@ Eight tables in SQLite:
 - **`document_embeddings`** — sqlite-vec virtual table, 384-dim float vectors on summary embedding
 - **`document_fts`** — FTS5 virtual table for BM25 keyword search on document title + body
 - **`operation_events`** — analytics log (operation type, duration, result counts, dedup info)
+- **`entities`** — canonical entities (deduplicated by normalized name + type: ticket, service, technology, project, cloud, tool, pr)
+- **`memory_entities`** — many-to-many linking memories to entities
+- **`entity_relations`** — entity-to-entity co-occurrence edges with weights
 
 ## Key Patterns
 
@@ -87,6 +91,7 @@ Eight tables in SQLite:
 - **Session briefing**: `briefing(budget=150)` generates a markdown summary grouped by type (decision/pattern/error/learning/reference/recent/other) with per-section line budgets scaled to fit the total budget. Ranked by `confidence * importance * recency`.
 - **Progressive disclosure**: Search `--depth` controls output verbosity: `titles` (one line per result), `summary` (default, current behavior), `full` (all metadata including recall stats, timestamps, tags).
 - **Documents layer**: Long-form content (plans, specs, runbooks, session summaries) stored separately from atomic memories. Summary-based hybrid retrieval: semantic search on summary embedding + FTS5 on full body. No confidence decay (reference material). Version tracking on body updates. `content_hash` is SHA256 of body.
+- **Knowledge graph**: Regex-based entity extraction on every `store()` — tickets (`[A-Z]{2,10}-\d+`), PR refs, ~80 technology keywords, `*-service/*-manager/*-api` patterns, and tag-derived entities (`project:X`, `svc:X`, `cloud:X`, `tool:X`). Co-occurrence edges connect entities that appear in the same memory. Graph search (`--mode graph`) uses recursive CTE traversal up to N hops. `build_graph()` retroactively populates from existing memories. Zero new dependencies.
 
 ## Skills & Hooks
 

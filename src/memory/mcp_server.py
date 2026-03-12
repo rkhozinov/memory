@@ -140,7 +140,7 @@ TOOLS = [
                 "query": {"type": "string", "description": "Search query"},
                 "mode": {
                     "type": "string",
-                    "enum": ["semantic", "exact", "hybrid", "fts"],
+                    "enum": ["semantic", "exact", "hybrid", "fts", "graph"],
                     "default": "hybrid",
                 },
                 "limit": {
@@ -450,6 +450,72 @@ TOOLS = [
             "required": ["content_hash"],
         },
     ),
+    Tool(
+        name="graph_build",
+        description=(
+            "Build/rebuild the knowledge graph from all existing memories. "
+            "Extracts entities (tickets, technologies, services, projects) and creates co-occurrence edges. "
+            "Safe to run multiple times."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Estimate entities without writing",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="graph_entities",
+        description="List entities in the knowledge graph with memory counts.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "entity_type": {
+                    "type": "string",
+                    "description": "Filter by entity type (ticket, service, technology, project, cloud, tool, pr)",
+                },
+                "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200},
+            },
+        },
+    ),
+    Tool(
+        name="graph_context",
+        description=("Full context for a named entity: entity info, all connected memories, and related entities."),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "entity_name": {"type": "string", "description": "Entity name to look up"},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
+            },
+            "required": ["entity_name"],
+        },
+    ),
+    Tool(
+        name="graph_search",
+        description=(
+            "Graph traversal search: find memories connected through shared entities. "
+            "Starts from matched entities and traverses co-occurrence edges up to max_hops."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Entity name or keyword to search from"},
+                "max_hops": {
+                    "type": "integer",
+                    "default": 2,
+                    "minimum": 1,
+                    "maximum": 5,
+                    "description": "Maximum traversal hops (default 2)",
+                },
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+            },
+            "required": ["query"],
+        },
+    ),
 ]
 
 # Build schema lookup
@@ -670,6 +736,32 @@ def _handle_doc_delete(store: MemoryStore, args: dict) -> dict:
     )
 
 
+def _handle_graph_build(store: MemoryStore, args: dict) -> dict:
+    return store.build_graph(dry_run=args.get("dry_run", False))
+
+
+def _handle_graph_entities(store: MemoryStore, args: dict) -> dict:
+    return store.list_entities(
+        entity_type=args.get("entity_type"),
+        limit=args.get("limit", 50),
+    )
+
+
+def _handle_graph_context(store: MemoryStore, args: dict) -> dict:
+    return store.entity_context(
+        entity_name=args["entity_name"],
+        limit=args.get("limit", 20),
+    )
+
+
+def _handle_graph_search(store: MemoryStore, args: dict) -> list[dict]:
+    return store.search(
+        query=args["query"],
+        mode="graph",
+        limit=args.get("limit", 10),
+    )
+
+
 _HANDLERS = {
     "memory_store": _handle_store,
     "memory_store_batch": _handle_store_batch,
@@ -688,6 +780,10 @@ _HANDLERS = {
     "document_list": _handle_doc_list,
     "document_update": _handle_doc_update,
     "document_delete": _handle_doc_delete,
+    "graph_build": _handle_graph_build,
+    "graph_entities": _handle_graph_entities,
+    "graph_context": _handle_graph_context,
+    "graph_search": _handle_graph_search,
 }
 
 

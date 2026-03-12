@@ -1210,3 +1210,143 @@ def test_roundtrip_export_import(store):
     contents = {m["content"] for m in listing["memories"]}
     assert "roundtrip memory 1" in contents
     assert "roundtrip memory 2" in contents
+
+
+# --- Knowledge Graph ---
+
+
+def test_extract_entities_tickets():
+    """Regex finds ticket identifiers like TICKET-24, PROJ-42."""
+    from memory.core import extract_entities
+
+    entities = extract_entities("Fixed TICKET-24 and TICKET-75 in production")
+    names = {e[0] for e in entities}
+    assert "ticket-24" in names
+    assert "ticket-75" in names
+    types = {e[2] for e in entities}
+    assert "ticket" in types
+
+
+def test_extract_entities_technologies():
+    """Regex finds technology keywords."""
+    from memory.core import extract_entities
+
+    entities = extract_entities("Deployed Kubernetes pods with Docker and Terraform")
+    names = {e[0] for e in entities}
+    assert "kubernetes" in names
+    assert "docker" in names
+    assert "terraform" in names
+    assert all(e[2] == "technology" for e in entities)
+
+
+def test_extract_entities_services():
+    """Regex finds service-like names."""
+    from memory.core import extract_entities
+
+    entities = extract_entities("The billing-manager and notifications-service need updates")
+    names = {e[0] for e in entities}
+    assert "billing-manager" in names
+    assert "notifications-service" in names
+    assert all(e[2] == "service" for e in entities if e[0] in ("billing-manager", "notifications-service"))
+
+
+def test_extract_entities_tags():
+    """Tag-derived entities work."""
+    from memory.core import extract_entities
+
+    entities = extract_entities("Some content", ["project:infrastructure", "cloud:aws", "tool:terraform"])
+    names = {e[0] for e in entities}
+    assert "infrastructure" in names
+    assert "aws" in names
+    assert "terraform" in names
+    types = {(e[0], e[2]) for e in entities}
+    assert ("infrastructure", "project") in types
+    assert ("aws", "cloud") in types
+    assert ("terraform", "tool") in types
+
+
+def test_store_creates_entities(store):
+    """Storing a memory creates entity links."""
+    store.store(
+        "TICKET-24: RDS instance upgrade in production",
+        tags=["project:infrastructure", "cloud:aws"],
+        memory_type="decision",
+    )
+    conn = store._get_conn()
+    entities = conn.execute("SELECT name, entity_type FROM entities").fetchall()
+    names = {r["name"] for r in entities}
+    assert "ticket-24" in names
+    assert "rds" in names
+    assert "infrastructure" in names
+    assert "aws" in names
+
+
+def test_store_creates_co_occurrence_edges(store):
+    """Co-occurring entities in a memory get edges."""
+    store.store(
+        "TICKET-24: Kubernetes deployment with Terraform",
+        tags=["project:infrastructure"],
+    )
+    conn = store._get_conn()
+    edges = conn.execute("SELECT COUNT(*) as cnt FROM entity_relations").fetchone()["cnt"]
+    # Multiple entities → at least some co-occurrence edges
+    assert edges > 0
+
+
+def test_graph_search(populated_store):
+    """Graph mode finds connected memories via shared entities."""
+    results = populated_store.search("TICKET-24", mode="graph")
+    assert len(results) >= 1
+    # Should find TICKET-24 memory directly
+    found_nem24 = any("TICKET-24" in r["content"] for r in results)
+    assert found_nem24
+    # Results should have graph-specific fields
+    assert "graph_hops" in results[0]
+    assert "entities" in results[0]
+
+
+def test_entity_context(populated_store):
+    """entity_context returns memories and related entities."""
+    result = populated_store.entity_context("ticket-24")
+    assert "error" not in result
+    assert result["total_memories"] >= 1
+    assert result["entity"]["name"] == "TICKET-24"
+    assert any("TICKET-24" in m["content"] for m in result["memories"])
+
+
+def test_list_entities(populated_store):
+    """list_entities returns entities with counts."""
+    result = populated_store.list_entities()
+    assert result["total"] > 0
+    for e in result["entities"]:
+        assert "name" in e
+        assert "type" in e
+        assert "memory_count" in e
+
+
+def test_list_entities_by_type(populated_store):
+    """list_entities filters by entity type."""
+    result = populated_store.list_entities(entity_type="ticket")
+    assert result["total"] > 0
+    for e in result["entities"]:
+        assert e["type"] == "ticket"
+
+
+def test_build_graph_idempotent(populated_store):
+    """build_graph is safe to run multiple times."""
+    result1 = populated_store.build_graph()
+    assert result1["memories_processed"] > 0
+    assert result1["entities"] > 0
+
+    # Running again should not create duplicates
+    result2 = populated_store.build_graph()
+    assert result2["entities"] == result1["entities"]
+    assert result2["entities_new"] == 0
+
+
+def test_build_graph_dry_run(populated_store):
+    """build_graph dry_run estimates without writing."""
+    result = populated_store.build_graph(dry_run=True)
+    assert result["dry_run"] is True
+    assert result["memories_to_process"] > 0
+    assert result["estimated_entities"] > 0

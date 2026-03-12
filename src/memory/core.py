@@ -126,6 +126,155 @@ def _sanitize_fts_query(query: str) -> str:
     return " ".join(quoted)
 
 
+# --- Entity extraction (regex-based, zero dependencies) ---
+
+_TICKET_RE = re.compile(r"\b([A-Z]{2,10}-\d+)\b")
+_PR_RE = re.compile(r"\bPR\s*#?(\d+)\b", re.IGNORECASE)
+
+# Technology keywords (normalized lowercase → display name)
+_TECH_KEYWORDS: dict[str, str] = {
+    k: k
+    for k in (
+        "kubernetes",
+        "k8s",
+        "docker",
+        "terraform",
+        "ansible",
+        "helm",
+        "istio",
+        "envoy",
+        "nginx",
+        "postgres",
+        "postgresql",
+        "mysql",
+        "redis",
+        "mongodb",
+        "dynamodb",
+        "elasticsearch",
+        "kafka",
+        "rabbitmq",
+        "graphql",
+        "grpc",
+        "react",
+        "nextjs",
+        "vue",
+        "angular",
+        "fastapi",
+        "django",
+        "flask",
+        "express",
+        "node",
+        "nodejs",
+        "python",
+        "golang",
+        "rust",
+        "java",
+        "typescript",
+        "javascript",
+        "aws",
+        "gcp",
+        "azure",
+        "s3",
+        "ec2",
+        "rds",
+        "ecs",
+        "eks",
+        "lambda",
+        "cloudfront",
+        "route53",
+        "iam",
+        "vpc",
+        "alb",
+        "sqs",
+        "sns",
+        "ecr",
+        "git",
+        "github",
+        "gitlab",
+        "jenkins",
+        "argocd",
+        "prometheus",
+        "grafana",
+        "datadog",
+        "linux",
+        "ubuntu",
+        "centos",
+        "zmk",
+        "qemu",
+        "buildkit",
+        "onnx",
+        "sqlite",
+        "oauth",
+        "jwt",
+        "openai",
+        "anthropic",
+        "llm",
+    )
+}
+_TECH_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(_TECH_KEYWORDS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+_SERVICE_RE = re.compile(
+    r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*-(?:service|manager|api|worker|controller|operator))\b",
+    re.IGNORECASE,
+)
+
+# Tag prefixes that map to entity types
+_TAG_ENTITY_PREFIXES: dict[str, str] = {
+    "project:": "project",
+    "svc:": "service",
+    "cloud:": "cloud",
+    "tool:": "tool",
+}
+
+
+def extract_entities(content: str, tags: list[str] | None = None) -> list[tuple[str, str, str]]:
+    """Extract entities from memory content and tags.
+
+    Returns list of (name_normalized, display_name, entity_type), deduplicated.
+    """
+    seen: set[tuple[str, str]] = set()  # (name_normalized, entity_type)
+    results: list[tuple[str, str, str]] = []
+
+    def _add(name: str, display: str, etype: str) -> None:
+        key = (name.lower(), etype)
+        if key not in seen:
+            seen.add(key)
+            results.append((name.lower(), display, etype))
+
+    # 1. Structured identifiers: tickets (TICKET-24, PROJ-42)
+    for m in _TICKET_RE.finditer(content):
+        ticket = m.group(1)
+        _add(ticket, ticket, "ticket")
+
+    # 2. PR references
+    for m in _PR_RE.finditer(content):
+        pr_num = m.group(1)
+        _add(f"pr-{pr_num}", f"PR #{pr_num}", "pr")
+
+    # 3. Technology keywords
+    for m in _TECH_RE.finditer(content):
+        tech = m.group(1).lower()
+        _add(tech, _TECH_KEYWORDS.get(tech, tech), "technology")
+
+    # 4. Service-like names
+    for m in _SERVICE_RE.finditer(content):
+        svc = m.group(1).lower()
+        _add(svc, m.group(1), "service")
+
+    # 5. Tag-derived entities
+    for tag in tags or []:
+        for prefix, etype in _TAG_ENTITY_PREFIXES.items():
+            if tag.lower().startswith(prefix):
+                value = tag[len(prefix) :]
+                if value:
+                    _add(value.lower(), value, etype)
+
+    return results
+
+
 def infer_importance(content: str, memory_type: str) -> float:
     """Auto-infer importance from content keywords and memory type."""
     # Keyword rules take priority (highest match wins)
@@ -314,6 +463,48 @@ class MemoryStore:
                 "SELECT id, title, body FROM documents WHERE deleted_at IS NULL"
             )
 
+        self._migrate_graph_tables()
+
+    def _migrate_graph_tables(self) -> None:
+        """One-time migration: create knowledge graph tables."""
+        conn = self._conn
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS entities (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                name          TEXT NOT NULL,
+                display_name  TEXT NOT NULL,
+                entity_type   TEXT NOT NULL,
+                metadata      TEXT DEFAULT '{}',
+                created_at    REAL NOT NULL,
+                UNIQUE(name, entity_type)
+            );
+            CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+            CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+
+            CREATE TABLE IF NOT EXISTS memory_entities (
+                memory_id     INTEGER NOT NULL,
+                entity_id     INTEGER NOT NULL,
+                created_at    REAL NOT NULL,
+                PRIMARY KEY (memory_id, entity_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_me_entity ON memory_entities(entity_id);
+            CREATE INDEX IF NOT EXISTS idx_me_memory ON memory_entities(memory_id);
+
+            CREATE TABLE IF NOT EXISTS entity_relations (
+                source_id      INTEGER NOT NULL,
+                target_id      INTEGER NOT NULL,
+                relation_type  TEXT NOT NULL,
+                weight         REAL DEFAULT 1.0,
+                created_at     REAL NOT NULL,
+                updated_at     REAL NOT NULL,
+                PRIMARY KEY (source_id, target_id, relation_type)
+            );
+            CREATE INDEX IF NOT EXISTS idx_er_source ON entity_relations(source_id);
+            CREATE INDEX IF NOT EXISTS idx_er_target ON entity_relations(target_id);
+            """
+        )
+
     @staticmethod
     def _rollback_safe(conn: sqlite3.Connection) -> None:
         """Roll back the current transaction, ignoring errors if none is active."""
@@ -350,6 +541,52 @@ class MemoryStore:
                 kwargs.get("chars_returned"),
             ),
         )
+
+    # --- Entity Linking ---
+
+    def _link_entities(self, conn: sqlite3.Connection, mem_id: int, content: str, tags: list[str]) -> None:
+        """Extract entities from content/tags and link them to a memory.
+
+        Creates entities, memory↔entity links, and co-occurrence edges.
+        Must be called within an active transaction.
+        """
+        entities = extract_entities(content, tags)
+        if not entities:
+            return
+
+        now = time.time()
+        entity_ids: list[int] = []
+
+        for name, display, etype in entities:
+            conn.execute(
+                "INSERT OR IGNORE INTO entities (name, display_name, entity_type, created_at) VALUES (?, ?, ?, ?)",
+                (name, display, etype, now),
+            )
+            row = conn.execute(
+                "SELECT id FROM entities WHERE name = ? AND entity_type = ?",
+                (name, etype),
+            ).fetchone()
+            eid = row["id"]
+            entity_ids.append(eid)
+
+            # Link memory ↔ entity
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, created_at) VALUES (?, ?, ?)",
+                (mem_id, eid, now),
+            )
+
+        # Create/increment co-occurrence edges for all entity pairs
+        for i in range(len(entity_ids)):
+            for j in range(i + 1, len(entity_ids)):
+                a, b = min(entity_ids[i], entity_ids[j]), max(entity_ids[i], entity_ids[j])
+                conn.execute(
+                    "INSERT INTO entity_relations "
+                    "(source_id, target_id, relation_type, weight, created_at, updated_at) "
+                    "VALUES (?, ?, 'co_occurrence', 1.0, ?, ?) "
+                    "ON CONFLICT(source_id, target_id, relation_type) DO UPDATE SET "
+                    "weight = weight + 1.0, updated_at = ?",
+                    (a, b, now, now, now),
+                )
 
     # --- Store ---
 
@@ -451,6 +688,8 @@ class MemoryStore:
                     "INSERT OR REPLACE INTO memory_fts(rowid, content) VALUES (?, ?)",
                     (tomb_id, content),
                 )
+                # Link entities from content and tags
+                self._link_entities(conn, tomb_id, content, mem.tags)
                 duration_ms = (time.time() - start) * 1000
                 self._track_event(
                     conn,
@@ -536,6 +775,9 @@ class MemoryStore:
                 "INSERT INTO memory_fts(rowid, content) VALUES (?, ?)",
                 (mem_id, content),
             )
+
+            # Link entities from content and tags
+            self._link_entities(conn, mem_id, content, mem.tags)
 
             duration_ms = (time.time() - start) * 1000
             self._track_event(
@@ -676,6 +918,8 @@ class MemoryStore:
                 memory_types=memory_types,
                 min_importance=min_importance,
             )
+        elif mode == "graph":
+            results = self._search_graph(conn, query, limit)
         else:
             raise ValueError(f"Unknown search mode: {mode}")
 
@@ -1140,6 +1384,110 @@ class MemoryStore:
         merged.sort(key=lambda m: m["score"], reverse=True)
         return merged[:limit]
 
+    def _search_graph(
+        self,
+        conn: sqlite3.Connection,
+        query: str | None,
+        limit: int,
+        max_hops: int = 2,
+    ) -> list[dict]:
+        """Graph traversal search: find memories connected through shared entities."""
+        if not query:
+            return []
+
+        # Find seed entities matching query (exact, prefix, or substring)
+        q_lower = query.lower()
+        seed_rows = conn.execute(
+            "SELECT id, name, display_name, entity_type FROM entities "
+            "WHERE name = ? OR name LIKE ? OR display_name LIKE ?",
+            (q_lower, f"{q_lower}%", f"%{query}%"),
+        ).fetchall()
+
+        if not seed_rows:
+            return []
+
+        seed_ids = [r["id"] for r in seed_rows]
+
+        # Recursive CTE: traverse entity_relations up to max_hops
+        placeholders = ",".join("?" * len(seed_ids))
+        cte_sql = f"""
+            WITH RECURSIVE graph_walk(entity_id, hops, path_weight) AS (
+                -- Seed: the matched entities at hop 0
+                SELECT id, 0, 1.0
+                FROM entities WHERE id IN ({placeholders})
+
+                UNION ALL
+
+                -- Walk edges (both directions)
+                SELECT
+                    CASE WHEN er.source_id = gw.entity_id THEN er.target_id ELSE er.source_id END,
+                    gw.hops + 1,
+                    gw.path_weight * er.weight
+                FROM graph_walk gw
+                JOIN entity_relations er
+                    ON er.source_id = gw.entity_id OR er.target_id = gw.entity_id
+                WHERE gw.hops < ?
+            )
+            SELECT DISTINCT
+                m.id, m.content_hash, m.content, m.tags, m.memory_type,
+                m.metadata, m.created_at, m.updated_at, m.created_at_iso,
+                m.updated_at_iso, m.confidence, m.importance,
+                m.recall_count, m.last_recalled_at,
+                MIN(gw.hops) as graph_hops,
+                MAX(gw.path_weight) as graph_weight
+            FROM graph_walk gw
+            JOIN memory_entities me ON me.entity_id = gw.entity_id
+            JOIN memories m ON m.id = me.memory_id
+            WHERE m.deleted_at IS NULL
+            GROUP BY m.id
+            ORDER BY MIN(gw.hops) ASC, MAX(gw.path_weight) DESC
+            LIMIT ?
+        """
+        params = [*seed_ids, max_hops, limit * 3]
+        rows = conn.execute(cte_sql, params).fetchall()
+
+        if not rows:
+            return []
+
+        memories = []
+        for row in rows:
+            row_dict = dict(row)
+            mem = Memory.from_row(row_dict)
+            d = mem.to_dict()
+
+            hops = row_dict["graph_hops"]
+            weight = row_dict["graph_weight"]
+            recency = compute_recency(mem.created_at)
+
+            # Score: proximity (hops), importance, recency
+            d["score"] = round(0.5 / (1 + hops) + 0.3 * mem.importance + 0.2 * recency, 4)
+            d["graph_hops"] = hops
+            d["graph_weight"] = round(weight, 4)
+
+            conf = compute_confidence(
+                mem.confidence,
+                mem.memory_type,
+                row_dict.get("last_recalled_at"),
+                mem.created_at,
+            )
+            d["confidence"] = round(conf, 4)
+            d["recall_count"] = row_dict.get("recall_count", 0) or 0
+            d["last_recalled_at"] = row_dict.get("last_recalled_at")
+
+            # Attach entity names for this memory
+            entity_rows = conn.execute(
+                "SELECT e.display_name, e.entity_type FROM entities e "
+                "JOIN memory_entities me ON me.entity_id = e.id "
+                "WHERE me.memory_id = ?",
+                (row_dict["id"],),
+            ).fetchall()
+            d["entities"] = [{"name": er["display_name"], "type": er["entity_type"]} for er in entity_rows]
+
+            memories.append(d)
+
+        memories.sort(key=lambda m: m["score"], reverse=True)
+        return memories[:limit]
+
     # --- List ---
 
     def list(
@@ -1195,6 +1543,169 @@ class MemoryStore:
         return {
             "total_unique": len(sorted_tags),
             "tags": [{"tag": t, "count": c} for t, c in sorted_tags],
+        }
+
+    # --- Knowledge Graph ---
+
+    def list_entities(self, entity_type: str | None = None, limit: int = 50) -> dict:
+        """List entities with memory counts."""
+        conn = self._get_conn()
+        sql = """
+            SELECT e.id, e.name, e.display_name, e.entity_type,
+                   COUNT(me.memory_id) as memory_count
+            FROM entities e
+            LEFT JOIN memory_entities me ON me.entity_id = e.id
+            GROUP BY e.id
+        """
+        params: list = []
+        if entity_type:
+            sql = """
+                SELECT e.id, e.name, e.display_name, e.entity_type,
+                       COUNT(me.memory_id) as memory_count
+                FROM entities e
+                LEFT JOIN memory_entities me ON me.entity_id = e.id
+                WHERE e.entity_type = ?
+                GROUP BY e.id
+            """
+            params.append(entity_type)
+
+        sql += " ORDER BY memory_count DESC LIMIT ?"
+        params.append(limit)
+
+        rows = conn.execute(sql, params).fetchall()
+        return {
+            "total": len(rows),
+            "entities": [
+                {
+                    "name": r["display_name"],
+                    "type": r["entity_type"],
+                    "memory_count": r["memory_count"],
+                }
+                for r in rows
+            ],
+        }
+
+    def entity_context(self, entity_name: str, limit: int = 20) -> dict:
+        """Full context for an entity: info, connected memories, related entities."""
+        conn = self._get_conn()
+
+        # Find entity (case-insensitive)
+        row = conn.execute(
+            "SELECT id, name, display_name, entity_type FROM entities WHERE name = ?",
+            (entity_name.lower(),),
+        ).fetchone()
+        if not row:
+            # Try prefix match
+            row = conn.execute(
+                "SELECT id, name, display_name, entity_type FROM entities WHERE name LIKE ?",
+                (entity_name.lower() + "%",),
+            ).fetchone()
+        if not row:
+            return {"error": f"Entity not found: {entity_name}"}
+
+        entity_id = row["id"]
+        entity_info = {
+            "name": row["display_name"],
+            "type": row["entity_type"],
+        }
+
+        # Connected memories
+        mem_rows = conn.execute(
+            "SELECT m.content_hash, m.content, m.memory_type, m.tags, "
+            "m.importance, m.created_at, m.recall_count "
+            "FROM memories m "
+            "JOIN memory_entities me ON me.memory_id = m.id "
+            "WHERE me.entity_id = ? AND m.deleted_at IS NULL "
+            "ORDER BY m.created_at DESC LIMIT ?",
+            (entity_id, limit),
+        ).fetchall()
+        memories = [
+            {
+                "content_hash": r["content_hash"],
+                "content": r["content"],
+                "memory_type": r["memory_type"],
+                "tags": _safe_tags(r["tags"]),
+                "importance": r["importance"],
+                "recall_count": r["recall_count"] or 0,
+            }
+            for r in mem_rows
+        ]
+
+        # Related entities (via edges)
+        rel_rows = conn.execute(
+            "SELECT e.display_name, e.entity_type, er.weight "
+            "FROM entity_relations er "
+            "JOIN entities e ON (e.id = CASE WHEN er.source_id = ? THEN er.target_id ELSE er.source_id END) "
+            "WHERE er.source_id = ? OR er.target_id = ? "
+            "ORDER BY er.weight DESC LIMIT 20",
+            (entity_id, entity_id, entity_id),
+        ).fetchall()
+        related = [
+            {
+                "name": r["display_name"],
+                "type": r["entity_type"],
+                "weight": round(r["weight"], 1),
+            }
+            for r in rel_rows
+        ]
+
+        return {
+            "entity": entity_info,
+            "memories": memories,
+            "related_entities": related,
+            "total_memories": len(memories),
+            "total_related": len(related),
+        }
+
+    def build_graph(self, dry_run: bool = False) -> dict:
+        """Build/rebuild the knowledge graph from all existing memories.
+
+        Processes all non-deleted memories through entity extraction.
+        Safe to run multiple times (uses INSERT OR IGNORE).
+        """
+        conn = self._get_conn()
+        rows = conn.execute("SELECT id, content, tags FROM memories WHERE deleted_at IS NULL").fetchall()
+
+        total = len(rows)
+        if dry_run:
+            # Estimate entities without writing
+            entity_set: set[tuple[str, str]] = set()
+            for r in rows:
+                entities = extract_entities(r["content"], _safe_tags(r["tags"]))
+                for name, _display, etype in entities:
+                    entity_set.add((name, etype))
+            return {
+                "dry_run": True,
+                "memories_to_process": total,
+                "estimated_entities": len(entity_set),
+            }
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            entities_before = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+            links_before = conn.execute("SELECT COUNT(*) as cnt FROM memory_entities").fetchone()["cnt"]
+            edges_before = conn.execute("SELECT COUNT(*) as cnt FROM entity_relations").fetchone()["cnt"]
+
+            for r in rows:
+                self._link_entities(conn, r["id"], r["content"], _safe_tags(r["tags"]))
+
+            entities_after = conn.execute("SELECT COUNT(*) as cnt FROM entities").fetchone()["cnt"]
+            links_after = conn.execute("SELECT COUNT(*) as cnt FROM memory_entities").fetchone()["cnt"]
+            edges_after = conn.execute("SELECT COUNT(*) as cnt FROM entity_relations").fetchone()["cnt"]
+
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return {
+            "memories_processed": total,
+            "entities": entities_after,
+            "entities_new": entities_after - entities_before,
+            "links": links_after,
+            "links_new": links_after - links_before,
+            "edges": edges_after,
+            "edges_new": edges_after - edges_before,
         }
 
     def rename_tag(self, old_tag: str, new_tag: str) -> dict:
