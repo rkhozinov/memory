@@ -874,6 +874,7 @@ class MemoryStore:
         min_importance: float | None = None,
         rerank: bool = False,
         rerank_weight: float = 0.4,
+        max_hops: int = 2,
     ) -> list[dict]:
         """Search memories. Modes: hybrid (default), semantic, exact, fts.
 
@@ -891,11 +892,12 @@ class MemoryStore:
         # When reranking: escalate semantic/fts to hybrid (merges both candidate pools),
         # shift scoring weights toward similarity (reranker handles relevance),
         # and overfetch 3x to give the reranker a broader candidate pool.
-        if rerank and mode in ("semantic", "fts", "hybrid"):
-            mode = "hybrid"
-            if scoring_weights is None:
+        if rerank and mode in ("semantic", "fts", "hybrid", "graph"):
+            if mode in ("semantic", "fts"):
+                mode = "hybrid"
+            if scoring_weights is None and mode != "graph":
                 scoring_weights = (0.8, 0.1, 0.1)
-        fetch_limit = limit * 3 if rerank and mode == "hybrid" else limit
+        fetch_limit = limit * 3 if rerank and mode in ("hybrid", "graph") else limit
 
         # Read phase — no write lock needed yet
         if mode == "exact":
@@ -954,12 +956,12 @@ class MemoryStore:
                 min_importance=min_importance,
             )
         elif mode == "graph":
-            results = self._search_graph(conn, query, limit)
+            results = self._search_graph(conn, query, fetch_limit, max_hops=max_hops)
         else:
             raise ValueError(f"Unknown search mode: {mode}")
 
         # Cross-encoder reranking (opt-in)
-        if rerank and mode == "hybrid" and results and query:
+        if rerank and mode in ("hybrid", "graph") and results and query:
             results = self._apply_rerank(query, results, limit, rerank_weight)
 
         # Write phase — acquire lock for event + recall tracking
@@ -1434,12 +1436,27 @@ class MemoryStore:
         if not query:
             return []
 
-        # Find seed entities matching query (exact, prefix, or substring)
-        q_lower = query.lower()
+        # Extract entities from query using same regex patterns as store()
+        extracted = extract_entities(query)
+        candidate_names = list({name for name, _, _ in extracted})
+        if not candidate_names:
+            # Fallback: use query as-is (original behavior)
+            candidate_names = [query.lower()]
+
+        # Find seed entities matching ANY extracted entity
+        conditions = []
+        params: list[str] = []
+        for name in candidate_names:
+            conditions.append("(name = ? OR name LIKE ?)")
+            params.extend([name, f"{name}%"])
+        # Also keep display_name substring match on original query for flexibility
+        conditions.append("display_name LIKE ?")
+        params.append(f"%{query}%")
+
+        where_clause = " OR ".join(conditions)
         seed_rows = conn.execute(
-            "SELECT id, name, display_name, entity_type FROM entities "
-            "WHERE name = ? OR name LIKE ? OR display_name LIKE ?",
-            (q_lower, f"{q_lower}%", f"%{query}%"),
+            f"SELECT id, name, display_name, entity_type FROM entities WHERE {where_clause}",
+            params,
         ).fetchall()
 
         if not seed_rows:
@@ -1482,7 +1499,7 @@ class MemoryStore:
             ORDER BY MIN(gw.hops) ASC, MAX(gw.path_weight) DESC
             LIMIT ?
         """
-        params = [*seed_ids, max_hops, limit * 3]
+        params = [*seed_ids, max_hops, limit]
         rows = conn.execute(cte_sql, params).fetchall()
 
         if not rows:

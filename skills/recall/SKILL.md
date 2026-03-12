@@ -52,6 +52,7 @@ Use `--mode` to control how search works:
 | `exact` | Substring match — when you know the exact phrase | `memory search "UNIQUE constraint" --mode exact` |
 | `fts` | Full-text keyword search — technical terms, specific identifiers | `memory search "terraform backend" --mode fts` |
 | `hybrid` | Combined semantic + exact | `memory search "IAM policy" --mode hybrid` |
+| `graph` | Entity-based traversal — finds connected memories via shared entities | `memory search "terraform state locking" --mode graph --hops 3` |
 
 For documents, modes are `semantic`, `fts`, and `auto` (default, combines both).
 
@@ -91,7 +92,7 @@ memory -f text search "query" --rerank --rerank-weight 0.6
 memory -f text search "query" --rerank --depth full
 ```
 
-Reranking is ignored for `exact` and `graph` modes.
+Reranking works with `semantic`, `fts`, `hybrid`, and `graph` modes. Ignored for `exact` mode.
 
 ## Batch search
 

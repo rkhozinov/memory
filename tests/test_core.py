@@ -1391,10 +1391,54 @@ def test_search_rerank_not_applied_to_exact(populated_store):
         assert "reranker_score" not in r
 
 
-def test_search_rerank_not_applied_to_graph(populated_store):
-    """Graph mode ignores rerank flag — no reranker_score in results."""
+def test_search_rerank_applied_to_graph(populated_store):
+    """Graph mode supports reranking — results include reranker_score."""
     populated_store.build_graph()
     results = populated_store.search("TICKET-24", mode="graph", rerank=True, limit=5)
-    # Graph may return results or not depending on graph state, but none should have reranker_score
+    assert len(results) >= 1
     for r in results:
-        assert "reranker_score" not in r
+        assert "reranker_score" in r
+        assert 0.0 <= r["reranker_score"] <= 1.0
+
+
+# --- Graph search entity extraction tests ---
+
+
+def test_graph_search_extracts_entities_from_query(populated_store):
+    """Multi-word query extracts entities — 'terraform state locking' finds terraform entity."""
+    populated_store.build_graph()
+    results = populated_store.search("terraform state locking", mode="graph")
+    assert len(results) >= 1
+    # Should find the terraform state locking memory via the "terraform" entity
+    found = any("terraform" in r["content"].lower() for r in results)
+    assert found
+
+
+def test_graph_search_multi_entity_query(populated_store):
+    """Query with multiple entities seeds on all of them."""
+    populated_store.build_graph()
+    results = populated_store.search("TICKET-24 terraform", mode="graph")
+    assert len(results) >= 2
+    # Should find both TICKET-24 and terraform content
+    found_nem = any("TICKET-24" in r["content"] for r in results)
+    found_tf = any("terraform" in r["content"].lower() for r in results)
+    assert found_nem
+    assert found_tf
+
+
+def test_graph_search_fallback_no_entities(populated_store):
+    """Query with no extractable entities falls back to whole-string lookup."""
+    populated_store.build_graph()
+    # "deployment patterns" has no regex-extractable entities
+    results = populated_store.search("deployment patterns", mode="graph")
+    # May return empty or results — the key is it doesn't crash
+    assert isinstance(results, list)
+
+
+def test_graph_search_max_hops(populated_store):
+    """max_hops parameter is passed through to graph search."""
+    populated_store.build_graph()
+    results_2 = populated_store.search("TICKET-24", mode="graph", max_hops=2)
+    results_1 = populated_store.search("TICKET-24", mode="graph", max_hops=1)
+    # Fewer hops should return <= results than more hops
+    assert len(results_1) <= len(results_2)

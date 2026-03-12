@@ -180,6 +180,13 @@ TOOLS = [
                     "maximum": 1.0,
                     "description": "Rerank blend weight (0-1)",
                 },
+                "max_hops": {
+                    "type": "integer",
+                    "default": 2,
+                    "minimum": 1,
+                    "maximum": 5,
+                    "description": "Max hops for graph mode traversal (default 2)",
+                },
             },
         },
     ),
@@ -608,6 +615,7 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
         before=args.get("before"),
         rerank=args.get("rerank", False),
         rerank_weight=args.get("rerank_weight", 0.4),
+        max_hops=args.get("max_hops", 2),
     )
     depth = args.get("depth", "summary")
     if depth == "titles":
@@ -773,6 +781,7 @@ def _handle_graph_search(store: MemoryStore, args: dict) -> list[dict]:
         query=args["query"],
         mode="graph",
         limit=args.get("limit", 10),
+        max_hops=args.get("max_hops", 2),
     )
 
 
