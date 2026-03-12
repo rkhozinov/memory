@@ -76,23 +76,22 @@ memory -f text search "query" --depth full
 
 ## Cross-encoder reranking
 
-Add `--rerank` to re-score results with a cross-encoder model for higher precision. The reranker jointly encodes (query, candidate) pairs, capturing fine-grained interactions that bi-encoder similarity misses. Adds ~20-50ms latency.
+Add `--rerank` to re-score results with a TinyBERT cross-encoder for higher precision. The reranker jointly encodes (query, candidate) pairs, capturing fine-grained interactions that bi-encoder similarity misses. Adds ~30ms latency.
+
+When `--rerank` is active, semantic/fts modes are automatically escalated to hybrid (merging both candidate pools), and scoring weights shift to (0.8, 0.1, 0.1) to favor similarity over importance/recency.
 
 ```bash
-# Basic reranking (uses TinyBERT, 4.5MB, fastest)
+# Basic reranking
 memory -f text search "kubernetes deployment" --rerank
 
 # Adjust blend weight (0=ignore reranker, 1=only reranker, default 0.4)
 memory -f text search "query" --rerank --rerank-weight 0.6
 
-# Use higher-quality model (MiniLM-L6, 23MB)
-memory -f text search "query" --rerank --rerank-model minilm6
-
 # View reranker score in breakdown
 memory -f text search "query" --rerank --depth full
 ```
 
-Reranking only applies to `semantic`, `fts`, and `hybrid` modes. It is ignored for `exact` and `graph` modes.
+Reranking is ignored for `exact` and `graph` modes.
 
 ## Batch search
 

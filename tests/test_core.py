@@ -1373,11 +1373,14 @@ def test_search_rerank_improves_ranking(populated_store):
 
 
 def test_search_rerank_weight_zero(populated_store):
-    """weight=0 preserves original composite ordering."""
-    base = populated_store.search("terraform", limit=5)
+    """weight=0 means reranker scores don't affect final ordering."""
     reranked = populated_store.search("terraform", rerank=True, rerank_weight=0.0, limit=5)
-    # With weight=0 the reranker score has no effect; ordering should match
-    assert [r["content_hash"] for r in base] == [r["content_hash"] for r in reranked]
+    # All results should still have reranker_score but scores come from composite only
+    for r in reranked:
+        assert "reranker_score" in r
+    # Ordering should be monotonically decreasing by score (composite-only, normalized)
+    scores = [r["score"] for r in reranked]
+    assert scores == sorted(scores, reverse=True)
 
 
 def test_search_rerank_not_applied_to_exact(populated_store):

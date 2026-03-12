@@ -15,10 +15,6 @@ RERANKER_MODELS = {
         "hf_repo": "cross-encoder/ms-marco-TinyBERT-L-2-v2",
         "max_seq_length": 512,
     },
-    "minilm6": {
-        "hf_repo": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-        "max_seq_length": 512,
-    },
 }
 
 
@@ -133,10 +129,9 @@ class RerankerModel:
 _reranker: RerankerModel | None = None
 
 
-def get_reranker(model_name: str | None = None) -> RerankerModel:
-    """Get or create the singleton reranker model. Switches model if name changes."""
+def get_reranker() -> RerankerModel:
+    """Get or create the singleton reranker model."""
     global _reranker
-    name = model_name or "tinybert"
-    if _reranker is None or _reranker.model_name != name:
-        _reranker = RerankerModel(name)
+    if _reranker is None:
+        _reranker = RerankerModel()
     return _reranker

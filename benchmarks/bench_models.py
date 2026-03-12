@@ -576,7 +576,6 @@ def print_report(
 
 RERANKER_MODELS_BENCH = {
     "tinybert": "tinybert",
-    "minilm6": "minilm6",
 }
 
 # Extended corpus with importance traps for reranker evaluation.

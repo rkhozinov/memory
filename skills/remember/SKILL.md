@@ -161,7 +161,6 @@ memory -f text doc search "query" --limit 5
 
 # Search with cross-encoder reranking for higher precision
 memory -f text search "query" --rerank
-memory -f text search "query" --rerank --rerank-model minilm6
 ```
 
 ### New in this version
