@@ -14,7 +14,7 @@ import numpy as np
 MODEL_DIR = Path.home() / ".claude" / "tools" / "memory" / "data" / "models"
 DATA_DIR = Path.home() / ".claude" / "tools" / "memory" / "data"
 CACHE_DB_PATH = DATA_DIR / "embedding_cache.db"
-MODEL_NAME = "e5-small"
+MODEL_NAME = "e5-small-v2"
 ONNX_MODEL_FILE = "model.onnx"
 ONNX_URL = f"https://huggingface.co/intfloat/{MODEL_NAME}/resolve/main/{ONNX_MODEL_FILE}"
 TOKENIZER_URL = f"https://huggingface.co/intfloat/{MODEL_NAME}/resolve/main/tokenizer.json"
