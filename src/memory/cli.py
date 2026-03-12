@@ -965,7 +965,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # search
     p = sub.add_parser("search", help="Search memories")
     p.add_argument("query", nargs="?", default=None)
-    p.add_argument("--mode", default="semantic", choices=["semantic", "exact", "hybrid", "fts"])
+    p.add_argument("--mode", default="hybrid", choices=["semantic", "exact", "hybrid", "fts"])
     p.add_argument("--limit", "-n", default=10, type=int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--exclude-tags", default="", help="Comma-separated tags to exclude")

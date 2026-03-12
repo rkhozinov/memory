@@ -131,7 +131,7 @@ TOOLS = [
     Tool(
         name="memory_search",
         description=(
-            "Search memories. Modes: semantic (default), exact, hybrid. "
+            "Search memories. Modes: hybrid (default, semantic+FTS merged), semantic, exact, fts. "
             "Supports time filters (time_expr, after, before) and tag filters."
         ),
         inputSchema={
@@ -140,8 +140,8 @@ TOOLS = [
                 "query": {"type": "string", "description": "Search query"},
                 "mode": {
                     "type": "string",
-                    "enum": ["semantic", "exact", "hybrid"],
-                    "default": "semantic",
+                    "enum": ["semantic", "exact", "hybrid", "fts"],
+                    "default": "hybrid",
                 },
                 "limit": {
                     "type": "integer",
@@ -522,7 +522,7 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
     tags = _normalize_tags(args.get("tags"))
     results = store.search(
         query=args.get("query"),
-        mode=args.get("mode", "semantic"),
+        mode=args.get("mode", "hybrid"),
         limit=args.get("limit", 10),
         tags=tags or None,
         time_expr=args.get("time_expr"),

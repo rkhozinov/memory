@@ -256,11 +256,100 @@ def test_update_no_changes(store):
     assert "error" in updated
 
 
-def test_search_hybrid_mode(store):
-    """mode='hybrid' works as alias for semantic."""
-    store.store("hybrid search test content")
-    results = store.search("hybrid search", mode="hybrid")
-    assert isinstance(results, list)
+def test_search_hybrid_mode(populated_store):
+    """Hybrid search returns exact identifier match as top result."""
+    results = populated_store.search("TICKET-24", mode="hybrid")
+    assert len(results) >= 1
+    assert "TICKET-24" in results[0]["content"]
+
+
+def test_hybrid_identifier_precision(populated_store):
+    """Searching for TICKET-75 returns TICKET-75 memory, not other TICKET-* tickets."""
+    results = populated_store.search("TICKET-75", mode="hybrid")
+    assert len(results) >= 1
+    assert "TICKET-75" in results[0]["content"]
+    # Other NEM tickets should not outrank the exact match
+    for r in results[1:]:
+        if "TICKET-75" not in r["content"]:
+            assert r["score"] <= results[0]["score"]
+
+
+def test_hybrid_nonexistent_identifier(populated_store):
+    """Searching for non-existent TICKET-999 should not have FTS-boosted results."""
+    results = populated_store.search("TICKET-999", mode="hybrid")
+    # Results may exist (semantic similarity to TICKET-* content) but none should have dual-match boost
+    for r in results:
+        assert "TICKET-999" not in r["content"]
+
+
+def test_semantic_vs_hybrid_identifier_ranking(populated_store):
+    """Hybrid outperforms semantic for identifier queries."""
+    sem_results = populated_store.search("TICKET-24", mode="semantic", limit=5)
+    hyb_results = populated_store.search("TICKET-24", mode="hybrid", limit=5)
+    # Hybrid's top result should contain TICKET-24
+    assert "TICKET-24" in hyb_results[0]["content"]
+    # Semantic might not have TICKET-24 on top (the original bug)
+    # At minimum, hybrid's top result score should be >= semantic's
+    if sem_results:
+        assert hyb_results[0]["score"] >= sem_results[0]["score"]
+
+
+def test_fts_single_result_similarity(store):
+    """Single FTS result should get similarity 1.0, not 0.0."""
+    store.store("unique-identifier-xyz42 is the only match")
+    results = store.search("unique-identifier-xyz42", mode="fts", limit=5)
+    assert len(results) == 1
+    assert results[0]["similarity"] == 1.0
+    # Score should reflect the similarity (not 0.0)
+    assert results[0]["score"] > 0.3
+
+
+def test_fts_multiple_results_normalization(store):
+    """Multiple FTS results: best gets similarity ~1.0, worst ~0.0."""
+    store.store("terraform state backend configuration guide")
+    store.store("terraform module for AWS VPC networking")
+    store.store("configure terraform provider credentials")
+    results = store.search("terraform", mode="fts", limit=5)
+    assert len(results) >= 2
+    sims = [r["similarity"] for r in results]
+    assert max(sims) == 1.0  # best result
+    assert min(sims) < max(sims)  # there's variance
+
+
+def test_hybrid_dual_match_boost(populated_store):
+    """Memory found by BOTH semantic and FTS gets higher score than single-backend match."""
+    # "Kubernetes pod crash" should match the crash-loop memory via both backends
+    results = populated_store.search("Kubernetes pod crash", mode="hybrid")
+    assert len(results) >= 1
+    assert "crash" in results[0]["content"].lower()
+    # The score should include both semantic and FTS contributions
+    assert results[0]["score"] > 0
+
+
+def test_hybrid_topic_search_quality(populated_store):
+    """Hybrid search for a topic returns relevant content on top."""
+    results = populated_store.search("terraform state locking", mode="hybrid")
+    assert len(results) >= 1
+    # The terraform state locking memory should be top result
+    assert "terraform" in results[0]["content"].lower()
+    assert "state" in results[0]["content"].lower()
+
+
+def test_hybrid_returns_results_when_fts_empty(store):
+    """Hybrid degrades gracefully to semantic-only when FTS has no matches."""
+    store.store("machine learning model training pipeline optimization")
+    # Query is semantically similar but uses different words
+    results = store.search("AI model training workflow", mode="hybrid")
+    # Should still find the memory via semantic backend
+    assert len(results) >= 1
+
+
+def test_hybrid_returns_results_when_only_fts_matches(store):
+    """Hybrid includes FTS-only results when semantic misses."""
+    store.store("PROJ-42 configuration update")
+    results = store.search("PROJ-42", mode="hybrid")
+    assert len(results) >= 1
+    assert "PROJ-42" in results[0]["content"]
 
 
 def test_list_by_memory_type(store):

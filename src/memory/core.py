@@ -598,7 +598,7 @@ class MemoryStore:
     def search(
         self,
         query: str | None = None,
-        mode: str = "semantic",
+        mode: str = "hybrid",
         limit: int = 10,
         tags: list[str] | None = None,
         time_expr: str | None = None,
@@ -609,7 +609,7 @@ class MemoryStore:
         memory_types: list[str] | None = None,
         min_importance: float | None = None,
     ) -> list[dict]:
-        """Search memories. Modes: semantic, exact, hybrid.
+        """Search memories. Modes: hybrid (default), semantic, exact, fts.
 
         scoring_weights: (similarity_w, importance_w, recency_w) for composite
         scoring. Defaults to (0.6, 0.2, 0.2). Only applies to semantic/hybrid.
@@ -634,8 +634,22 @@ class MemoryStore:
                 memory_types=memory_types,
                 min_importance=min_importance,
             )
-        elif mode in ("semantic", "hybrid"):
+        elif mode == "semantic":
             results = self._search_semantic(
+                conn,
+                query,
+                limit,
+                tags,
+                time_expr,
+                after,
+                before,
+                scoring_weights=scoring_weights,
+                exclude_tags=exclude_tags,
+                memory_types=memory_types,
+                min_importance=min_importance,
+            )
+        elif mode == "hybrid":
+            results = self._search_hybrid(
                 conn,
                 query,
                 limit,
@@ -1001,7 +1015,7 @@ class MemoryStore:
         rank_values = list(ranks.values())
         min_rank = min(rank_values)
         max_rank = max(rank_values)
-        rank_range = max_rank - min_rank or 1.0
+        rank_range = max_rank - min_rank
 
         rowids = list(ranks.keys())
         placeholders = ",".join("?" * len(rowids))
@@ -1035,7 +1049,7 @@ class MemoryStore:
 
             rid = row_dict["id"]
             rank = ranks[rid]
-            similarity = round((max_rank - rank) / rank_range, 4)
+            similarity = 1.0 if rank_range == 0 else round((max_rank - rank) / rank_range, 4)
             d["similarity"] = similarity
 
             conf = compute_confidence(
@@ -1062,6 +1076,69 @@ class MemoryStore:
 
         memories.sort(key=lambda m: m["score"], reverse=True)
         return memories[:limit]
+
+    def _search_hybrid(
+        self,
+        conn: sqlite3.Connection,
+        query: str | None,
+        limit: int,
+        tags: list[str] | None,
+        time_expr: str | None,
+        after: str | None,
+        before: str | None,
+        scoring_weights: tuple[float, float, float] | None = None,
+        exclude_tags: list[str] | None = None,
+        memory_types: list[str] | None = None,
+        min_importance: float | None = None,
+    ) -> list[dict]:
+        """True hybrid search: merge semantic + FTS results with dual-match boost."""
+        sem_results = self._search_semantic(
+            conn,
+            query,
+            limit * 2,
+            tags,
+            time_expr,
+            after,
+            before,
+            scoring_weights=scoring_weights,
+            exclude_tags=exclude_tags,
+            memory_types=memory_types,
+            min_importance=min_importance,
+        )
+        fts_results = self._search_fts(
+            conn,
+            query,
+            limit * 2,
+            tags,
+            time_expr,
+            after,
+            before,
+            scoring_weights=scoring_weights,
+            exclude_tags=exclude_tags,
+            memory_types=memory_types,
+            min_importance=min_importance,
+        )
+
+        # Merge by content_hash (follows search_docs() pattern)
+        results_by_hash: dict[str, dict] = {}
+        for r in sem_results:
+            results_by_hash[r["content_hash"]] = r
+
+        for r in fts_results:
+            h = r["content_hash"]
+            if h in results_by_hash:
+                existing = results_by_hash[h]
+                existing["similarity"] = max(
+                    existing.get("similarity", 0),
+                    r.get("similarity", 0),
+                )
+                existing["score"] = existing.get("score", 0) + r.get("score", 0)
+            else:
+                results_by_hash[h] = r
+
+        merged = list(results_by_hash.values())
+        merged.sort(key=lambda m: m["score"], reverse=True)
+        return merged[:limit]
 
     # --- List ---
 
@@ -2471,7 +2548,7 @@ class MemoryStore:
         rank_values = list(ranks.values())
         min_rank = min(rank_values)
         max_rank = max(rank_values)
-        rank_range = max_rank - min_rank or 1.0
+        rank_range = max_rank - min_rank
 
         rowids = list(ranks.keys())
         placeholders = ",".join("?" * len(rowids))
@@ -2489,7 +2566,7 @@ class MemoryStore:
 
             rid = row_dict["id"]
             rank = ranks[rid]
-            similarity = round((max_rank - rank) / rank_range, 4)
+            similarity = 1.0 if rank_range == 0 else round((max_rank - rank) / rank_range, 4)
             d["similarity"] = similarity
             d["recall_count"] = row_dict.get("recall_count", 0) or 0
             d["last_recalled_at"] = row_dict.get("last_recalled_at")

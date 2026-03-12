@@ -89,3 +89,79 @@ def store(tmp_path):
     )
     yield s
     s.close()
+
+
+@pytest.fixture
+def populated_store(store):
+    """Store with realistic memories modeled on production data."""
+    memories = [
+        # Ticket identifiers — the core problem scenario
+        (
+            "TICKET-24: RDS instance class upgrade from db.t3.medium to db.r5.large in production",
+            "decision",
+            ["project:infrastructure", "cloud:aws"],
+            0.8,
+        ),
+        (
+            "TICKET-75: DNS records are managed manually in <registrar>. After K8s deployment,"
+            " must manually create CNAME pointing to ALB hostname",
+            "learning",
+            ["project:infrastructure", "svc:billing-manager"],
+            0.9,
+        ),
+        (
+            "TICKET-198: Eliminate billing-manager Node.js sidecar. Install frontend-templates at Docker build time",
+            "decision",
+            ["project:infrastructure", "svc:billing-manager"],
+            0.8,
+        ),
+        (
+            "TICKET-64: notifications-service PRs: infra repo PR #N covers ECR, IAM policy, SM secret, IRSA",
+            "decision",
+            ["project:infrastructure", "svc:diagnostics"],
+            0.8,
+        ),
+        (
+            "TICKET-109, TICKET-110, TICKET-111 are unassigned In Progress tickets that need owner cleanup",
+            "observation",
+            ["project:myproject", "tool:linear-cli"],
+            0.9,
+        ),
+        # Kubernetes/deployment content
+        (
+            "Kubernetes pod crash loop backoff: check container exit code,"
+            " OOM kills, and liveness probe misconfiguration",
+            "error",
+            ["project:infrastructure", "svc:kubernetes"],
+            0.7,
+        ),
+        (
+            "Kubernetes node autoscaler scales down aggressively during low traffic windows",
+            "learning",
+            ["project:infrastructure", "svc:kubernetes"],
+            0.6,
+        ),
+        # Terraform content
+        (
+            "Terraform S3 backend state locking requires DynamoDB table with LockID partition key",
+            "pattern",
+            ["tool:terraform", "cloud:aws"],
+            0.7,
+        ),
+        # Unrelated content (noise floor)
+        (
+            ".NET Dockerfile with BuildKit secrets is incompatible with QEMU cross-compilation",
+            "pattern",
+            ["tool:docker"],
+            0.7,
+        ),
+        (
+            "Go60 ZMK firmware: disabled BLE and RGB underglow, firmware shrunk 70%",
+            "decision",
+            ["project:go60"],
+            0.8,
+        ),
+    ]
+    for content, mtype, tags, imp in memories:
+        store.store(content, memory_type=mtype, tags=tags, importance=imp)
+    return store
