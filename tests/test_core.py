@@ -1394,55 +1394,6 @@ def test_build_graph_dry_run(populated_store):
     assert result["estimated_entities"] > 0
 
 
-# --- Reranking tests ---
-
-
-def test_search_rerank_basic(populated_store):
-    """Reranked results include reranker_score field."""
-    results = populated_store.search("kubernetes deployment", rerank=True, limit=5)
-    assert len(results) >= 1
-    for r in results:
-        assert "reranker_score" in r
-        assert 0.0 <= r["reranker_score"] <= 1.0
-
-
-def test_search_rerank_improves_ranking(populated_store):
-    """Relevant memory ranks at top after reranking."""
-    results = populated_store.search("kubernetes pod crash loop", rerank=True, limit=5)
-    assert len(results) >= 1
-    # The crash loop memory should be at or near the top
-    assert "crash loop" in results[0]["content"].lower() or "kubernetes" in results[0]["content"].lower()
-
-
-def test_search_rerank_weight_zero(populated_store):
-    """weight=0 means reranker scores don't affect final ordering."""
-    reranked = populated_store.search("terraform", rerank=True, rerank_weight=0.0, limit=5)
-    # All results should still have reranker_score but scores come from composite only
-    for r in reranked:
-        assert "reranker_score" in r
-    # Ordering should be monotonically decreasing by score (composite-only, normalized)
-    scores = [r["score"] for r in reranked]
-    assert scores == sorted(scores, reverse=True)
-
-
-def test_search_rerank_not_applied_to_exact(populated_store):
-    """Exact mode ignores rerank flag — no reranker_score in results."""
-    results = populated_store.search("TICKET-24", mode="exact", rerank=True, limit=5)
-    assert len(results) >= 1
-    for r in results:
-        assert "reranker_score" not in r
-
-
-def test_search_rerank_applied_to_graph(populated_store):
-    """Graph mode supports reranking — results include reranker_score."""
-    populated_store.build_graph()
-    results = populated_store.search("TICKET-24", mode="graph", rerank=True, limit=5)
-    assert len(results) >= 1
-    for r in results:
-        assert "reranker_score" in r
-        assert 0.0 <= r["reranker_score"] <= 1.0
-
-
 # --- Graph search entity extraction tests ---
 
 

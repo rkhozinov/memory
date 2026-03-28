@@ -52,7 +52,7 @@ def _recv_msg(sock: socket.socket) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Client (used by embeddings.py / reranker.py)
+# Client (used by embeddings.py)
 # ---------------------------------------------------------------------------
 
 
@@ -78,23 +78,6 @@ def daemon_embed(texts: list[str]) -> list[list[float]] | None:
         return None
 
 
-def daemon_rerank(query: str, candidates: list[str]) -> list[float] | None:
-    """Request reranking from daemon. Returns None if daemon unavailable."""
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(5.0)
-        sock.connect(str(SOCKET_PATH))
-        req = json.dumps({"op": "rerank", "query": query, "candidates": candidates}).encode()
-        _send_msg(sock, req)
-        resp = json.loads(_recv_msg(sock))
-        sock.close()
-        if "error" in resp:
-            return None
-        return resp["scores"]
-    except (ConnectionError, TimeoutError, OSError):
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
@@ -105,30 +88,19 @@ class InferenceDaemon:
 
     def __init__(self) -> None:
         self._embedding_model = None
-        self._reranker_model = None
         self._running = False
         self._sock: socket.socket | None = None
 
     def _load_models(self) -> None:
         from .embeddings import EmbeddingModel
-        from .reranker import RerankerModel
 
         print("Loading embedding model...", flush=True)
         t0 = time.perf_counter()
         self._embedding_model = EmbeddingModel()
         self._embedding_model._load()
-        # Warm up with a dummy embed
         self._embedding_model.embed("warmup")
         embed_ms = (time.perf_counter() - t0) * 1000
         print(f"  Embedding model ready ({embed_ms:.0f}ms)", flush=True)
-
-        print("Loading reranker model...", flush=True)
-        t0 = time.perf_counter()
-        self._reranker_model = RerankerModel("tinybert")
-        self._reranker_model._load()
-        self._reranker_model.score_pairs("warmup", ["warmup"])
-        rerank_ms = (time.perf_counter() - t0) * 1000
-        print(f"  Reranker model ready ({rerank_ms:.0f}ms)", flush=True)
 
     def _handle_request(self, data: bytes) -> bytes:
         """Process a single request, return response bytes."""
@@ -141,19 +113,12 @@ class InferenceDaemon:
                 embeddings = self._embedding_model.embed_batch(texts)
                 return json.dumps({"embeddings": embeddings.tolist()}).encode()
 
-            elif op == "rerank":
-                query = req["query"]
-                candidates = req["candidates"]
-                scores = self._reranker_model.score_pairs(query, candidates)
-                return json.dumps({"scores": scores.tolist()}).encode()
-
             elif op == "health":
                 return json.dumps(
                     {
                         "status": "running",
                         "pid": os.getpid(),
-                        "embedding_model": "bge-small-en-v1.5",
-                        "reranker_model": "tinybert",
+                        "embedding_model": "modernbert-embed-base",
                     }
                 ).encode()
 

@@ -44,9 +44,8 @@ The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 
 **`models.py`** — `Memory` and `Document` dataclasses. Content is SHA256-hashed (`content_hash`) for exact dedup. Tags are `list[str]`, metadata is `dict`. Both provide `to_row()`/`from_row()`/`to_dict()` for DB serialization. `Document` has `title`, `body`, `summary`, `doc_type`, `version` — no confidence/importance (reference material, no decay).
 
-**`embeddings.py`** — Wraps the `BAAI/bge-small-en-v1.5` ONNX model (12-layer, 384-dim vectors, seq_length=256, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/.claude/tools/memory/data/models/`. CLS token pooling + L2 normalization. Returns raw numpy arrays to avoid `.tolist()` overhead.
+**`embeddings.py`** — Wraps the `nomic-ai/modernbert-embed-base` ONNX model (ModernBERT, 768-dim vectors, seq_length=512, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/.claude/tools/memory/data/models/`. Mean pooling + L2 normalization. Requires `search_query:` prefix for queries and `search_document:` prefix for stored content — use `embed_query()`/`embed_doc()` convenience methods. Returns raw numpy arrays.
 
-**`reranker.py`** — ONNX cross-encoder reranker for search result re-scoring. Lazy-loaded singleton via `get_reranker()`. Downloads quantized TinyBERT-L-2 (4.5MB) from HuggingFace on first use. Platform-aware: picks `model_qint8_arm64.onnx` on ARM, `model_quint8_avx2.onnx` on x86. Scores `(query, candidate)` pairs jointly via tokenizer pair encoding → ONNX inference → sigmoid. No caching (query-dependent scores).
 
 **`core.py`** — `MemoryStore`, the main logic layer. All operations go through this class:
 - `store()` / `store_batch()` — insert with optional semantic dedup (cosine threshold) and importance scoring
@@ -69,10 +68,10 @@ The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 
 Eleven tables in SQLite:
 - **`memories`** — core storage (content, tags as JSON, soft delete via `deleted_at`, recall tracking via `recall_count`/`last_recalled_at`, `confidence` for decay, `importance` for scoring)
-- **`memory_embeddings`** — sqlite-vec virtual table, 384-dim float vectors with cosine distance
+- **`memory_embeddings`** — sqlite-vec virtual table, 768-dim float vectors with cosine distance
 - **`memory_fts`** — FTS5 virtual table for BM25 keyword search on memory content
 - **`documents`** — long-form content (title, body, summary, doc_type, version tracking, recall tracking, soft delete)
-- **`document_embeddings`** — sqlite-vec virtual table, 384-dim float vectors on summary embedding
+- **`document_embeddings`** — sqlite-vec virtual table, 768-dim float vectors on summary embedding
 - **`document_fts`** — FTS5 virtual table for BM25 keyword search on document title + body
 - **`operation_events`** — analytics log (operation type, duration, result counts, dedup info)
 - **`entities`** — canonical entities (deduplicated by normalized name + type: ticket, service, technology, project, cloud, tool, pr)
@@ -88,7 +87,6 @@ Eleven tables in SQLite:
 - **Content hash as primary key for API**: External interfaces use `content_hash` (SHA256) to identify memories, not internal row IDs.
 - **Confidence decay**: Memories lose confidence over time at per-type rates (decision/pattern=0.999/day, error/learning=0.99/day, note/observation=0.97/day). Recalled memories reset to 1.0.
 - **Composite retrieval scoring**: `score = w1*similarity + w2*importance + w3*recency` (default 0.6/0.2/0.2). Search results re-ranked by composite score.
-- **Cross-encoder reranking** (opt-in): `--rerank` re-scores top candidates with TinyBERT cross-encoder (4.5MB). Escalates semantic/fts to hybrid mode for broader candidate pool, shifts scoring weights to (0.8, 0.1, 0.1) to favor similarity, overfetches 3x, then blends `(1-w)*normalized_composite + w*reranker_score` (default w=0.4). Works with semantic, fts, hybrid, and graph modes. Not applied to exact mode.
 - **Importance auto-inference**: Keywords (IMPORTANT→0.9, NEVER→0.8) override type-based defaults (decision=0.8, error=0.7, note=0.4). Explicit `--importance` overrides both.
 - **Deterministic consolidation**: Pairs with cosine similarity > threshold (default 0.92) are merged — higher recall_count wins, tags are unioned. `reference` type is excluded by default (`--exclude-types=reference`) because templated content like TF layer listings produces false-positive high-similarity matches. Pass `--exclude-types=''` to include all types.
 - **Session briefing**: `briefing(budget=150)` generates a markdown summary grouped by type (decision/pattern/error/learning/reference/recent/other) with per-section line budgets scaled to fit the total budget. Ranked by `confidence * importance * recency`.

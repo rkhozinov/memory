@@ -145,6 +145,29 @@ MODELS = {
         "truncate_dim": 384,
         "pooling": "last_token",
     },
+    # --- ModernBERT / new 2026 models ---
+    "granite-small-r2": {
+        "hf_id": "ibm-granite/granite-embedding-small-english-r2",
+        "prefix_query": "",
+        "prefix_doc": "",
+        "dims": 384,
+        "pooling": "mean",
+    },
+    "modernbert-embed-base": {
+        "hf_id": "nomic-ai/modernbert-embed-base",
+        "prefix_query": "search_query: ",
+        "prefix_doc": "search_document: ",
+        "dims": 768,
+        "pooling": "mean",
+    },
+    "modernbert-embed-base-384": {
+        "hf_id": "nomic-ai/modernbert-embed-base",
+        "prefix_query": "search_query: ",
+        "prefix_doc": "search_document: ",
+        "dims": 768,
+        "truncate_dim": 384,
+        "pooling": "mean",
+    },
     # --- EmbeddingGemma (Google, 300M, ONNX-native) ---
     "embeddinggemma": {
         "hf_id": "onnx-community/embeddinggemma-300m-ONNX",

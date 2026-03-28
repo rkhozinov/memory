@@ -101,7 +101,7 @@ def store(tmp_path):
     # sqlite-vec virtual table for embeddings
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings "
-        "USING vec0(content_embedding FLOAT[384] distance_metric=cosine)"
+        "USING vec0(content_embedding FLOAT[768] distance_metric=cosine)"
     )
     # FTS5 virtual table for BM25 keyword search
     conn.execute(
@@ -113,7 +113,7 @@ def store(tmp_path):
     # document-specific virtual tables
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS document_embeddings "
-        "USING vec0(summary_embedding FLOAT[384] distance_metric=cosine)"
+        "USING vec0(summary_embedding FLOAT[768] distance_metric=cosine)"
     )
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS document_fts "

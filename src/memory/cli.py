@@ -116,8 +116,6 @@ def cmd_search(args, store: MemoryStore) -> None:
         limit=args.limit,
         tags=_parse_tags(args.tags),
         memory_types=_parse_tags(args.types),
-        rerank=args.rerank,
-        rerank_weight=args.rerank_weight,
         max_hops=args.hops,
     )
     _json_out(results)
@@ -453,8 +451,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", "-n", default=10, type=int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--types", default="", help="Comma-separated memory types")
-    p.add_argument("--rerank", action="store_true", help="Rerank with cross-encoder")
-    p.add_argument("--rerank-weight", type=float, default=0.4)
     p.add_argument("--hops", type=int, default=2, help="Graph mode hops")
 
     # get

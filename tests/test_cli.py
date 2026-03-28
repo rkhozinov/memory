@@ -34,7 +34,7 @@ def cli_env(tmp_path):
     s._migrate_stats_tables()
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings "
-        "USING vec0(content_embedding FLOAT[384] distance_metric=cosine)"
+        "USING vec0(content_embedding FLOAT[768] distance_metric=cosine)"
     )
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts "

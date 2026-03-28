@@ -468,7 +468,7 @@ class MemoryStore:
         conn.executescript(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS document_embeddings
-                USING vec0(summary_embedding FLOAT[384] distance_metric=cosine);
+                USING vec0(summary_embedding FLOAT[768] distance_metric=cosine);
             """
         )
 
@@ -684,7 +684,7 @@ class MemoryStore:
                 else:
                     from .embeddings import get_model
 
-                    embedding = get_model().embed(content)
+                    embedding = get_model().embed_doc(content)
                 conn.execute(
                     """UPDATE memories
                        SET content = ?, tags = ?, memory_type = ?, metadata = ?,
@@ -734,7 +734,7 @@ class MemoryStore:
             else:
                 from .embeddings import get_model
 
-                embedding = get_model().embed(content)
+                embedding = get_model().embed_doc(content)
 
             # Similarity-based dedup (scoped to same memory_type)
             if dedup_threshold is not None:
@@ -841,7 +841,7 @@ class MemoryStore:
         from .embeddings import get_model
 
         contents = [item["content"] for item in items]
-        embeddings = get_model().embed_batch(contents)
+        embeddings = get_model().embed_doc_batch(contents)
 
         results = []
         for item, embedding in zip(items, embeddings, strict=True):
@@ -863,28 +863,6 @@ class MemoryStore:
 
     # --- Search ---
 
-    def _apply_rerank(
-        self,
-        query: str,
-        results: list[dict],
-        limit: int,
-        weight: float = 0.4,
-    ) -> list[dict]:
-        """Re-score results with a cross-encoder reranker."""
-        from .reranker import get_reranker
-
-        scores = get_reranker().score_pairs(query, [r["content"] for r in results])
-        # Normalize composite scores to [0,1] before blending
-        max_comp = max((r["score"] for r in results), default=1.0) or 1.0
-        for i, r in enumerate(results):
-            rs = float(scores[i])
-            r["score"] = round((1 - weight) * (r["score"] / max_comp) + weight * rs, 4)
-            r["reranker_score"] = round(rs, 4)
-            if "score_breakdown" in r:
-                r["score_breakdown"]["reranker"] = round(rs, 4)
-        results.sort(key=lambda m: m["score"], reverse=True)
-        return results[:limit]
-
     def search(
         self,
         query: str | None = None,
@@ -898,32 +876,12 @@ class MemoryStore:
         exclude_tags: list[str] | None = None,
         memory_types: list[str] | None = None,
         min_importance: float | None = None,
-        rerank: bool = False,
-        rerank_weight: float = 0.4,
         max_hops: int = 2,
     ) -> list[dict]:
-        """Search memories. Modes: hybrid (default), semantic, exact, fts.
-
-        scoring_weights: (similarity_w, importance_w, recency_w) for composite
-        scoring. Defaults to (0.6, 0.2, 0.2). Only applies to semantic/hybrid.
-        exclude_tags: tags to exclude from results.
-        memory_types: filter to only these memory types (plural).
-        min_importance: filter results below this importance threshold.
-        rerank: if True, re-score top candidates with a cross-encoder.
-        rerank_weight: blend weight for reranker score (0-1).
-        """
+        """Search memories. Modes: hybrid (default), semantic, exact, fts, graph."""
         start = time.time()
         conn = self._get_conn()
-
-        # When reranking: escalate semantic/fts to hybrid (merges both candidate pools),
-        # shift scoring weights toward similarity (reranker handles relevance),
-        # and overfetch 3x to give the reranker a broader candidate pool.
-        if rerank and mode in ("semantic", "fts", "hybrid", "graph"):
-            if mode in ("semantic", "fts"):
-                mode = "hybrid"
-            if scoring_weights is None and mode != "graph":
-                scoring_weights = (0.8, 0.1, 0.1)
-        fetch_limit = limit * 3 if rerank and mode in ("hybrid", "graph") else limit
+        fetch_limit = limit
 
         # Read phase — no write lock needed yet
         if mode == "exact":
@@ -986,10 +944,6 @@ class MemoryStore:
         else:
             raise ValueError(f"Unknown search mode: {mode}")
 
-        # Cross-encoder reranking (opt-in)
-        if rerank and mode in ("hybrid", "graph") and results and query:
-            results = self._apply_rerank(query, results, limit, rerank_weight)
-
         # Write phase — acquire lock for event + recall tracking
         duration_ms = (time.time() - start) * 1000
         conn.execute("BEGIN IMMEDIATE")
@@ -1035,7 +989,7 @@ class MemoryStore:
 
         from .embeddings import get_model
 
-        embeddings = get_model().embed_batch(queries)
+        embeddings = get_model().embed_query_batch(queries)
 
         conn = self._get_conn()
         all_results: dict[str, list[dict]] = {}
@@ -1145,7 +1099,7 @@ class MemoryStore:
         elif query:
             from .embeddings import get_model
 
-            embedding = get_model().embed(query)
+            embedding = get_model().embed_query(query)
         else:
             return []
         # Fetch more than needed to allow post-filtering and re-ranking
@@ -2116,7 +2070,7 @@ class MemoryStore:
                 # Recompute embedding
                 from .embeddings import get_model
 
-                new_embedding = get_model().embed(new_content)
+                new_embedding = get_model().embed_doc(new_content)
                 sets.append("content = ?")
                 params.append(new_content)
                 sets.append("content_hash = ?")
@@ -2870,7 +2824,7 @@ class MemoryStore:
             # Compute embedding of summary
             from .embeddings import get_model
 
-            embedding = get_model().embed(summary)
+            embedding = get_model().embed_doc(summary)
 
             # Insert document
             conn.execute(
@@ -3079,7 +3033,7 @@ class MemoryStore:
         """Cosine similarity search on document summary embeddings."""
         from .embeddings import get_model
 
-        embedding = get_model().embed(query)
+        embedding = get_model().embed_query(query)
 
         fetch_limit = max(limit * 3, 30)
         rows = conn.execute(
@@ -3279,7 +3233,7 @@ class MemoryStore:
             if summary_changed:
                 from .embeddings import get_model
 
-                new_embedding = get_model().embed(kwargs["summary"])
+                new_embedding = get_model().embed_doc(kwargs["summary"])
                 conn.execute("DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,))
                 conn.execute(
                     "INSERT INTO document_embeddings (rowid, summary_embedding) VALUES (?, ?)",

@@ -90,18 +90,6 @@ def test_semantic_vs_hybrid_mrr(pipeline_store):
     )
 
 
-def test_hybrid_vs_rerank_mrr(pipeline_store):
-    """Reranked MRR >= hybrid MRR — proves reranker adds value."""
-    queries = [(tc.query, tc.expected_top) for tc in ALL_TEST_CASES if tc.expected_top]
-
-    mrr_hyb = _compute_mrr(pipeline_store, queries, mode="hybrid")
-    mrr_rr = _compute_mrr(pipeline_store, queries, mode="hybrid", rerank=True)
-
-    assert mrr_rr >= mrr_hyb - 0.01, (
-        f"Reranking ({mrr_rr:.3f}) degraded vs hybrid ({mrr_hyb:.3f}) — reranker hurting results"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Tests: category-specific assertions
 # ---------------------------------------------------------------------------
@@ -142,24 +130,19 @@ def test_boolean_queries_require_fts(pipeline_store):
         )
 
 
-def test_importance_traps_require_reranker(pipeline_store):
-    """Reranker resolves importance traps (high-imp distractor vs low-imp correct)."""
+def test_importance_traps_semantic(pipeline_store):
+    """Semantic search handles importance traps (modernbert is strong enough)."""
     queries = [(tc.query, tc.expected_top) for tc in IMPORTANCE_TRAP_CASES if tc.expected_top]
 
-    top1_hyb = 0
-    top1_rr = 0
+    top1 = 0
     for query, expected in queries:
-        hyb = pipeline_store.search(query, mode="hybrid", limit=10)
-        rr = pipeline_store.search(query, mode="hybrid", rerank=True, limit=10)
-        if hyb and expected.lower() in hyb[0]["content"].lower():
-            top1_hyb += 1
-        if rr and expected.lower() in rr[0]["content"].lower():
-            top1_rr += 1
+        results = pipeline_store.search(query, mode="semantic", limit=10)
+        if results and expected.lower() in results[0]["content"].lower():
+            top1 += 1
 
-    # Reranker should get at least as many importance traps right
-    assert top1_rr >= top1_hyb, (
-        f"Reranker ({top1_rr}/{len(queries)}) should resolve at least as many "
-        f"importance traps as hybrid ({top1_hyb}/{len(queries)})"
+    # modernbert should resolve at least half the importance traps without reranker
+    assert top1 >= len(queries) // 2, (
+        f"Semantic only got {top1}/{len(queries)} importance traps right (want >= {len(queries) // 2})"
     )
 
 
@@ -178,9 +161,9 @@ def test_semantic_paraphrase_quality(pipeline_store):
 
 
 def test_overall_mrr_threshold(pipeline_store):
-    """Hybrid+rerank MRR stays above absolute quality floor."""
+    """Hybrid MRR stays above quality floor."""
     queries = [(tc.query, tc.expected_top) for tc in ALL_TEST_CASES if tc.expected_top]
-    mrr = _compute_mrr(pipeline_store, queries, mode="hybrid", rerank=True)
+    mrr = _compute_mrr(pipeline_store, queries, mode="hybrid")
 
     assert mrr >= 0.60, f"Overall MRR ({mrr:.3f}) below quality floor (0.60)"
 
@@ -219,24 +202,3 @@ def test_pipeline_diagnostic_report(pipeline_store):
             )
         print(f"  {mode}: MRR={mrr / n:.3f}  Top1={top1}/{n} ({top1 / n * 100:.0f}%)")
         print()
-
-    # Reranked
-    mrr = 0.0
-    n = 0
-    top1 = 0
-    for tc in ALL_TEST_CASES:
-        if tc.expected_top is None:
-            continue
-        results = pipeline_store.search(tc.query, mode="hybrid", rerank=True, limit=10)
-        rank = _find_rank(results, tc.expected_top)
-        n += 1
-        if rank:
-            mrr += 1.0 / rank
-            if rank == 1:
-                top1 += 1
-        print(
-            f"  [hybrid+rr] [{tc.category:16}] {tc.name:40} "
-            f"rank={'#' + str(rank) if rank else 'MISS':>5} "
-            f"top1={results[0]['content'][:50] if results else 'N/A'}"
-        )
-    print(f"  hybrid+rerank: MRR={mrr / n:.3f}  Top1={top1}/{n} ({top1 / n * 100:.0f}%)")

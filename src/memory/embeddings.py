@@ -1,4 +1,4 @@
-"""ONNX-based embedding model (BAAI/bge-small-en-v1.5)."""
+"""ONNX-based embedding model (nomic-ai/modernbert-embed-base)."""
 
 from __future__ import annotations
 
@@ -14,14 +14,15 @@ import numpy as np
 MODEL_DIR = Path.home() / ".claude" / "tools" / "memory" / "data" / "models"
 DATA_DIR = Path.home() / ".claude" / "tools" / "memory" / "data"
 CACHE_DB_PATH = DATA_DIR / "embedding_cache.db"
-MODEL_NAME = "bge-small-en-v1.5"
-HF_REPO = f"BAAI/{MODEL_NAME}"
+MODEL_NAME = "modernbert-embed-base"
+HF_REPO = f"nomic-ai/{MODEL_NAME}"
 ONNX_MODEL_FILE = "onnx/model.onnx"
 ONNX_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/{ONNX_MODEL_FILE}"
 TOKENIZER_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/tokenizer.json"
-EMBEDDING_DIM = 384
-MAX_SEQ_LENGTH = 256
-POOLING = "cls"  # bge uses CLS token pooling (e5 used mean pooling)
+EMBEDDING_DIM = 768
+MAX_SEQ_LENGTH = 512
+PREFIX_QUERY = "search_query: "
+PREFIX_DOC = "search_document: "
 _L1_CACHE_MAX = 256
 
 
@@ -151,8 +152,29 @@ class EmbeddingModel:
         conn.commit()
         return to_delete
 
+    def embed_query(self, text: str) -> np.ndarray:
+        """Embed a search query (adds search_query: prefix)."""
+        return self.embed(PREFIX_QUERY + text)
+
+    def embed_doc(self, text: str) -> np.ndarray:
+        """Embed a document/memory for storage (adds search_document: prefix)."""
+        return self.embed(PREFIX_DOC + text)
+
+    def embed_query_batch(self, texts: list[str]) -> np.ndarray:
+        """Embed multiple search queries."""
+        return self.embed_batch([PREFIX_QUERY + t for t in texts])
+
+    def embed_doc_batch(self, texts: list[str]) -> np.ndarray:
+        """Embed multiple documents for storage."""
+        return self.embed_batch([PREFIX_DOC + t for t in texts])
+
     def embed(self, text: str) -> np.ndarray:
-        """Generate embedding for a single text. Returns shape (EMBEDDING_DIM,)."""
+        """Generate embedding for a single text. Returns shape (EMBEDDING_DIM,).
+
+        NOTE: For modernbert, callers should use embed_query() or embed_doc()
+        which add the required prefix. Direct embed() works but may give
+        suboptimal results without prefix.
+        """
         # L1: in-memory
         cached = self._l1.get(text)
         if cached is not None:
@@ -236,26 +258,27 @@ class EmbeddingModel:
         for i, e in enumerate(encodings):
             input_ids[i] = e.ids
             attention_mask[i] = e.attention_mask
-        token_type_ids = np.zeros_like(input_ids)
 
+        # modernbert only needs input_ids + attention_mask (no token_type_ids)
         outputs = self._session.run(
             None,
             {
                 "input_ids": input_ids,
                 "attention_mask": attention_mask,
-                "token_type_ids": token_type_ids,
             },
         )
 
+        # Mean pooling over token embeddings, masked by attention
         token_embeddings = outputs[0].astype(np.float32)
-
-        # CLS pooling: take the first token's embedding
-        pooled = token_embeddings[:, 0, :]
+        mask_expanded = attention_mask[:, :, np.newaxis].astype(np.float32)
+        summed = np.sum(token_embeddings * mask_expanded, axis=1)
+        counts = np.maximum(mask_expanded.sum(axis=1), 1e-9)
+        mean_pooled = summed / counts
 
         # L2 normalize
-        norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+        norms = np.linalg.norm(mean_pooled, axis=1, keepdims=True)
         norms = np.maximum(norms, 1e-9)
-        normalized = (pooled / norms).astype(np.float32)
+        normalized = (mean_pooled / norms).astype(np.float32)
 
         return normalized
 

@@ -168,18 +168,6 @@ TOOLS = [
                     "default": "summary",
                     "description": "Output depth: titles (minimal), summary (default), full (all metadata)",
                 },
-                "rerank": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Rerank with cross-encoder",
-                },
-                "rerank_weight": {
-                    "type": "number",
-                    "default": 0.4,
-                    "minimum": 0.0,
-                    "maximum": 1.0,
-                    "description": "Rerank blend weight (0-1)",
-                },
                 "max_hops": {
                     "type": "integer",
                     "default": 2,
@@ -613,8 +601,6 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
         time_expr=args.get("time_expr"),
         after=args.get("after"),
         before=args.get("before"),
-        rerank=args.get("rerank", False),
-        rerank_weight=args.get("rerank_weight", 0.4),
         max_hops=args.get("max_hops", 2),
     )
     depth = args.get("depth", "summary")
