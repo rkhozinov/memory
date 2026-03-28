@@ -86,16 +86,23 @@ class EmbeddingModel:
         bf16_path = model_dir / "mlx-bf16" / "model.safetensors"
         int8_path = model_dir / "mlx-int8" / "model.safetensors"
 
-        # Find config + tokenizer from HF cache
-        hf_cache = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{HF_REPO.replace('/', '--')}"
-        if hf_cache.exists():
-            snapshot_dir = next((hf_cache / "snapshots").iterdir())
-        else:
-            from huggingface_hub import snapshot_download
+        # Config + tokenizer stored locally (copied from HF cache)
+        config_path = model_dir / "config.json"
+        tokenizer_path = model_dir / "tokenizer.json"
 
-            snapshot_dir = Path(snapshot_download(HF_REPO))  # nosec B615
+        if not config_path.exists():
+            # Fallback: find in HF cache or download
+            hf_cache = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{HF_REPO.replace('/', '--')}"
+            if hf_cache.exists():
+                snapshot_dir = next((hf_cache / "snapshots").iterdir())
+            else:
+                from huggingface_hub import snapshot_download
 
-        config = json.loads((snapshot_dir / "config.json").read_text())
+                snapshot_dir = Path(snapshot_download(HF_REPO))  # nosec B615
+            config_path = snapshot_dir / "config.json"
+            tokenizer_path = snapshot_dir / "tokenizer.json"
+
+        config = json.loads(config_path.read_text())
         args = ModelArgs(**{k: v for k, v in config.items() if k in ModelArgs.__dataclass_fields__})
         self._mlx_model = Model(args)
 
@@ -109,14 +116,16 @@ class EmbeddingModel:
             weights = mx.load(str(int8_path))
             self._mlx_model.load_weights(list(weights.items()))
         else:
-            # Fallback: load FP32 and quantize on the fly
+            # Fallback: load FP32 from HF cache and quantize on the fly
+            hf_cache = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{HF_REPO.replace('/', '--')}"
+            snapshot_dir = next((hf_cache / "snapshots").iterdir())
             weights = mx.load(str(snapshot_dir / "model.safetensors"))
             self._mlx_model.load_weights(list(self._mlx_model.sanitize(weights).items()))
             mlx_nn.quantize(self._mlx_model, bits=8)
 
         mx.eval(self._mlx_model.parameters())
 
-        self._tokenizer = Tokenizer.from_file(str(snapshot_dir / "tokenizer.json"))
+        self._tokenizer = Tokenizer.from_file(str(tokenizer_path))
         self._tokenizer.enable_truncation(max_length=MAX_SEQ_LENGTH)
         self._tokenizer.enable_padding(length=MAX_SEQ_LENGTH)
         self._backend = "mlx"
