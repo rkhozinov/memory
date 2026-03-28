@@ -84,7 +84,7 @@ def daemon_embed(texts: list[str]) -> list[list[float]] | None:
 
 
 class InferenceDaemon:
-    """Unix socket server holding ONNX models warm."""
+    """Unix socket server holding MLX models warm on Metal GPU."""
 
     def __init__(self) -> None:
         self._embedding_model = None
@@ -94,13 +94,14 @@ class InferenceDaemon:
     def _load_models(self) -> None:
         from .embeddings import EmbeddingModel
 
-        print("Loading embedding model...", flush=True)
+        print("Loading embedding model (BF16, native GPU)...", flush=True)
         t0 = time.perf_counter()
         self._embedding_model = EmbeddingModel()
-        self._embedding_model._load()
+        # Daemon uses BF16 for faster inference (13.7ms vs 15ms INT8)
+        self._embedding_model._load_mlx(prefer_bf16=True)
         self._embedding_model.embed("warmup")
         embed_ms = (time.perf_counter() - t0) * 1000
-        print(f"  Embedding model ready ({embed_ms:.0f}ms)", flush=True)
+        print(f"  Embedding model ready ({embed_ms:.0f}ms, BF16)", flush=True)
 
     def _handle_request(self, data: bytes) -> bytes:
         """Process a single request, return response bytes."""
