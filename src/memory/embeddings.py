@@ -45,7 +45,6 @@ class EmbeddingModel:
 
     def __init__(self, cache_db: str | Path | None = None) -> None:
         self._mlx_model = None
-        self._mlx_tokenizer = None
         self._onnx_session = None
         self._tokenizer = None  # tokenizers.Tokenizer (for ONNX path)
         self._backend: str | None = None
@@ -69,10 +68,34 @@ class EmbeddingModel:
         self._load_onnx()
 
     def _load_mlx(self) -> None:
-        """Load model via MLX (Metal GPU)."""
-        from mlx_embeddings.utils import load
+        """Load model via MLX (Metal GPU) using vendored model class."""
+        import json
 
-        self._mlx_model, self._mlx_tokenizer = load(HF_REPO)
+        import mlx.core as mx
+        from tokenizers import Tokenizer
+
+        from .mlx_model import Model, ModelArgs
+
+        # Find cached HF model or download
+        hf_cache = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{HF_REPO.replace('/', '--')}"
+        if hf_cache.exists():
+            snapshot_dir = next((hf_cache / "snapshots").iterdir())
+        else:
+            # Trigger download via huggingface_hub
+            from huggingface_hub import snapshot_download
+
+            snapshot_dir = Path(snapshot_download(HF_REPO))  # nosec B615
+
+        config = json.loads((snapshot_dir / "config.json").read_text())
+        args = ModelArgs(**{k: v for k, v in config.items() if k in ModelArgs.__dataclass_fields__})
+        self._mlx_model = Model(args)
+        weights = mx.load(str(snapshot_dir / "model.safetensors"))
+        self._mlx_model.load_weights(list(self._mlx_model.sanitize(weights).items()))
+        mx.eval(self._mlx_model.parameters())
+
+        self._tokenizer = Tokenizer.from_file(str(snapshot_dir / "tokenizer.json"))
+        self._tokenizer.enable_truncation(max_length=MAX_SEQ_LENGTH)
+        self._tokenizer.enable_padding(length=MAX_SEQ_LENGTH)
         self._backend = "mlx"
 
     def _load_onnx(self) -> None:
@@ -268,10 +291,16 @@ class EmbeddingModel:
         """MLX inference — runs on Metal GPU."""
         import mlx.core as mx
 
-        inputs = self._mlx_tokenizer(
-            texts, return_tensors="mlx", padding=True, truncation=True, max_length=MAX_SEQ_LENGTH
-        )
-        outputs = self._mlx_model(**inputs)
+        encodings = self._tokenizer.encode_batch(texts)
+        n = len(encodings)
+        ids = mx.zeros((n, MAX_SEQ_LENGTH), dtype=mx.int32)
+        mask = mx.zeros((n, MAX_SEQ_LENGTH), dtype=mx.int32)
+        for i, e in enumerate(encodings):
+            ids[i, : len(e.ids)] = mx.array(e.ids, dtype=mx.int32)
+            mask[i, : len(e.attention_mask)] = mx.array(e.attention_mask, dtype=mx.int32)
+
+        outputs = self._mlx_model(ids, attention_mask=mask)
+        # Model returns pooled + normalized text_embeds directly
         mx.eval(outputs.text_embeds)
         return np.array(outputs.text_embeds, dtype=np.float32)
 
