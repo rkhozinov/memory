@@ -87,6 +87,15 @@ class RerankerModel:
         if not candidates:
             return np.array([], dtype=np.float32)
 
+        # Try daemon first
+        from .daemon import daemon_available, daemon_rerank
+
+        if daemon_available():
+            result = daemon_rerank(query, candidates)
+            if result is not None:
+                return np.array(result, dtype=np.float32)
+
+        # Fallback: local ONNX
         self._load()
 
         # Tokenize as sentence pairs

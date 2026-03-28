@@ -217,7 +217,16 @@ class EmbeddingModel:
         self._l1[text] = embedding
 
     def _compute_embeddings(self, texts: list[str]) -> np.ndarray:
-        """Run ONNX inference + pooling for a list of texts."""
+        """Run inference via daemon (if available) or local ONNX."""
+        # Try daemon first — avoids cold ONNX load
+        from .daemon import daemon_available, daemon_embed
+
+        if daemon_available():
+            result = daemon_embed(texts)
+            if result is not None:
+                return np.array(result, dtype=np.float32)
+
+        # Fallback: local ONNX
         self._load()
 
         encodings = self._tokenizer.encode_batch(texts)

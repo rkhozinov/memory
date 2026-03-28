@@ -64,3 +64,4 @@ exclude_dirs = ["tests"]
 [project.scripts]
 memory = "memory.cli:main"
 memory-mcp-server = "memory.mcp_server:main"
+memory-daemon = "memory.daemon:main"
