@@ -107,23 +107,49 @@ def _parse_time_expr(expr: str) -> datetime:
     raise ValueError(f"Cannot parse time expression: {expr!r}")
 
 
+_FTS5_OPERATORS = {"OR", "AND", "NOT"}
+
+
+def _quote_fts_token(token: str) -> str:
+    """Quote a single token for FTS5, preserving already-quoted tokens."""
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        return token
+    return f'"{token.replace(chr(34), chr(34) * 2)}"'
+
+
 def _sanitize_fts_query(query: str) -> str:
     """Escape user input for safe use in FTS5 MATCH expressions.
 
     Wraps each whitespace-delimited token in double quotes so FTS5
-    treats hyphens, colons, asterisks, and boolean keywords as literals.
+    treats hyphens, colons, asterisks, and special characters as literals.
+    Recognizes FTS5 boolean operators (OR, AND, NOT) in valid positions
+    and passes them through unquoted.
     """
     query = query.strip()
     if not query:
         return ""
     tokens = query.split()
-    quoted = []
-    for token in tokens:
-        if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
-            quoted.append(token)
+
+    # Classify each token as operator or term based on position
+    parts: list[tuple[str, str]] = []  # (text, "op" | "term")
+    for i, token in enumerate(tokens):
+        if token in _FTS5_OPERATORS:
+            has_next = i + 1 < len(tokens) and tokens[i + 1] not in _FTS5_OPERATORS
+            has_prev = parts and parts[-1][1] == "term"
+            is_infix = token in ("OR", "AND") and has_prev and has_next
+            is_prefix = token == "NOT" and has_next  # noqa: S105  # nosec B105
+            if is_infix or is_prefix:
+                parts.append((token, "op"))
+            else:
+                parts.append((_quote_fts_token(token), "term"))
         else:
-            quoted.append(f'"{token.replace(chr(34), chr(34) * 2)}"')
-    return " ".join(quoted)
+            parts.append((_quote_fts_token(token), "term"))
+
+    # Trailing operators are invalid — convert to literals
+    while parts and parts[-1][1] == "op":
+        parts[-1] = (_quote_fts_token(parts[-1][0]), "term")
+
+    return " ".join(p[0] for p in parts)
 
 
 # --- Entity extraction (regex-based, zero dependencies) ---
@@ -1552,6 +1578,7 @@ class MemoryStore:
         page_size: int = 20,
         tags: list[str] | None = None,
         memory_type: str | None = None,
+        memory_types: list[str] | None = None,
     ) -> dict:
         """Paginated listing with optional filters."""
         conn = self._get_conn()
@@ -1562,7 +1589,13 @@ class MemoryStore:
         params: list = []
         count_params: list = []
 
-        if memory_type:
+        if memory_types:
+            type_ph = ",".join("?" * len(memory_types))
+            sql += f" AND m.memory_type IN ({type_ph})"
+            count_sql += f" AND m.memory_type IN ({type_ph})"
+            params.extend(memory_types)
+            count_params.extend(memory_types)
+        elif memory_type:
             sql += " AND m.memory_type = ?"
             count_sql += " AND m.memory_type = ?"
             params.append(memory_type)

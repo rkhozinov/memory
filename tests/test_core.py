@@ -818,9 +818,37 @@ class TestSanitizeFtsQuery:
     def test_asterisk(self):
         assert _sanitize_fts_query("test*") == '"test*"'
 
-    def test_boolean_keyword(self):
-        assert _sanitize_fts_query("NOT important") == '"NOT" "important"'
-        assert _sanitize_fts_query("foo AND bar") == '"foo" "AND" "bar"'
+    def test_boolean_operators_valid_position(self):
+        assert _sanitize_fts_query("NOT important") == 'NOT "important"'
+        assert _sanitize_fts_query("foo AND bar") == '"foo" AND "bar"'
+        assert _sanitize_fts_query("foo OR bar") == '"foo" OR "bar"'
+
+    def test_boolean_or_multi_clause(self):
+        assert _sanitize_fts_query("drone strike OR az impairment") == '"drone" "strike" OR "az" "impairment"'
+        assert _sanitize_fts_query("a OR b OR c") == '"a" OR "b" OR "c"'
+
+    def test_boolean_operator_invalid_leading(self):
+        # Leading OR/AND has no left operand — treat as literal
+        assert _sanitize_fts_query("OR leading") == '"OR" "leading"'
+        assert _sanitize_fts_query("AND leading") == '"AND" "leading"'
+
+    def test_boolean_operator_invalid_trailing(self):
+        # Trailing operator — treat as literal
+        assert _sanitize_fts_query("trailing OR") == '"trailing" "OR"'
+        assert _sanitize_fts_query("trailing AND") == '"trailing" "AND"'
+        assert _sanitize_fts_query("trailing NOT") == '"trailing" "NOT"'
+
+    def test_boolean_operator_doubled(self):
+        # Consecutive operators — first becomes literal (no valid next), second is valid
+        assert _sanitize_fts_query("foo OR OR bar") == '"foo" "OR" OR "bar"'
+        # First NOT valid (has_next="NOT" which IS an operator → invalid), second NOT valid
+        assert _sanitize_fts_query("NOT NOT foo") == '"NOT" NOT "foo"'
+
+    def test_not_before_term(self):
+        # NOT at start is valid (no prev required)
+        assert _sanitize_fts_query("NOT foo") == 'NOT "foo"'
+        # NOT mid-sentence (after a term) is valid too
+        assert _sanitize_fts_query("foo NOT bar") == '"foo" NOT "bar"'
 
     def test_already_quoted_single_token(self):
         assert _sanitize_fts_query('"hello"') == '"hello"'
@@ -836,6 +864,20 @@ class TestSanitizeFtsQuery:
     def test_embedded_double_quote(self):
         # A token with an internal quote gets it doubled
         assert _sanitize_fts_query('say"hello') == '"say""hello"'
+
+
+def test_fts_search_or_boolean(store):
+    """FTS search with OR returns results matching either clause."""
+    store.store("drone strike damaged the facility", tags=["incident"])
+    store.store("az impairment detected in region", tags=["incident"])
+    store.store("unrelated weather report today", tags=["weather"])
+
+    results = store.search("drone strike OR az impairment", mode="fts", limit=10)
+    assert len(results) >= 2
+    contents = [r["content"] for r in results]
+    assert any("drone" in c for c in contents)
+    assert any("impairment" in c for c in contents)
+    assert not any("weather" in c for c in contents)
 
 
 def test_fts_search_hyphenated_query(store):

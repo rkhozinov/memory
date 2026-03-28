@@ -6,105 +6,48 @@ allowed-tools: Bash
 
 # /memory-status
 
-Run all commands and report the combined output:
-
+Run all commands and report:
 ```bash
-memory -f text health && echo "---" && memory -f text stats --top-recalled 10 --stale && echo "=== Documents ===" && memory -f text doc list --page-size 50
+memory health && memory admin stats --top-recalled 10 --stale && memory doc list --page-size 50
 ```
 
-The first command (`health`) returns: service status, total count, type breakdown, and database size.
+All output is JSON. Parse inline for readable output.
 
-The second command (`stats`) returns: usage analytics, the 10 most frequently recalled memories, and stale memories (old, never recalled — cleanup candidates).
+## Optional flags
 
-The third command (`doc list`) shows all stored documents (plans, specs, runbooks, session summaries).
-
-## Optional flags for deeper analysis
-
-If the user asks for a specific date range or different limits, use these flags on `memory stats`:
-
-- `--after YYYY-MM-DD` — filter to events after a date
-- `--before YYYY-MM-DD` — filter to events before a date
-- `--top-recalled N` — show N most recalled memories (default: 10)
-- `--never-recalled` — show all memories that were never retrieved
-- `--stale` — show old, never-recalled memories
+- `--after YYYY-MM-DD` / `--before YYYY-MM-DD` — date range for stats
+- `--top-recalled N` — most recalled memories
+- `--never-recalled` — memories never retrieved
+- `--stale` — old, never-recalled memories
 
 ## Briefing
 
-For a quick overview of top memories ranked by importance and recency:
-
+Quick ranked overview:
 ```bash
-memory -f text briefing [--budget N]
+memory admin briefing --budget 50
 ```
-
-Default budget is 150 lines. Use `--budget 50` for a compact summary.
 
 ## Maintenance
 
-### Tag discovery
+### Tags
 ```bash
-memory -f text list-tags
-```
-Shows all unique tags with frequency counts — useful for finding tag inconsistencies or discovering available filters.
-
-### Tag management
-```bash
-# Rename a tag across all memories and documents
-memory -f text rename-tag "old:tag" "new:tag"
-
-# Merge multiple tags into one
-memory -f text merge-tags "tag1,tag2,tag3" "merged:tag"
+memory admin tags list
+memory admin tags rename "old:tag" "new:tag"
+memory admin tags merge "tag1,tag2" "merged:tag"
 ```
 
-### Export/Import (backup & restore)
+### Cleanup
 ```bash
-# Export all memories and documents to JSON
-memory -f json export --output /tmp/memory-backup.json
-
-# Export without documents
-memory -f json export --output /tmp/memory-backup.json --no-documents
-
-# Import from a backup file
-memory -f text import --file /tmp/memory-backup.json
-
-# Force import (skip dedup checks)
-memory -f text import --file /tmp/memory-backup.json --force
+memory admin cleanup                          # remove exact duplicates
+memory admin consolidate --dry-run            # preview near-duplicate merges
+memory admin consolidate                      # merge >0.92 similarity
+memory admin decay --min-confidence 0.3       # decay + prune
+memory admin purge --dry-run                  # preview hard-deletes
+memory admin purge --retention-days 7         # hard-delete old entries
 ```
 
-### Cleanup duplicate entries
+### Export/Import
 ```bash
-memory -f text cleanup
+memory admin export -o /tmp/backup.json
+memory admin import -f /tmp/backup.json
 ```
-Removes exact-hash duplicates (keeps the first entry).
-
-### Consolidate near-duplicates
-```bash
-# Preview what would be merged
-memory -f text consolidate --dry-run
-
-# Merge memories with >0.92 similarity (default threshold)
-memory -f text consolidate
-
-# Custom threshold, exclude specific types
-memory -f text consolidate --threshold 0.90 --exclude-types "reference,decision"
-```
-Merges near-duplicate memories: keeps the older one, unions tags from both, soft-deletes the duplicate.
-
-### Confidence decay
-```bash
-# Apply decay (no pruning)
-memory -f text decay
-
-# Apply decay and prune memories below threshold
-memory -f text decay --min-confidence 0.3
-```
-Decays confidence scores based on memory type (decisions decay slowest, observations fastest). Optionally prunes below a threshold.
-
-### Purge soft-deleted entries
-```bash
-# Preview entries deleted >30 days ago
-memory -f text purge --dry-run
-
-# Hard-delete with custom retention
-memory -f text purge --retention-days 7
-```
-Permanently removes soft-deleted entries from the database to reclaim space and prevent UNIQUE constraint issues.

@@ -262,14 +262,16 @@ MODELS = {
         "hf_id": "MongoDB/mdbr-leaf-mt",
         "prefix_query": "search_query: ",
         "prefix_doc": "search_document: ",
-        "dims": 384,
+        "dims": 1024,
+        "truncate_dim": 384,
         "pooling": "mean",
     },
     "mdbr-leaf-ir": {
         "hf_id": "MongoDB/mdbr-leaf-ir",
         "prefix_query": "search_query: ",
         "prefix_doc": "search_document: ",
-        "dims": 384,
+        "dims": 1024,
+        "truncate_dim": 384,
         "pooling": "mean",
     },
     # Ultra-compact
@@ -279,6 +281,61 @@ MODELS = {
         "prefix_doc": "",
         "dims": 384,
         "pooling": "cls",
+    },
+    # --- 768-dim models (native) ---
+    "e5-base-v2": {
+        "hf_id": "intfloat/e5-base-v2",
+        "prefix_query": "query: ",
+        "prefix_doc": "passage: ",
+        "dims": 768,
+        "pooling": "mean",
+    },
+    "bge-base": {
+        "hf_id": "BAAI/bge-base-en-v1.5",
+        "prefix_query": "Represent this sentence for searching relevant passages: ",
+        "prefix_doc": "",
+        "dims": 768,
+        "pooling": "cls",
+    },
+    "nomic-embed": {
+        "hf_id": "nomic-ai/nomic-embed-text-v1.5",
+        "prefix_query": "search_query: ",
+        "prefix_doc": "search_document: ",
+        "dims": 768,
+        "pooling": "mean",
+    },
+    # --- 768-dim models (MRL truncated to 384) ---
+    "e5-base-v2-384": {
+        "hf_id": "intfloat/e5-base-v2",
+        "prefix_query": "query: ",
+        "prefix_doc": "passage: ",
+        "dims": 768,
+        "truncate_dim": 384,
+        "pooling": "mean",
+    },
+    "bge-base-384": {
+        "hf_id": "BAAI/bge-base-en-v1.5",
+        "prefix_query": "Represent this sentence for searching relevant passages: ",
+        "prefix_doc": "",
+        "dims": 768,
+        "truncate_dim": 384,
+        "pooling": "cls",
+    },
+    "nomic-embed-384": {
+        "hf_id": "nomic-ai/nomic-embed-text-v1.5",
+        "prefix_query": "search_query: ",
+        "prefix_doc": "search_document: ",
+        "dims": 768,
+        "truncate_dim": 384,
+        "pooling": "mean",
+    },
+    # --- 384-dim alternatives ---
+    "gte-small": {
+        "hf_id": "thenlper/gte-small",
+        "prefix_query": "",
+        "prefix_doc": "",
+        "dims": 384,
+        "pooling": "mean",
     },
     # Large but powerful (Qwen3)
     "qwen3-0.6B": {

@@ -1,4 +1,4 @@
-"""ONNX-based embedding model (intfloat/e5-small)."""
+"""ONNX-based embedding model (BAAI/bge-small-en-v1.5)."""
 
 from __future__ import annotations
 
@@ -14,12 +14,14 @@ import numpy as np
 MODEL_DIR = Path.home() / ".claude" / "tools" / "memory" / "data" / "models"
 DATA_DIR = Path.home() / ".claude" / "tools" / "memory" / "data"
 CACHE_DB_PATH = DATA_DIR / "embedding_cache.db"
-MODEL_NAME = "e5-small-v2"
-ONNX_MODEL_FILE = "model.onnx"
-ONNX_URL = f"https://huggingface.co/intfloat/{MODEL_NAME}/resolve/main/{ONNX_MODEL_FILE}"
-TOKENIZER_URL = f"https://huggingface.co/intfloat/{MODEL_NAME}/resolve/main/tokenizer.json"
+MODEL_NAME = "bge-small-en-v1.5"
+HF_REPO = f"BAAI/{MODEL_NAME}"
+ONNX_MODEL_FILE = "onnx/model.onnx"
+ONNX_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/{ONNX_MODEL_FILE}"
+TOKENIZER_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/tokenizer.json"
 EMBEDDING_DIM = 384
 MAX_SEQ_LENGTH = 256
+POOLING = "cls"  # bge uses CLS token pooling (e5 used mean pooling)
 _L1_CACHE_MAX = 256
 
 
@@ -41,7 +43,8 @@ class EmbeddingModel:
     def _ensure_model(self) -> Path:
         """Download model files if not present."""
         model_dir = MODEL_DIR / MODEL_NAME
-        model_dir.mkdir(parents=True, exist_ok=True)
+        onnx_dir = model_dir / "onnx"
+        onnx_dir.mkdir(parents=True, exist_ok=True)
         model_path = model_dir / ONNX_MODEL_FILE
         tokenizer_path = model_dir / "tokenizer.json"
 
@@ -149,7 +152,7 @@ class EmbeddingModel:
         return to_delete
 
     def embed(self, text: str) -> np.ndarray:
-        """Generate embedding for a single text. Returns shape (384,)."""
+        """Generate embedding for a single text. Returns shape (EMBEDDING_DIM,)."""
         # L1: in-memory
         cached = self._l1.get(text)
         if cached is not None:
@@ -235,17 +238,15 @@ class EmbeddingModel:
             },
         )
 
-        # Mean pooling over token embeddings, masked by attention
-        token_embeddings = outputs[0].astype(np.float32)  # ensure float32
-        mask_expanded = attention_mask[:, :, np.newaxis].astype(np.float32)
-        summed = np.sum(token_embeddings * mask_expanded, axis=1)
-        counts = np.maximum(mask_expanded.sum(axis=1), 1e-9)
-        mean_pooled = summed / counts
+        token_embeddings = outputs[0].astype(np.float32)
+
+        # CLS pooling: take the first token's embedding
+        pooled = token_embeddings[:, 0, :]
 
         # L2 normalize
-        norms = np.linalg.norm(mean_pooled, axis=1, keepdims=True)
+        norms = np.linalg.norm(pooled, axis=1, keepdims=True)
         norms = np.maximum(norms, 1e-9)
-        normalized = (mean_pooled / norms).astype(np.float32)  # ensure float32
+        normalized = (pooled / norms).astype(np.float32)
 
         return normalized
 

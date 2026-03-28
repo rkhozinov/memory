@@ -44,7 +44,7 @@ The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 
 **`models.py`** — `Memory` and `Document` dataclasses. Content is SHA256-hashed (`content_hash`) for exact dedup. Tags are `list[str]`, metadata is `dict`. Both provide `to_row()`/`from_row()`/`to_dict()` for DB serialization. `Document` has `title`, `body`, `summary`, `doc_type`, `version` — no confidence/importance (reference material, no decay).
 
-**`embeddings.py`** — Wraps the `intfloat/e5-small` ONNX model (12-layer, 384-dim vectors, seq_length=256, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/.claude/tools/memory/data/models/`. Mean pooling + L2 normalization. Returns raw numpy arrays to avoid `.tolist()` overhead.
+**`embeddings.py`** — Wraps the `BAAI/bge-small-en-v1.5` ONNX model (12-layer, 384-dim vectors, seq_length=256, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/.claude/tools/memory/data/models/`. CLS token pooling + L2 normalization. Returns raw numpy arrays to avoid `.tolist()` overhead.
 
 **`reranker.py`** — ONNX cross-encoder reranker for search result re-scoring. Lazy-loaded singleton via `get_reranker()`. Downloads quantized TinyBERT-L-2 (4.5MB) from HuggingFace on first use. Platform-aware: picks `model_qint8_arm64.onnx` on ARM, `model_quint8_avx2.onnx` on x86. Scores `(query, candidate)` pairs jointly via tokenizer pair encoding → ONNX inference → sigmoid. No caching (query-dependent scores).
 
@@ -61,7 +61,7 @@ The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 - Uses IMMEDIATE transactions to prevent TOCTOU races in multi-agent scenarios
 - Database at `~/.claude/tools/memory/data/sqlite_vec.db` (WAL mode, 15s busy timeout)
 
-**`cli.py`** — argparse-based CLI. Commands: `store`, `store-batch`, `search`, `search-batch`, `list`, `delete`, `update`, `health`, `cleanup`, `list-tags`, `rename-tag`, `merge-tags`, `export`, `import`, `purge`, `consolidate`, `decay`, `briefing`, `stats`, `doc`, `graph`. The `doc` subcommand group has: `store`, `get`, `search`, `list`, `update`, `delete`. The `graph` subcommand group has: `build`, `entities`, `context`, `search`. Output formats: `json` (default), `text`, `hook` (Claude Code hook format). Search supports `--depth titles|summary|full` for progressive disclosure, `--exclude-tags`, `--min-importance`, `--types` for advanced filtering, `--mode graph` for graph traversal, `--rerank` for cross-encoder reranking (with `--rerank-weight`), and returns `score_breakdown` in full depth.
+**`cli.py`** — argparse-based CLI. **JSON-only output** (no text/hook formats). 8 top-level commands: `store` (accepts plain text, JSON object, or JSON array — unified single/batch), `search`, `get` (partial hash prefix supported), `delete` (partial hash prefix supported), `update`, `health`, `doc` (subgroup: store/get/search/list/update/delete), `admin` (subgroup: cleanup/consolidate/decay/purge/export/import/stats/briefing/tags/graph). Search supports `--mode`, `--tags`, `--types`, `--rerank`, `--rerank-weight`, `--hops`. Maintenance ops moved under `admin` to reduce top-level clutter.
 
 **`mcp_server.py`** — MCP stdio server exposing the same operations as tools. Handles type coercion (string→int/bool/JSON) since MCP clients send everything as strings. Input validation is intentionally disabled.
 
