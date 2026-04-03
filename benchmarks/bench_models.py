@@ -233,6 +233,21 @@ TEST_CASES = [
 # ---------------------------------------------------------------------------
 
 MODELS = {
+    # --- Current production (768-dim, ModernBERT arch) ---
+    "modernbert-embed-base": {
+        "hf_id": "nomic-ai/modernbert-embed-base",
+        "prefix_query": "search_query: ",
+        "prefix_doc": "search_document: ",
+        "dims": 768,
+        "pooling": "mean",
+    },
+    "gte-modernbert-base": {
+        "hf_id": "Alibaba-NLP/gte-modernbert-base",
+        "prefix_query": "Represent this sentence for searching relevant passages: ",
+        "prefix_doc": "",
+        "dims": 768,
+        "pooling": "mean",
+    },
     # Current baseline
     "e5-small": {
         "hf_id": "intfloat/e5-small",
@@ -343,7 +358,7 @@ MODELS = {
         "prefix_query": "Instruct: Retrieve relevant memories for this query\nQuery: ",
         "prefix_doc": "",
         "dims": 1024,
-        "truncate_dim": 384,  # MRL truncation to match our schema
+        "truncate_dim": 768,  # MRL truncation to match production 768-dim schema
         "pooling": "last_token",
     },
 }
@@ -401,12 +416,14 @@ def _load_mlx_model(model_id: str) -> tuple:
     except ImportError:
         pass
 
-    # Fallback: mlx-embeddings (supports Qwen3)
+    # Fallback: mlx-embeddings (supports Qwen3, ModernBERT, GTE)
     from mlx_embeddings.utils import load
 
     mlx_map = {
         "BAAI/bge-small-en-v1.5": "mlx-community/bge-small-en-v1.5-bf16",
         "Qwen/Qwen3-Embedding-0.6B": "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ",
+        "nomic-ai/modernbert-embed-base": "mlx-community/nomicai-modernbert-embed-base-8bit",
+        # GTE ModernBERT loads directly via mlx-embeddings native support
     }
     mlx_id = mlx_map.get(model_id, model_id)
     model, tokenizer = load(mlx_id)
@@ -426,13 +443,18 @@ def _embed_mlx(model_tuple, texts: list[str], is_query: bool, model_cfg: dict) -
         return np.array(emb)
 
     _, model, tokenizer = model_tuple
-    # mlx-embeddings path
+    # mlx-embeddings path: process each text individually and collect embeddings
     all_embeddings = []
     for text in prefixed:
         inputs = tokenizer(text, return_tensors="mlx", padding=True, truncation=True)
         outputs = model(**inputs)
-        emb = np.array(outputs.text_embeds[0])
+        # outputs.text_embeds is shape (batch, dim). For single text batch, get [0]
+        emb_tensor = outputs.text_embeds[0]
+        # Convert MLX tensor to float32 first (handles bfloat16), then to numpy
+        emb_f32 = emb_tensor.astype(mx.float32)
+        emb = np.array(emb_f32)
         all_embeddings.append(emb)
+
     embeddings = np.stack(all_embeddings)
 
     truncate_dim = model_cfg.get("truncate_dim")
