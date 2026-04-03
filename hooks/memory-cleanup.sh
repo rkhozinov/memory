@@ -41,28 +41,33 @@ fi
 
 # Step 2: Get memory statistics
 echo -e "${BLUE}[2/3] Memory statistics:${NC}"
-if ! stats_output=$(memory -f text stats 2>&1); then
+if ! stats_output=$(memory admin stats 2>&1); then
     echo -e "${RED}Error getting memory stats:${NC}"
     echo "$stats_output"
     echo ""
 else
-    echo "$stats_output"
+    # Pretty-print JSON stats
+    if echo "$stats_output" | jq -e . >/dev/null 2>&1; then
+        echo "$stats_output" | jq -r '
+            "Total memories: \(.total // "?")",
+            "By type: \(.by_type // {} | to_entries | map("\(.key): \(.value)") | join(", "))",
+            "Never recalled: \(.never_recalled // "?")",
+            "Stale (>30d): \(.stale // "?")"
+        ' 2>/dev/null || echo "$stats_output"
+    else
+        echo "$stats_output"
+    fi
     echo ""
 fi
 
 # Step 3: Parse stats and provide recommendations
 echo -e "${BLUE}[3/3] Recommendations:${NC}"
 
-# Extract key metrics from stats output (if available)
-if [[ -n "${stats_output:-}" ]]; then
-    # Try to extract never recalled count
-    never_recalled=$(echo "$stats_output" | grep -i "never recalled" | grep -oE '[0-9]+' | head -1 || echo "")
-
-    # Try to extract stale count (>30 days)
-    stale_count=$(echo "$stats_output" | grep -i "stale" | grep -oE '[0-9]+' | head -1 || echo "")
-
-    # Try to extract total count
-    total_count=$(echo "$stats_output" | grep -i "total" | grep -oE '[0-9]+' | head -1 || echo "")
+# Extract key metrics from JSON stats output
+if [[ -n "${stats_output:-}" ]] && echo "$stats_output" | jq -e . >/dev/null 2>&1; then
+    never_recalled=$(echo "$stats_output" | jq -r '.never_recalled // 0')
+    stale_count=$(echo "$stats_output" | jq -r '.stale // 0')
+    total_count=$(echo "$stats_output" | jq -r '.total // 0')
 
     recommendations=()
 
@@ -86,12 +91,12 @@ if [[ -n "${stats_output:-}" ]]; then
         done
     fi
 else
-    echo -e "${YELLOW}Could not parse stats — run 'memory stats' manually for details${NC}"
+    echo -e "${YELLOW}Could not parse stats — run 'memory admin stats' manually for details${NC}"
 fi
 
 echo ""
 echo -e "${BLUE}=== End of Report ===${NC}"
 echo ""
-echo "To review specific memories: memory list [--tags <tag>] [--filter <field>:<value>]"
+echo "To review specific memories: memory search [--tags <tag>] [--types <type>]"
 echo "To delete a memory: memory delete <id>"
 echo "Never run automated cleanup without manual review."

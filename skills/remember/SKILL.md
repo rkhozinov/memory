@@ -1,71 +1,93 @@
 ---
 name: remember
-description: Extract and store key facts, decisions, and patterns from conversation into persistent memory. Use when user says "remember", "save this", or important info should persist.
-argument-hint: "[what to remember] [--global for cross-project]"
+description: Extract and store key facts, decisions, and patterns from conversation into persistent memory. Automatically classifies content type and route (memory vs document). Run immediately.
+argument-hint: "[what to remember] [--global]"
 allowed-tools: Bash
 ---
 
 # /remember
 
+Reads `$ARGUMENTS` and stores it to memory immediately with correct classification.
+
 Set `PROJECT=$(basename "$(pwd)")` before commands.
 
-## Scope
+## Step 1: Classify Content
 
-- If `$ARGUMENTS` contains "global" or "--global": tag with `scope:global`
-- Otherwise: tag with `project:$PROJECT`
+**Route**:
+- ≤800 chars, atomic fact → `memory store` (single memory)
+- >800 chars, multi-section → `memory doc store` (document)
 
-## Routing: Memories vs Documents
+**Type** (from content keywords):
+- "decided", "approved", "chose" → `decision`
+- "pattern", "convention", "always do" → `pattern`
+- "error", "root cause", "bug" → `error`
+- "discovered", "learned", "surprising" → `learning`
+- "link", "pointer", "see", "reference" → `reference`
+- "status", "today", "currently" → `observation`
+- Otherwise → `note`
 
-| Route | When | Command |
-|-------|------|---------|
-| **Memory** | Short, atomic facts ≤800 chars | `memory store` |
-| **Document** | Long-form >800 chars, multi-section | `memory doc store` |
+**Scope**:
+- `$ARGUMENTS` contains "--global" or "global" → tag `scope:global`
+- Otherwise → tag `project:$PROJECT`
 
-Route automatically — never ask.
+## Step 2: Execute NOW
 
-## Storing memories
-
-Single:
+### Single memory (≤800 chars):
 ```bash
-memory store "<content>" --tags "project:$PROJECT,<topic>" --type <type> --dedup 0.90
+PROJECT=$(basename "$(pwd)")
+memory store "<YOUR_CONTENT_HERE>" --tags "project:$PROJECT,<inferred-topic>" --type <inferred-type> --dedup 0.90
 ```
 
-JSON (single or batch):
+### Batch memories (2+ facts from same prompt):
+If the message contains multiple distinct facts, use JSON batch format (single efficient call):
 ```bash
-memory store '[{"content":"fact 1","type":"decision","tags":["project:X"]},{"content":"fact 2","type":"learning","tags":["project:X"]}]'
+PROJECT=$(basename "$(pwd)")
+memory store '[
+  {"content":"<fact 1>","type":"<type1>","tags":["project:'$PROJECT'"]},
+  {"content":"<fact 2>","type":"<type2>","tags":["project:'$PROJECT'"]}
+]' --dedup 0.90
 ```
 
-## Types
+### Long-form document (>800 chars):
+```bash
+PROJECT=$(basename "$(pwd)")
+memory doc store --title "<auto-detected or inferred title>" \
+  --summary "<one-line summary for search>" \
+  --body "<full content from $ARGUMENTS>" \
+  --tags "project:$PROJECT" --type plan
+```
 
-| Type | Use for |
-|------|---------|
-| `decision` | Architecture choices, approved approaches |
-| `pattern` | Conventions, recurring solutions |
-| `error` | Root causes, fix recipes |
-| `learning` | Non-obvious discoveries |
-| `reference` | Pointers to external resources |
-| `observation` | Status snapshots, context |
-| `note` | General (default) |
+## Step 3: Output
+
+Run the command and print the returned hash as confirmation:
+```json
+{
+  "content_hash": "abc123...",
+  "status": "stored",
+  "message": "Memory stored successfully"
+}
+```
+
+---
+
+## Memory Types Reference
+
+| Type | Use for | Example |
+|------|---------|---------|
+| `decision` | Architecture choices, approved approaches | "We decided to use modernbert-embed-base for embeddings" |
+| `pattern` | Conventions, recurring solutions | "Always validate at system boundaries, trust internal code" |
+| `reference` | Pointers to external resources | "Grafana dashboard: grafana.internal/d/api-latency" |
+| `error` | Root causes, fix recipes | "MLX bfloat16 requires .astype(mx.float32) before numpy conversion" |
+| `learning` | Non-obvious discoveries | "MTEB leaderboard scores don't correlate with exact-match precision" |
+| `observation` | Status snapshots, context | "As of Apr 3: oMLX has Qwen3.5-35B-A3B, 38 TPS, 100% tools" |
+| `note` | General (default) | Any other factoid |
 
 ## Tags
 
 Standard taxonomy: `project:<name>`, `scope:global`, `cloud:<provider>`, `svc:<service>`, `tool:<tool>`.
 
-## Storing documents
+## Important
 
-```bash
-memory doc store --title "Title" --summary "Brief summary for search" --body "Full body text" --tags "project:$PROJECT" --type plan
-```
-
-Or from stdin:
-```bash
-cat doc.md | memory doc store --title "Title" --summary "Summary" --body-file - --tags "project:$PROJECT"
-```
-
-## Deduplication
-
-Always pass `--dedup 0.90` when storing memories. This skips storage if a near-duplicate (>90% similarity) already exists with the same type and tags. Omit for documents (they use content hash dedup).
-
-## Importance
-
-Set `--importance 0.9` for critical facts. Auto-inferred from keywords (CRITICAL→0.9, IMPORTANT→0.8) and type (decision→0.8, error→0.7) if not set.
+- Always use `--dedup 0.90` (skips storage if near-duplicate exists with same type+tags)
+- Importance is auto-inferred from keywords (CRITICAL→0.9, IMPORTANT→0.8) and type
+- For batch: use JSON array format for 2+ facts in one prompt (one round-trip, more efficient)

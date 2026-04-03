@@ -100,10 +100,10 @@ ls -la ~/.claude/hooks/memory-*.sh
 
 ```
 memory --help
-memory -f text health
-memory -f text stats
+memory health
+memory admin stats
 ```
-**Expected**: help text, health OK, stats summary.
+**Expected**: help text, health JSON, stats JSON.
 
 ## 8. Verify CLAUDE.md is discoverable
 

@@ -1,63 +1,88 @@
 ---
 name: recall
-description: Retrieve relevant memories from persistent storage. Use when user asks "what do you remember", "recall", or when starting work on a familiar topic.
-argument-hint: "[optional: query or topic to search for]"
+description: Retrieve memories and documents from persistent storage. Run the search immediately with your query.
+argument-hint: "[query or topic]"
 allowed-tools: Bash
 ---
 
 # /recall
 
-Set `PROJECT=$(basename "$(pwd)")` before commands. All output is JSON — parse with python/jq inline.
+Searches persistent memory and returns results. Set `PROJECT=$(basename "$(pwd)")` before commands.
 
-## With query (`/recall <query>`)
+## Step 1: Execute NOW
 
-Run as a **single Bash call** (avoids multi-call dispatch overhead):
+### With query (e.g., `/recall embedding model`):
+
+Run this command immediately with `$ARGUMENTS` as your search query:
+
 ```bash
-memory search "<query>" --limit 10 && memory doc search "<query>" --limit 5
-```
-
-Parse JSON results inline for readable output:
-```bash
-memory search "<query>" --limit 10 | python3 -c "
+PROJECT=$(basename "$(pwd)")
+memory search "$ARGUMENTS" --limit 10 | python3 -c "
 import sys,json
 for r in json.load(sys.stdin):
     h=r['content_hash'][:16]; t=r.get('memory_type','?'); s=r.get('score',0)
     print(f'{h} [{t}] score={s:.2f} {r[\"content\"][:200]}')
-" && memory doc search "<query>" --limit 5 | python3 -c "
+" && memory doc search "$ARGUMENTS" --limit 5 | python3 -c "
 import sys,json
 for r in json.load(sys.stdin):
     h=r['content_hash'][:16]; print(f'{h} [doc] {r.get(\"title\",\"\")}')
 "
 ```
 
-## Without query (bare `/recall`)
+### Without query (bare `/recall`):
 
-Run: `memory admin briefing --budget 80 && memory doc list --page-size 10`
+Retrieve session briefing and document list:
 
-## TODOs shortcut (`/recall todos`)
+```bash
+PROJECT=$(basename "$(pwd)")
+memory admin briefing --budget 80 && memory doc list --page-size 10
+```
 
+## Step 2: Interpret Results
+
+Output shows:
+- `<hash> [<type>] score=<relevance> <preview...>` — memories (top 10 by relevance)
+- `<hash> [doc] <title>` — documents (top 5 by relevance)
+
+Higher score = more relevant.
+
+---
+
+## Search Modes
+
+Default is `hybrid` (semantic + keyword). For advanced searches, add `--mode`:
+
+```bash
+memory search "query" --mode semantic   # Semantic similarity only
+memory search "query" --mode exact      # Substring match (no fuzzy)
+memory search "query" --mode fts        # Full-text keyword search
+memory search "query" --mode graph      # Entity-based traversal
+```
+
+## Filtering
+
+Add to search command:
+```bash
+--tags "project:X,tool:Y"   # Filter by tags
+--types decision,error       # Filter by memory type
+--rerank                     # Re-score with cross-encoder (slower, +45ms)
+```
+
+## Reading Full Content
+
+If you find a memory by hash, read it:
+```bash
+memory get <hash>
+```
+
+For documents:
+```bash
+memory doc get <hash>
+```
+
+## TODOs
+
+To see pending todos:
 ```bash
 memory search "TODO" --tags "todo" --limit 20 --mode exact
 ```
-
-## Search modes
-
-| Mode | When to use |
-|------|------------|
-| `hybrid` (default) | Best general purpose — combines semantic + keyword |
-| `semantic` | Find by meaning |
-| `exact` | Substring match |
-| `fts` | Full-text keyword search with OR/AND/NOT |
-| `graph` | Entity-based traversal via shared entities |
-
-## Cross-encoder reranking
-
-Add `--rerank` to re-score results with cross-encoder (~45ms extra):
-```bash
-memory search "kubernetes deployment" --rerank
-```
-
-## Reading documents
-
-1. Find: `memory doc search "query"`
-2. Read full body: `memory doc get <hash>`
