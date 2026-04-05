@@ -40,8 +40,8 @@ DEFAULT_DECAY_RATE = 0.98
 
 # --- Importance auto-inference rules ---
 _IMPORTANCE_KEYWORDS: list[tuple[float, re.Pattern]] = [
-    (0.9, re.compile(r"\b(IMPORTANT|CRITICAL|MUST|BREAKING)\b", re.IGNORECASE)),
-    (0.8, re.compile(r"\b(NEVER|ALWAYS|WARNING|DANGER)\b", re.IGNORECASE)),
+    (0.9, re.compile(r"\b(IMPORTANT|CRITICAL|MUST|BREAKING)\b")),
+    (0.8, re.compile(r"\b(NEVER|ALWAYS|WARNING|DANGER)\b")),
 ]
 _IMPORTANCE_BY_TYPE: dict[str, float] = {
     "decision": 0.8,
@@ -54,7 +54,8 @@ _IMPORTANCE_BY_TYPE: dict[str, float] = {
 }
 
 # --- Composite scoring defaults ---
-DEFAULT_SCORING_WEIGHTS = (0.6, 0.2, 0.2)  # similarity, importance, recency
+DEFAULT_SCORING_WEIGHTS = (0.8, 0.1, 0.1)  # similarity, importance, recency
+MIN_SIMILARITY_THRESHOLD = 0.45  # filter out semantically irrelevant results
 
 
 def _serialize_f32(vec: object) -> bytes:
@@ -1156,6 +1157,8 @@ class MemoryStore:
             mem = Memory.from_row(row)
             d = mem.to_dict()
             similarity = round(1.0 - distances.get(rid, 1.0), 4)
+            if similarity < MIN_SIMILARITY_THRESHOLD:
+                continue
             d["similarity"] = similarity
 
             # Compute decayed confidence
