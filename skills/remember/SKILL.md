@@ -11,6 +11,39 @@ Reads `$ARGUMENTS` and stores it to memory immediately with correct classificati
 
 Set `PROJECT=$(basename "$(pwd)")` before commands.
 
+## Step 0: Empty-args mode (auto-session-capture)
+
+If `$ARGUMENTS` is empty or whitespace-only, **capture the whole session**:
+
+1. **Scan the full conversation** for meaningful content:
+   - Decisions, architecture choices, approved approaches → `decision`
+   - Patterns, conventions, recurring solutions → `pattern`
+   - Errors encountered + root causes + fixes → `error`
+   - Non-obvious discoveries / gotchas → `learning`
+   - External resource pointers (dashboards, URLs, Linear projects) → `reference`
+   - Current status / in-flight state worth preserving → `observation`
+   - Specific atomic facts worth recalling later → `note`
+2. **Store session summary as a doc** via `memory doc store` (always, regardless of length — session captures are inherently multi-section):
+   - Title: inferred from primary topic (e.g. "Session log — {topic} ({date})")
+   - Summary: one-line overview of what was accomplished/decided
+   - Body: structured sections — Context, Work done, Decisions, Errors+fixes, Open items, References
+   - Tags: `project:$PROJECT` + any relevant `svc:<name>` / `tool:<name>` / `cloud:<provider>`
+   - Type: `plan`
+3. **Additionally store high-signal atomic facts** as individual `memory store` calls using the batch JSON format. Examples of what warrants an atomic memory on top of the session doc:
+   - SLO numbers, sizing decisions, validated metrics
+   - Non-obvious gotchas future-you needs in a single search hit
+   - Tool/API quirks with specific fixes
+4. Use `--dedup 0.90` on every call.
+5. Print BOTH the doc hash AND the list of atomic memory hashes stored.
+
+**Exclude from auto-capture:**
+- Transient command output
+- File contents (already in git)
+- Tasks already tracked in TaskList (those are conversation-scoped)
+- Low-value filler ("done", "ok", "thanks")
+
+When empty-args mode is active, skip Step 1 classification — proceed directly to doc + batch-store per Step 0.
+
 ## Step 1: Classify Content
 
 **Route**:
