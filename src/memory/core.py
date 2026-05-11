@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from .models import Document, Memory
 
-DB_PATH = Path.home() / ".claude" / "tools" / "memory" / "data" / "sqlite_vec.db"
+DB_PATH = Path.home() / "repos" / "memory" / "data" / "sqlite_vec.db"
 
 EMBEDDING_DIM = 384
 

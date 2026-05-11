@@ -1,11 +1,11 @@
 # Code Quality Tooling — Verification Checklist
 
-Run these in a fresh Claude Code session from `~/.claude/tools/memory/`.
+Run these in a fresh Claude Code session from `~/repos/memory/`.
 
 ## 1. Install from scratch
 
 ```
-cd ~/.claude/tools/memory && make install
+cd ~/repos/memory && make install
 ```
 
 **Expected**: `uv sync` resolves deps, skills/hooks symlinked, then lint + format + security + tests all pass. Final line: `164 passed`.
@@ -89,12 +89,12 @@ git checkout src/memory/models.py
 ```
 ls -la ~/.claude/skills/{recall,remember,forget,memory-status}
 ```
-**Expected**: all 4 are symlinks pointing into `~/.claude/tools/memory/skills/`
+**Expected**: all 4 are symlinks pointing into `~/repos/memory/skills/`
 
 ```
 ls -la ~/.claude/hooks/memory-*.sh
 ```
-**Expected**: 3 hook symlinks pointing into `~/.claude/tools/memory/hooks/`
+**Expected**: 3 hook symlinks pointing into `~/repos/memory/hooks/`
 
 ## 7. Verify CLI works
 

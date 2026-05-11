@@ -44,7 +44,7 @@ The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 
 **`models.py`** — `Memory` and `Document` dataclasses. Content is SHA256-hashed (`content_hash`) for exact dedup. Tags are `list[str]`, metadata is `dict`. Both provide `to_row()`/`from_row()`/`to_dict()` for DB serialization. `Document` has `title`, `body`, `summary`, `doc_type`, `version` — no confidence/importance (reference material, no decay).
 
-**`embeddings.py`** — Wraps the `nomic-ai/modernbert-embed-base` ONNX model (ModernBERT, 768-dim vectors, seq_length=512, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/.claude/tools/memory/data/models/`. Mean pooling + L2 normalization. Requires `search_query:` prefix for queries and `search_document:` prefix for stored content — use `embed_query()`/`embed_doc()` convenience methods. Returns raw numpy arrays.
+**`embeddings.py`** — Wraps the `nomic-ai/modernbert-embed-base` ONNX model (ModernBERT, 768-dim vectors, seq_length=512, 8-thread ONNX). Lazy-loaded singleton via `get_model()`. Downloads from HuggingFace on first use to `~/repos/memory/data/models/`. Mean pooling + L2 normalization. Requires `search_query:` prefix for queries and `search_document:` prefix for stored content — use `embed_query()`/`embed_doc()` convenience methods. Returns raw numpy arrays.
 
 
 **`core.py`** — `MemoryStore`, the main logic layer. All operations go through this class:
@@ -58,7 +58,7 @@ The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 - Document operations: `store_doc()`, `get_doc()`, `list_docs()`, `search_docs()`, `update_doc()`, `delete_doc()` — long-form content (plans, specs, runbooks) with summary-based hybrid retrieval (semantic on summary embedding + FTS5 on body)
 - Knowledge graph: `extract_entities()` (regex-based), `_link_entities()` (auto on store), `list_entities()`, `entity_context()`, `build_graph()`, `_search_graph()` — lightweight entity extraction + co-occurrence graph for relationship traversal
 - Uses IMMEDIATE transactions to prevent TOCTOU races in multi-agent scenarios
-- Database at `~/.claude/tools/memory/data/sqlite_vec.db` (WAL mode, 15s busy timeout)
+- Database at `~/repos/memory/data/sqlite_vec.db` (WAL mode, 15s busy timeout)
 
 **`cli.py`** — argparse-based CLI. **JSON-only output** (no text/hook formats). 8 top-level commands: `store` (accepts plain text, JSON object, or JSON array — unified single/batch), `search`, `get` (partial hash prefix supported), `delete` (partial hash prefix supported), `update`, `health`, `doc` (subgroup: store/get/search/list/update/delete), `admin` (subgroup: cleanup/consolidate/decay/purge/export/import/stats/briefing/tags/graph). Search supports `--mode`, `--tags`, `--types`, `--rerank`, `--rerank-weight`, `--hops`. Maintenance ops moved under `admin` to reduce top-level clutter.
 

@@ -120,15 +120,15 @@ graph_search(
 ## Memory Storage
 
 Memory data is stored by the memory service at:
-- Default: `~/.claude/tools/memory/data/memory.db`
+- Default: `~/repos/memory/data/memory.db`
 
 ## Skills
 
 The memory service includes skills that work with Claude Code:
-- `~/.claude/tools/memory/skills/recall/` - `/recall` command for retrieval
-- `~/.claude/tools/memory/skills/remember/` - `/remember` command for storage
-- `~/.claude/tools/memory/skills/forget/` - `/forget` command for deletion
-- `~/.claude/tools/memory/skills/memory-status/` - `/memory-status` command
+- `~/repos/memory/skills/recall/` - `/recall` command for retrieval
+- `~/repos/memory/skills/remember/` - `/remember` command for storage
+- `~/repos/memory/skills/forget/` - `/forget` command for deletion
+- `~/repos/memory/skills/memory-status/` - `/memory-status` command
 
 These skills provide an alternative interface to the same functionality and can be symlinked into your project's `.claude/skills/` directory.
 
@@ -156,7 +156,7 @@ These skills provide an alternative interface to the same functionality and can 
                       ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Memory Store (SQLite + Embeddings)              │
-│  - ~/.claude/tools/memory/data/memory.db                    │
+│  - ~/repos/memory/data/memory.db                    │
 │  - MLX-based local embeddings                               │
 │  - Full-text search                                          │
 └─────────────────────────────────────────────────────────────┘
@@ -187,7 +187,7 @@ The memory service also provides an MCP server (`memory-mcp-server`) that can be
 
 - Run `/memory-status` to diagnose
 - Check if memory daemon is running: `memory health`
-- Verify database permissions: `ls -la ~/.claude/tools/memory/data/`
+- Verify database permissions: `ls -la ~/repos/memory/data/`
 
 ## Future Enhancements
 

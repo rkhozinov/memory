@@ -3,7 +3,7 @@
 # Runs health check, daily cleanup, and displays status
 
 PROJECT_NAME=$(basename "$(pwd)")
-MARKER_FILE="$HOME/.claude/tools/memory/data/.last-cleanup"
+MARKER_FILE="$HOME/repos/memory/data/.last-cleanup"
 
 # 1. Health check with timeout
 HEALTH_OUTPUT=$(timeout 2s memory health 2>/dev/null)

@@ -20,8 +20,8 @@ import threading
 import time
 from pathlib import Path
 
-SOCKET_PATH = Path.home() / ".claude" / "tools" / "memory" / "data" / "daemon.sock"
-PID_PATH = Path.home() / ".claude" / "tools" / "memory" / "data" / "daemon.pid"
+SOCKET_PATH = Path.home() / "repos" / "memory" / "data" / "daemon.sock"
+PID_PATH = Path.home() / "repos" / "memory" / "data" / "daemon.pid"
 # Max message size: 1MB (embeddings for large batch)
 MAX_MSG = 1024 * 1024
 
@@ -212,7 +212,7 @@ def cmd_start(foreground: bool = False) -> None:
         # Child
         os.setsid()
         # Redirect stdout/stderr to log
-        log_path = Path.home() / ".claude" / "tools" / "memory" / "data" / "daemon.log"
+        log_path = Path.home() / "repos" / "memory" / "data" / "daemon.log"
         log_fd = open(log_path, "a")  # noqa: SIM115
         os.dup2(log_fd.fileno(), sys.stdout.fileno())
         os.dup2(log_fd.fileno(), sys.stderr.fileno())

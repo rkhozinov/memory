@@ -12,8 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
-MODEL_DIR = Path.home() / ".claude" / "tools" / "memory" / "data" / "models"
-DATA_DIR = Path.home() / ".claude" / "tools" / "memory" / "data"
+MODEL_DIR = Path.home() / "repos" / "memory" / "data" / "models"
+DATA_DIR = Path.home() / "repos" / "memory" / "data"
 CACHE_DB_PATH = DATA_DIR / "embedding_cache.db"
 MODEL_NAME = "modernbert-embed-base"
 HF_REPO = f"nomic-ai/{MODEL_NAME}"

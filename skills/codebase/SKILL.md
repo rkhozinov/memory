@@ -34,7 +34,7 @@ Scan the repository and store structural metadata into memory.
    PROJECT=$(basename "$(pwd)")
    GIT_SHA=$(git rev-parse --short HEAD)
    INDEXED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-   MEMORY="$HOME/.claude/tools/memory/.venv/bin/memory"
+   MEMORY="$HOME/repos/memory/.venv/bin/memory"
    ```
 
 2. If `--refresh` flag: delete old entries first:

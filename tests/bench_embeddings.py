@@ -33,7 +33,7 @@ import numpy as np
 # Configuration
 # ---------------------------------------------------------------------------
 
-MODEL_DIR = Path.home() / ".claude" / "tools" / "memory" / "data" / "models"
+MODEL_DIR = Path.home() / "repos" / "memory" / "data" / "models"
 RESULTS_PATH = Path(__file__).parent / "bench_results.json"
 
 MODELS = {
@@ -131,7 +131,7 @@ CORPUS = [
     "access, text for human-readable terminal output, and hook format for Claude Code's hook "
     "system which expects a specific JSON structure with type and content fields.",
     "Model download happens lazily on first inference call. Files are stored under "
-    "~/.claude/tools/memory/data/models/<model-name>/. The download uses urllib.request for "
+    "~/repos/memory/data/models/<model-name>/. The download uses urllib.request for "
     "simplicity and prints progress to stdout. Once cached, subsequent loads skip the download "
     "and only initialize the ONNX session and tokenizer.",
     "The memory graph feature stores directed edges between related memories, identified by their "
