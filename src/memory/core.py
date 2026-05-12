@@ -2629,6 +2629,399 @@ class MemoryStore:
 
         return {"consolidated": len(pairs), "pairs": pairs}
 
+    # --- Dream pass ---
+
+    # Patterns for relative-date rewrite pass
+    _DREAM_YESTERDAY_RE = re.compile(r"\byesterday\b", re.IGNORECASE)
+    _DREAM_TODAY_RE = re.compile(r"\btoday\b", re.IGNORECASE)
+    _DREAM_TOMORROW_RE = re.compile(r"\btomorrow\b", re.IGNORECASE)
+    _DREAM_THIS_MORNING_RE = re.compile(r"\bthis morning\b", re.IGNORECASE)
+    _DREAM_N_DAYS_AGO_RE = re.compile(r"\b(\d+)\s+days?\s+ago\b", re.IGNORECASE)
+    _DREAM_N_WEEKS_AGO_RE = re.compile(r"\b(\d+)\s+weeks?\s+ago\b", re.IGNORECASE)
+    _DREAM_WEEKDAY_RE = re.compile(
+        r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", re.IGNORECASE
+    )
+
+    # Keywords that indicate the newer memory supersedes an older one
+    _DREAM_CONTRADICTION_RE = re.compile(
+        r"\b(now|actually|updated|fixed|replaced|instead)\b", re.IGNORECASE
+    )
+    _DREAM_SUPERSEDING_TYPES = {"decision", "error"}
+
+    def _dream_rewrite_dates(self, conn: sqlite3.Connection, dry_run: bool) -> int:
+        """Pass 1: rewrite relative date phrases to absolute ISO dates.
+
+        Uses each memory's created_at as the anchor.  Only rewrites when at
+        least one pattern matches, and only writes back when content actually
+        changed.  Does NOT recompute embeddings — the semantic meaning is
+        preserved; we only make temporal references concrete.
+        """
+        rows = conn.execute(
+            "SELECT id, content_hash, content, created_at FROM memories WHERE deleted_at IS NULL"
+        ).fetchall()
+
+        _weekdays = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+
+        rewritten = 0
+        for r in rows:
+            original = r["content"]
+            anchor = datetime.fromtimestamp(r["created_at"], tz=UTC)
+
+            text = original
+
+            # yesterday / today / tomorrow / this morning
+            if self._DREAM_YESTERDAY_RE.search(text):
+                d = (anchor - timedelta(days=1)).strftime("%Y-%m-%d")
+                text = self._DREAM_YESTERDAY_RE.sub(d, text)
+            if self._DREAM_TODAY_RE.search(text):
+                d = anchor.strftime("%Y-%m-%d")
+                text = self._DREAM_TODAY_RE.sub(d, text)
+            if self._DREAM_TOMORROW_RE.search(text):
+                d = (anchor + timedelta(days=1)).strftime("%Y-%m-%d")
+                text = self._DREAM_TOMORROW_RE.sub(d, text)
+            if self._DREAM_THIS_MORNING_RE.search(text):
+                d = anchor.strftime("%Y-%m-%d")
+                text = self._DREAM_THIS_MORNING_RE.sub(d, text)
+
+            # "N days ago"
+            def _replace_days(m: re.Match) -> str:
+                n = int(m.group(1))
+                return (anchor - timedelta(days=n)).strftime("%Y-%m-%d")
+
+            text = self._DREAM_N_DAYS_AGO_RE.sub(_replace_days, text)
+
+            # "N weeks ago"
+            def _replace_weeks(m: re.Match) -> str:
+                n = int(m.group(1))
+                return (anchor - timedelta(weeks=n)).strftime("%Y-%m-%d")
+
+            text = self._DREAM_N_WEEKS_AGO_RE.sub(_replace_weeks, text)
+
+            # weekday names within last 7 days of anchor
+            def _replace_weekday(m: re.Match) -> str:
+                name = m.group(1).lower()
+                target_dow = _weekdays[name]
+                anchor_dow = anchor.weekday()
+                days_back = (anchor_dow - target_dow) % 7
+                if days_back == 0:
+                    days_back = 7  # "Monday" from a Monday means last Monday
+                candidate = anchor - timedelta(days=days_back)
+                return candidate.strftime("%Y-%m-%d")
+
+            text = self._DREAM_WEEKDAY_RE.sub(_replace_weekday, text)
+
+            if text == original:
+                continue
+
+            rewritten += 1
+            if dry_run:
+                continue
+
+            new_hash = hashlib.sha256(text.encode()).hexdigest()
+            now_ts = time.time()
+            now_iso = datetime.fromtimestamp(now_ts, tz=UTC).isoformat()
+            conn.execute(
+                "UPDATE memories SET content = ?, content_hash = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
+                (text, new_hash, now_ts, now_iso, r["id"]),
+            )
+            # FTS5 content-table update: delete old row, insert new.
+            # Plain UPDATE is not supported on content FTS5 tables.
+            conn.execute(
+                "INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', ?, ?)",
+                (r["id"], original),
+            )
+            conn.execute(
+                "INSERT INTO memory_fts(rowid, content) VALUES (?, ?)",
+                (r["id"], text),
+            )
+
+        return rewritten
+
+    def _dream_supersession(self, conn: sqlite3.Connection, dry_run: bool) -> tuple[int, list[dict]]:
+        """Pass 2: find pairs sharing ≥2 tags + cosine similarity ≥0.85 where
+        the newer entry contains a contradiction keyword or is a superseding type.
+        Soft-delete the older entry and record superseded_by in its metadata.
+        """
+        import numpy as np
+
+        rows = conn.execute(
+            "SELECT m.id, m.content_hash, m.content, m.tags, m.memory_type, "
+            "m.created_at, m.metadata "
+            "FROM memories m WHERE m.deleted_at IS NULL"
+        ).fetchall()
+
+        if len(rows) < 2:
+            return 0, []
+
+        id_list = [r["id"] for r in rows]
+        placeholders = ",".join("?" * len(id_list))
+        emb_rows = conn.execute(
+            f"SELECT rowid, content_embedding FROM memory_embeddings WHERE rowid IN ({placeholders})",
+            id_list,
+        ).fetchall()
+        emb_by_id = {r["rowid"]: r["content_embedding"] for r in emb_rows}
+
+        # Build index of (vector, tags, metadata) per valid row
+        valid: list[dict] = []
+        vectors: list = []
+        for r in rows:
+            emb_bytes = emb_by_id.get(r["id"])
+            if emb_bytes is None:
+                continue
+            vec = np.frombuffer(emb_bytes, dtype=np.float32).copy()
+            vectors.append(vec)
+            valid.append(
+                {
+                    "id": r["id"],
+                    "content_hash": r["content_hash"],
+                    "content": r["content"],
+                    "tags": set(_safe_tags(r["tags"])),
+                    "memory_type": r["memory_type"],
+                    "created_at": r["created_at"],
+                    "metadata": r["metadata"],
+                }
+            )
+
+        if len(vectors) < 2:
+            return 0, []
+
+        mat = np.stack(vectors)
+        sim_matrix = mat @ mat.T  # cosine (L2-normalised in store())
+
+        superseded_count = 0
+        superseded_pairs: list[dict] = []
+        deleted_ids: set[int] = set()
+        n = len(valid)
+        now = time.time()
+
+        for i in range(n):
+            if valid[i]["id"] in deleted_ids:
+                continue
+            for j in range(i + 1, n):
+                if valid[j]["id"] in deleted_ids:
+                    continue
+                sim = float(sim_matrix[i, j])
+                if sim < 0.85:
+                    continue
+
+                shared_tags = valid[i]["tags"] & valid[j]["tags"]
+                if len(shared_tags) < 2:
+                    continue
+
+                # Determine which is newer
+                if valid[i]["created_at"] >= valid[j]["created_at"]:
+                    newer, older = valid[i], valid[j]
+                else:
+                    newer, older = valid[j], valid[i]
+
+                # Gate: newer must mention contradiction keyword OR be a superseding type
+                is_superseding = (
+                    self._DREAM_CONTRADICTION_RE.search(newer["content"]) is not None
+                    or newer["memory_type"] in self._DREAM_SUPERSEDING_TYPES
+                )
+                if not is_superseding:
+                    continue
+
+                superseded_pairs.append(
+                    {
+                        "older": older["content_hash"],
+                        "newer": newer["content_hash"],
+                        "similarity": round(sim, 4),
+                    }
+                )
+                deleted_ids.add(older["id"])
+
+                if dry_run:
+                    continue
+
+                # Soft-delete older, preserve audit trail in metadata
+                old_meta = json.loads(older["metadata"] or "{}")
+                old_meta["superseded_by"] = newer["content_hash"]
+                conn.execute(
+                    "UPDATE memories SET deleted_at = ?, metadata = ? WHERE id = ?",
+                    (now, json.dumps(old_meta), older["id"]),
+                )
+                conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (older["id"],))
+                conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (older["id"],))
+
+                superseded_count += 1
+
+        return superseded_count if not dry_run else len(superseded_pairs), superseded_pairs
+
+    def _dream_tag_suggestions(self, conn: sqlite3.Connection) -> list[dict]:
+        """Pass 4: suggest tag merges for near-duplicate tag names.
+
+        Detects: case-only differences, trailing punctuation, singular/plural.
+        Returns suggestions only — no auto-merge.
+        """
+        import re as _re
+
+        rows = conn.execute(
+            "SELECT DISTINCT value as tag FROM ("
+            "  SELECT json_each.value FROM memories, json_each(memories.tags)"
+            "  WHERE deleted_at IS NULL"
+            ")"
+        ).fetchall()
+        all_tags: list[str] = [r["tag"] for r in rows]
+
+        # Normalise for comparison: lowercase, strip trailing punctuation
+        def _norm(tag: str) -> str:
+            t = tag.lower().rstrip(":.,;")
+            # singular/plural: strip trailing 's' for short stems (≥4 chars)
+            if len(t) > 4 and t.endswith("s"):
+                t = t[:-1]
+            return t
+
+        norm_to_canonical: dict[str, str] = {}
+        suggestions: list[dict] = []
+        seen_pairs: set[frozenset] = set()
+
+        for tag in sorted(all_tags):
+            n = _norm(tag)
+            if n in norm_to_canonical:
+                canonical = norm_to_canonical[n]
+                if canonical != tag:
+                    pair = frozenset({canonical, tag})
+                    if pair not in seen_pairs:
+                        seen_pairs.add(pair)
+                        # Suggest merging the less-canonical into the first-seen
+                        suggestions.append({"from": tag, "to": canonical})
+            else:
+                norm_to_canonical[n] = tag
+
+        return suggestions
+
+    def _dream_demote(self, conn: sqlite3.Connection, dry_run: bool) -> int:
+        """Pass 5: mark old never-recalled auto-tagged memories as demoted.
+
+        Criteria: recall_count=0 AND created_at > 30 days ago AND
+        tags contains only 'source:auto' entries or is empty.
+        Sets metadata.demoted=true. Does NOT soft-delete.
+        """
+        cutoff = time.time() - 30 * 86400
+        rows = conn.execute(
+            "SELECT id, tags, metadata FROM memories "
+            "WHERE deleted_at IS NULL AND recall_count = 0 AND created_at < ?",
+            (cutoff,),
+        ).fetchall()
+
+        demoted = 0
+        now = time.time()
+        now_iso = datetime.fromtimestamp(now, tz=UTC).isoformat()
+        for r in rows:
+            tags = _safe_tags(r["tags"])
+            # Only demote if tags are all 'source:auto' or empty
+            non_auto = [t for t in tags if t != "source:auto"]
+            if non_auto:
+                continue
+            meta = json.loads(r["metadata"] or "{}")
+            if meta.get("demoted"):
+                continue  # already demoted — idempotent
+
+            demoted += 1
+            if dry_run:
+                continue
+
+            meta["demoted"] = True
+            conn.execute(
+                "UPDATE memories SET metadata = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
+                (json.dumps(meta), now, now_iso, r["id"]),
+            )
+
+        return demoted
+
+    def dream(
+        self,
+        dry_run: bool = False,
+        threshold_new: int = 50,
+        threshold_age_hours: int = 24,
+    ) -> dict:
+        """Run a composite maintenance pass ("dream") over the memory store.
+
+        Passes executed in order:
+          1. Relative-date rewrite  — anchors temporal phrases to ISO dates
+          2. Supersession detection — soft-deletes older memories overridden by newer
+          3. Consolidation          — merges near-duplicates (delegates to self.consolidate)
+          4. Tag normalisation      — surfaces tag-merge suggestions (no auto-merge)
+          5. Index demotion         — marks old never-recalled auto-tagged memories
+
+        Returns a JSON-serialisable summary dict.
+
+        Trigger heuristic (scheduling hook — not enforced here):
+          Fire when new_memories_since_last_dream >= threshold_new
+          OR hours_since_last_dream >= threshold_age_hours.
+          Last run timestamp is persisted in the metadata table under
+          key='last_dream_at' as a Unix timestamp string.
+        """
+        start = time.time()
+        conn = self._begin_immediate()
+
+        try:
+            # --- Pass 1: relative-date rewrite ---
+            dates_rewritten = self._dream_rewrite_dates(conn, dry_run=dry_run)
+
+            # --- Pass 2: supersession detection ---
+            superseded, superseded_pairs = self._dream_supersession(conn, dry_run=dry_run)
+
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        # --- Pass 3: consolidate (manages its own transaction) ---
+        consolidate_result = self.consolidate(dry_run=dry_run)
+        consolidated = consolidate_result.get("consolidated", 0) or consolidate_result.get(
+            "would_consolidate", 0
+        )
+
+        # --- Passes 4 & 5: read-only pass + demote (needs write) ---
+        conn = self._begin_immediate()
+        try:
+            # Pass 4: tag suggestions (read-only)
+            tag_suggestions = self._dream_tag_suggestions(conn)
+
+            # Pass 5: demote old unrecalled auto-tagged memories
+            demoted = self._dream_demote(conn, dry_run=dry_run)
+
+            # Persist last_dream_at timestamp (skip on dry_run)
+            now = time.time()
+            if not dry_run:
+                conn.execute(
+                    "INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_dream_at', ?)",
+                    (str(now),),
+                )
+
+            duration_ms = (time.time() - start) * 1000
+            self._track_event(
+                conn,
+                "dream",
+                duration_ms=duration_ms,
+                result_count=dates_rewritten + superseded + consolidated + demoted,
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return {
+            "dry_run": dry_run,
+            "dates_rewritten": dates_rewritten,
+            "superseded": superseded,
+            "superseded_pairs": superseded_pairs,
+            "consolidated": consolidated,
+            "tag_merge_suggestions": tag_suggestions,
+            "demoted": demoted,
+            "duration_ms": round((time.time() - start) * 1000, 2),
+        }
+
     def briefing(self, budget: int = 150) -> dict:
         """Generate a compact markdown briefing of top memories.
 
