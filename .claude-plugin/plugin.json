@@ -1,0 +1,8 @@
+{
+  "name": "memory",
+  "description": "Lean memory service for Claude Code: SQLite + sqlite-vec embeddings with FTS, recall/remember/forget skills, and session hooks.",
+  "author": {
+    "name": "Ruslan Khozinov",
+    "url": "https://github.com/rkhozinov"
+  }
+}
