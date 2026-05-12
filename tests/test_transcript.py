@@ -1,4 +1,4 @@
-"""Tests for transcript.py trimmer and auto_extract_pending core method."""
+"""Tests for transcript.py trimmer and auto_archive_pending core method."""
 
 from __future__ import annotations
 
@@ -186,11 +186,10 @@ def test_trim_skips_empty_user_turns(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — auto_extract_pending skips sessions younger than min_age_minutes
+# Test 5 — auto_archive_pending skips sessions younger than min_age_minutes
 # ---------------------------------------------------------------------------
 
-def test_auto_extract_pending_skips_too_recent(store, tmp_path, monkeypatch):
-    # Create a fake projects directory with a very new JSONL
+def test_auto_archive_pending_skips_too_recent(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
     session_file = projects_dir / "session-abc.jsonl"
@@ -201,11 +200,9 @@ def test_auto_extract_pending_skips_too_recent(store, tmp_path, monkeypatch):
     session_file.touch()
 
     marker_dir = tmp_path / "markers"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
-    # Patch pathlib.Path.home to return tmp_path
     with patch("pathlib.Path.home", return_value=tmp_path):
-        result = store.auto_extract_pending(
+        result = store.auto_archive_pending(
             cwd="/Users/test/project",
             min_age_minutes=60,  # 1 hour min age — file is brand new
             marker_dir=marker_dir,
@@ -216,10 +213,10 @@ def test_auto_extract_pending_skips_too_recent(store, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 6 — auto_extract_pending skips sessions with existing marker
+# Test 6 — auto_archive_pending skips sessions with existing marker
 # ---------------------------------------------------------------------------
 
-def test_auto_extract_pending_skips_existing_marker(store, tmp_path, monkeypatch):
+def test_auto_archive_pending_skips_existing_marker(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
     session_file = projects_dir / "session-xyz.jsonl"
@@ -234,12 +231,10 @@ def test_auto_extract_pending_skips_existing_marker(store, tmp_path, monkeypatch
     # Write the marker
     marker_dir = tmp_path / "markers"
     marker_dir.mkdir(parents=True)
-    (marker_dir / "session-xyz.marker").write_text("ok\n")
-
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    (marker_dir / "session-xyz.marker").write_text("archived\nabc123\n")
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        result = store.auto_extract_pending(
+        result = store.auto_archive_pending(
             cwd="/Users/test/project",
             min_age_minutes=5,
             marker_dir=marker_dir,
@@ -250,11 +245,11 @@ def test_auto_extract_pending_skips_existing_marker(store, tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Test 7 — auto_extract_pending writes marker after successful extract
+# Test 7 — auto_archive_pending stores doc with expected title/tags/doc_type
 # ---------------------------------------------------------------------------
 
-def test_auto_extract_pending_writes_marker_on_success(store, tmp_path, monkeypatch):
-    projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
+def test_auto_archive_pending_stores_doc(store, tmp_path):
+    projects_dir = tmp_path / ".claude" / "projects" / "-Users-myproject"
     projects_dir.mkdir(parents=True)
 
     entries = [
@@ -267,105 +262,146 @@ def test_auto_extract_pending_writes_marker_on_success(store, tmp_path, monkeypa
             },
         },
     ]
-    session_file = projects_dir / "session-marker-test.jsonl"
+    session_file = projects_dir / "session-archive-test.jsonl"
     _write_jsonl(session_file, entries)
 
     old_time = time.time() - 600  # 10 minutes ago
     os.utime(session_file, (old_time, old_time))
 
     marker_dir = tmp_path / "markers"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    stored_docs_info = []
 
-    fake_entries = [
-        {
-            "content": "Terraform uses DynamoDB for state locking.",
-            "memory_type": "pattern",
-            "tags": ["tool:terraform"],
-            "importance": 0.7,
-            "rationale": "Important pattern.",
-        }
-    ]
+    original_store_doc = store.store_doc
 
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("memory.auto_extract.extract_memories", return_value=fake_entries),
-        patch("memory.core.MemoryStore.store_auto_extracted", return_value={
-            "attempted": 1, "stored": 1, "dedup_skipped": 0,
-            "rejected_invalid": 0, "rejected_injection": 0, "stored_hashes": ["abc"],
-        }),
-    ):
-        result = store.auto_extract_pending(
-            cwd="/Users/test/project",
-            min_age_minutes=5,
-            marker_dir=marker_dir,
-        )
+    def capturing_store_doc(**kwargs):
+        stored_docs_info.append(kwargs)
+        return original_store_doc(**kwargs)
 
-    # Marker should have been written
-    marker_file = marker_dir / "session-marker-test.marker"
-    assert marker_file.exists(), "Marker file should exist after successful extraction"
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        with patch.object(store, "store_doc", side_effect=capturing_store_doc):
+            result = store.auto_archive_pending(
+                cwd="/Users/myproject",
+                min_age_minutes=5,
+                marker_dir=marker_dir,
+            )
+
+    assert result["stored_docs"] == 1
     assert result["processed"] == 1
-    assert result["stored_total"] == 1
+    assert len(stored_docs_info) == 1
+
+    call = stored_docs_info[0]
+    # Title format: "Session <short_id> <cwd_basename> <YYYY-MM-DD>"
+    assert call["title"].startswith("Session ")
+    assert "session-archive-test"[:8] in call["title"] or call["title"].startswith("Session ")
+    # Tags must include source:auto, session-archive, and project:<basename>
+    assert "source:auto" in call["tags"]
+    assert "session-archive" in call["tags"]
+    assert any(t.startswith("project:") for t in call["tags"])
+    # doc_type must be session-archive
+    assert call["doc_type"] == "session-archive"
+    # metadata must include session_id and source_jsonl
+    assert "session_id" in call["metadata"]
+    assert "source_jsonl" in call["metadata"]
 
 
 # ---------------------------------------------------------------------------
-# Test 8 — auto_extract_pending does NOT write marker when API key missing
+# Test 8 — auto_archive_pending writes marker with content hash on success
 # ---------------------------------------------------------------------------
 
-def test_auto_extract_pending_no_marker_without_api_key(store, tmp_path, monkeypatch):
+def test_auto_archive_pending_writes_marker_with_hash(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
 
-    session_file = projects_dir / "session-nokey.jsonl"
-    _write_jsonl(session_file, [
-        {"type": "user", "message": {"role": "user", "content": "hello"}}
-    ])
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "Important question about infra."}},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Detailed answer about infra."}],
+            },
+        },
+    ]
+    session_file = projects_dir / "session-hashtest.jsonl"
+    _write_jsonl(session_file, entries)
     old_time = time.time() - 600
     os.utime(session_file, (old_time, old_time))
 
     marker_dir = tmp_path / "markers"
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        result = store.auto_extract_pending(
+        result = store.auto_archive_pending(
             cwd="/Users/test/project",
             min_age_minutes=5,
             marker_dir=marker_dir,
         )
 
-    # Should return early with zero processed
-    assert result["processed"] == 0
-    assert result["scanned"] == 0
-    # No marker should be written
-    if marker_dir.exists():
-        markers = list(marker_dir.glob("*.marker"))
-        assert len(markers) == 0
+    assert result["stored_docs"] == 1
+    marker_file = marker_dir / "session-hashtest.marker"
+    assert marker_file.exists(), "Marker file should exist after archiving"
+
+    marker_content = marker_file.read_text()
+    lines = marker_content.strip().splitlines()
+    assert lines[0] == "archived"
+    assert len(lines) >= 2, "Marker should contain 'archived\\n<hash>'"
+    assert len(lines[1]) > 8, "Second line should be a content hash"
 
 
 # ---------------------------------------------------------------------------
-# Test 9 — auto_extract_pending respects max_sessions cap
+# Test 9 — empty/unreadable JSONL → skipped_empty++, marker still written
 # ---------------------------------------------------------------------------
 
-def test_auto_extract_pending_respects_max_sessions(store, tmp_path, monkeypatch):
+def test_auto_archive_pending_empty_jsonl_writes_marker(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
 
-    # Create 5 old sessions
+    # Write a JSONL with only noise entries (no real messages → empty trimmed text)
+    entries = [
+        {"type": "file-history-snapshot", "files": ["foo.tf"]},
+        {"type": "attachment", "data": "ignored"},
+    ]
+    session_file = projects_dir / "session-empty.jsonl"
+    _write_jsonl(session_file, entries)
+    old_time = time.time() - 600
+    os.utime(session_file, (old_time, old_time))
+
+    marker_dir = tmp_path / "markers"
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = store.auto_archive_pending(
+            cwd="/Users/test/project",
+            min_age_minutes=5,
+            marker_dir=marker_dir,
+        )
+
+    assert result["skipped_empty"] >= 1
+    assert result["stored_docs"] == 0
+    # Marker should still be written so the session isn't retried
+    marker_file = marker_dir / "session-empty.marker"
+    assert marker_file.exists(), "Marker should be written even for empty sessions"
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — auto_archive_pending respects max_sessions cap (oldest-first)
+# ---------------------------------------------------------------------------
+
+def test_auto_archive_pending_respects_max_sessions(store, tmp_path):
+    projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
+    projects_dir.mkdir(parents=True)
+
+    # Create 5 old sessions with distinct ages
     for i in range(5):
         session_file = projects_dir / f"session-{i:03d}.jsonl"
         _write_jsonl(session_file, [
             {"type": "user", "message": {"role": "user", "content": f"message {i}"}}
         ])
-        old_time = time.time() - 3600 - i  # Different ages
+        old_time = time.time() - 3600 - i * 10  # Different ages; smallest i = newest
         os.utime(session_file, (old_time, old_time))
 
     marker_dir = tmp_path / "markers"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("memory.auto_extract.extract_memories", return_value=[]),
-    ):
-        result = store.auto_extract_pending(
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = store.auto_archive_pending(
             cwd="/Users/test/project",
             min_age_minutes=5,
             max_sessions=3,  # Cap at 3
@@ -376,11 +412,56 @@ def test_auto_extract_pending_respects_max_sessions(store, tmp_path, monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# Test 10 — CLI auto-extract-pending --dry-run returns JSON without LLM calls
+# Test 11 — dry_run returns counts without storing or writing markers
 # ---------------------------------------------------------------------------
 
-def test_cli_auto_extract_pending_dry_run(tmp_path, monkeypatch, capsys):
-    """CLI dry-run should return JSON with no LLM calls made."""
+def test_auto_archive_pending_dry_run(store, tmp_path):
+    projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
+    projects_dir.mkdir(parents=True)
+
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": "What is Kubernetes?"}},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Kubernetes is a container orchestrator."}],
+            },
+        },
+    ]
+    session_file = projects_dir / "session-dryrun.jsonl"
+    _write_jsonl(session_file, entries)
+    old_time = time.time() - 600
+    os.utime(session_file, (old_time, old_time))
+
+    marker_dir = tmp_path / "markers"
+
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = store.auto_archive_pending(
+            cwd="/Users/test/project",
+            min_age_minutes=5,
+            dry_run=True,
+            marker_dir=marker_dir,
+        )
+
+    # Dry-run: processed count correct
+    assert result["processed"] >= 1
+    # stored_docs is 0 in dry-run
+    assert result["stored_docs"] == 0
+    # Sessions have dry_run status
+    assert any(s.get("status") == "dry_run" for s in result["sessions"])
+    # No marker files written
+    if marker_dir.exists():
+        markers = list(marker_dir.glob("*.marker"))
+        assert len(markers) == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — CLI auto-archive-pending --dry-run returns JSON without LLM calls
+# ---------------------------------------------------------------------------
+
+def test_cli_auto_archive_pending_dry_run(tmp_path, capsys):
+    """CLI dry-run returns JSON with no API calls made."""
     from memory.cli import main
 
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
@@ -402,20 +483,10 @@ def test_cli_auto_extract_pending_dry_run(tmp_path, monkeypatch, capsys):
     os.utime(session_file, (old_time, old_time))
 
     marker_dir = tmp_path / "markers"
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
 
-    mock_called = []
-
-    def mock_extract(text, **kwargs):
-        mock_called.append(text)
-        return []
-
-    with (
-        patch("pathlib.Path.home", return_value=tmp_path),
-        patch("memory.auto_extract.extract_memories", side_effect=mock_extract),
-    ):
+    with patch("pathlib.Path.home", return_value=tmp_path):
         main([
-            "admin", "auto-extract-pending",
+            "admin", "auto-archive-pending",
             "--cwd", "/Users/test/project",
             "--min-age-minutes", "5",
             "--dry-run",

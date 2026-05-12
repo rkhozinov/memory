@@ -64,10 +64,10 @@ else
   (memory admin index --out "$INDEX_FILE" >/dev/null 2>&1 &)
 fi
 
-# Auto-extract abandoned session transcripts in the background.
-# Decoupled — does NOT require handoff. Sends raw transcripts to extractor.
-if [ -n "$ANTHROPIC_API_KEY" ] && command -v memory >/dev/null 2>&1; then
-  (memory admin auto-extract-pending --cwd "$PWD" >/dev/null 2>&1 &) >/dev/null 2>&1
+# Archive abandoned session transcripts as searchable memory docs.
+# Pure local — no LLM, no API. Trim + store via doc table + FTS index.
+if command -v memory >/dev/null 2>&1; then
+  (memory admin auto-archive-pending --cwd "$PWD" >/dev/null 2>&1 &) >/dev/null 2>&1
 fi
 
 exit 0

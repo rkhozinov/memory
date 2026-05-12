@@ -1,6 +1,6 @@
 ---
 name: status
-description: Check memory service health, stats, demoted memories, dream consolidation, index, and auto-extracted entries.
+description: Check memory service health, stats, demoted memories, dream consolidation, index, and session archives.
 allowed-tools: Bash
 ---
 
@@ -78,10 +78,6 @@ memory admin index --dry-run   # preview index entries
 ```
 The index provides a fast navigable overview of all stored topics and is updated automatically on dream passes.
 
-### Auto-extracted entries
+### Auto-archived sessions
 
-Entries extracted automatically (e.g., from session handoffs) are tagged `source:auto`. To view them:
-```bash
-memory search "" --tags "source:auto" --limit 50
-```
-These are lower-confidence entries — review and promote or delete as needed.
+Auto-archived sessions live in the doc store with tag `session-archive`; search them via `memory doc search`.

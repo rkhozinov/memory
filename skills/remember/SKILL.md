@@ -139,13 +139,6 @@ Enable globally via environment variable (applies to all `memory store` calls):
 export MEMORY_REJECT_INJECTION=1
 ```
 
-## Auto-extracted entries (`source:auto`)
+## Auto-archived sessions
 
-Entries extracted automatically (e.g., via `memory admin auto-extract` or session handoffs) carry the tag
-`source:auto`. These are lower-confidence entries ingested without explicit user review.
-They are stored like normal memories but should be audited periodically:
-```bash
-memory search "" --tags "source:auto" --limit 50
-```
-To promote an auto entry: read it with `memory get <hash>`, delete the auto version, and re-store without the
-`source:auto` tag (or add an explicit project tag).
+Auto-archived sessions live in the doc store with tag `session-archive`; search them via `memory doc search`.

@@ -976,112 +976,7 @@ class MemoryStore:
             results.append(result)
         return results
 
-    def store_auto_extracted(
-        self,
-        entries: list[dict],
-        *,
-        max_similarity: float = 0.85,
-    ) -> dict:
-        """Bulk-insert LLM-extracted memories with dedup + injection guards.
-
-        For each entry:
-        1. Build an embedding.
-        2. Run a semantic similarity check against existing memories
-           (track_recall=False so this doesn't pollute recall stats).
-        3. Skip if top similarity ≥ max_similarity (near-duplicate).
-        4. Run injection screen; count flagged entries separately.
-        5. Store with confidence=0.7 and source:auto tag.
-
-        Returns a summary dict:
-        {
-            "attempted": N,
-            "stored": M,
-            "dedup_skipped": K,
-            "rejected_invalid": J,
-            "rejected_injection": L,
-            "stored_hashes": [...],
-        }
-        """
-        from .auto_extract import _validate_entry  # reuse validation logic
-        from .embeddings import get_model
-
-        attempted = len(entries)
-        stored = 0
-        dedup_skipped = 0
-        rejected_invalid = 0
-        rejected_injection = 0
-        stored_hashes: list[str] = []
-
-        model = get_model()
-        conn = self._get_conn()
-
-        for raw in entries:
-            # Validate entry shape
-            validated = _validate_entry(raw)
-            if validated is None:
-                rejected_invalid += 1
-                continue
-
-            content = validated["content"]
-            memory_type = validated["memory_type"]
-            importance = validated["importance"]
-            tags = list(validated["tags"])
-
-            # Ensure source:auto tag
-            if "source:auto" not in tags:
-                tags.append("source:auto")
-
-            # Injection screen — always reject flagged auto entries
-            suspicious, matched_pat = _screen_injection(content)
-            if suspicious:
-                rejected_injection += 1
-                continue
-
-            # Build embedding once for both dedup check and storage
-            embedding = model.embed_doc(content)
-
-            # Semantic dedup check (no recall tracking)
-            similar = self._search_semantic(
-                conn,
-                query=None,
-                limit=5,
-                tags=None,
-                time_expr=None,
-                after=None,
-                before=None,
-                _embedding=embedding,
-            )
-            if similar and similar[0].get("similarity", 0.0) >= max_similarity:
-                dedup_skipped += 1
-                continue
-
-            # Store with capped confidence
-            result = self.store(
-                content,
-                tags=tags,
-                memory_type=memory_type,
-                metadata={"confidence": 0.7, "source": "auto_extract"},
-                importance=importance,
-                _embedding=embedding,
-                reject_injection=True,  # belt-and-suspenders
-            )
-
-            if result.get("status") == "stored":
-                stored += 1
-                stored_hashes.append(result["content_hash"])
-            elif result.get("status") == "rejected":
-                rejected_injection += 1
-
-        return {
-            "attempted": attempted,
-            "stored": stored,
-            "dedup_skipped": dedup_skipped,
-            "rejected_invalid": rejected_invalid,
-            "rejected_injection": rejected_injection,
-            "stored_hashes": stored_hashes,
-        }
-
-    def auto_extract_pending(
+    def auto_archive_pending(
         self,
         *,
         cwd: str | None = None,
@@ -1093,34 +988,18 @@ class MemoryStore:
         """Scan ~/.claude/projects/<cwd-encoded>/*.jsonl for abandoned sessions.
 
         For sessions modified >= min_age_minutes ago that lack a marker file,
-        trims the transcript, extracts memories, stores them, and writes a marker
-        so the session isn't re-processed.
+        trims the transcript and stores it as a session-archive document.
+        No LLM, no API key required.
 
         Returns:
             {scanned, processed, skipped_marked, skipped_too_recent,
-             stored_total, dedup_total, sessions: [...]}
+             skipped_empty, stored_docs, sessions: [...]}
         """
+        import hashlib as _hashlib
         import time as _time
+        from datetime import UTC, datetime
 
-        from .auto_extract import extract_memories
         from .transcript import trim_transcript
-
-        # Guard: ANTHROPIC_API_KEY must be present or we'll silently get []
-        # and write markers, preventing future retries after key is added.
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            print(
-                "auto_extract_pending: ANTHROPIC_API_KEY missing — skipping auto-extract",
-                file=sys.stderr,
-            )
-            return {
-                "scanned": 0,
-                "processed": 0,
-                "skipped_marked": 0,
-                "skipped_too_recent": 0,
-                "stored_total": 0,
-                "dedup_total": 0,
-                "sessions": [],
-            }
 
         # Resolve cwd and encode like Claude Code does:
         # every non-alphanumeric/dash char → "-"
@@ -1146,8 +1025,8 @@ class MemoryStore:
                 "processed": 0,
                 "skipped_marked": 0,
                 "skipped_too_recent": 0,
-                "stored_total": 0,
-                "dedup_total": 0,
+                "skipped_empty": 0,
+                "stored_docs": 0,
                 "sessions": [],
             }
 
@@ -1181,24 +1060,25 @@ class MemoryStore:
         candidates = candidates[:max_sessions]
 
         scanned = skipped_marked + skipped_too_recent + len(candidates)
-        stored_total = 0
-        dedup_total = 0
+        skipped_empty = 0
+        stored_docs = 0
         session_results: list[dict] = []
 
-        for _mtime, jsonl_file in candidates:
+        for file_mtime, jsonl_file in candidates:
             session_id = jsonl_file.stem
+            session_id_short = session_id[:8]
             marker_file = marker_path / f"{session_id}.marker"
-            session_info: dict = {"session_id": session_id, "file": str(jsonl_file)}
+            session_info: dict = {"session_id": session_id_short, "file": str(jsonl_file)}
 
             # Trim transcript
             try:
                 text = trim_transcript(jsonl_file)
             except Exception as exc:  # noqa: BLE001
                 print(
-                    f"auto_extract_pending: failed to read {jsonl_file.name}: {exc}",
+                    f"auto_archive_pending: failed to read {jsonl_file.name}: {exc}",
                     file=sys.stderr,
                 )
-                # Write marker to avoid retrying an unreadable file
+                skipped_empty += 1
                 if not dry_run:
                     marker_file.write_text("error\n", encoding="utf-8")
                 session_info["status"] = "error"
@@ -1207,48 +1087,71 @@ class MemoryStore:
                 continue
 
             if not text.strip():
-                # Empty transcript — write marker to skip next time
+                skipped_empty += 1
                 if not dry_run:
-                    marker_file.write_text("empty\n", encoding="utf-8")
-                session_info["status"] = "empty"
+                    marker_file.write_text("archived\n\n", encoding="utf-8")
+                session_info["status"] = "skipped_empty"
                 session_results.append(session_info)
                 continue
 
-            # Extract memories via LLM
-            entries = extract_memories(text)
+            # Derive cwd_basename from any JSONL entry with a cwd field
+            cwd_basename = "unknown"
+            try:
+                import json as _json
 
-            # If empty result AND no API key failure (key is present), mark as done.
-            # extract_memories returns [] on API failure too, but we already guarded
-            # ANTHROPIC_API_KEY above — so [] here means "API said no memories".
-            deliberate_empty = len(entries) == 0  # API key present, just nothing found
+                with open(jsonl_file, encoding="utf-8", errors="replace") as fh:
+                    for raw_line in fh:
+                        raw_line = raw_line.strip()
+                        if not raw_line:
+                            continue
+                        try:
+                            obj = _json.loads(raw_line)
+                        except _json.JSONDecodeError:
+                            continue
+                        cwd_val = obj.get("cwd") or obj.get("message", {}).get("cwd") if isinstance(obj.get("message"), dict) else None
+                        if cwd_val:
+                            cwd_basename = Path(cwd_val).name or "unknown"
+                            break
+            except Exception:  # noqa: BLE001
+                pass
+
+            created_date = datetime.fromtimestamp(file_mtime, tz=UTC).strftime("%Y-%m-%d")
+            title = f"Session {session_id_short} {cwd_basename} {created_date}"
+
+            summary_text = text[:500]
+            if len(text) > 500:
+                summary_text += "…"
+
+            tags = ["source:auto", "session-archive", f"project:{cwd_basename}"]
+
+            doc_hash = _hashlib.sha256(text.encode("utf-8")).hexdigest()
 
             if dry_run:
                 session_info["status"] = "dry_run"
-                session_info["extracted"] = len(entries)
-                session_info["entries"] = entries
+                session_info["title"] = title
+                session_info["tags"] = tags
+                session_info["body_size"] = len(text)
+                session_info["doc_hash"] = doc_hash[:16]
                 session_results.append(session_info)
                 continue
 
-            if deliberate_empty:
-                # Still mark so we don't retry
-                marker_file.write_text("no_memories\n", encoding="utf-8")
-                session_info["status"] = "no_memories"
-                session_results.append(session_info)
-                continue
+            result = self.store_doc(
+                title=title,
+                body=text,
+                summary=summary_text,
+                doc_type="session-archive",
+                tags=tags,
+                metadata={"session_id": session_id_short, "source_jsonl": str(jsonl_file)},
+            )
+            stored_hash = result.get("content_hash", doc_hash[:16])
 
-            # Store extracted memories
-            result = self.store_auto_extracted(entries)
-            stored = result.get("stored", 0)
-            dedup = result.get("dedup_skipped", 0)
-            stored_total += stored
-            dedup_total += dedup
+            # Write marker with content hash so sessions can be mapped back to docs
+            marker_file.write_text(f"archived\n{stored_hash}\n", encoding="utf-8")
 
-            # Write marker on successful extract + store
-            marker_file.write_text("ok\n", encoding="utf-8")
-            session_info["status"] = "ok"
-            session_info["extracted"] = len(entries)
-            session_info["stored"] = stored
-            session_info["dedup_skipped"] = dedup
+            stored_docs += 1
+            session_info["status"] = "archived"
+            session_info["doc_hash"] = stored_hash
+            session_info["body_size"] = len(text)
             session_results.append(session_info)
 
         return {
@@ -1256,8 +1159,8 @@ class MemoryStore:
             "processed": len(candidates),
             "skipped_marked": skipped_marked,
             "skipped_too_recent": skipped_too_recent,
-            "stored_total": stored_total,
-            "dedup_total": dedup_total,
+            "skipped_empty": skipped_empty,
+            "stored_docs": stored_docs,
             "sessions": session_results,
         }
 
