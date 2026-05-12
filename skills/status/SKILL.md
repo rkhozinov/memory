@@ -1,10 +1,10 @@
 ---
-name: memory-status
+name: status
 description: Check memory service health and stats.
 allowed-tools: Bash
 ---
 
-# /memory-status
+# /memory:status
 
 Run all commands and report:
 ```bash

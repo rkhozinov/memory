@@ -102,7 +102,7 @@ Skills and hooks live in this repo and are symlinked into `~/.claude/` by ``make
 - **`recall/`** — `/recall [query]`: search memories and documents, or generate briefing
 - **`remember/`** — `/remember <content>`: store facts with tag taxonomy (includes `doc` subcommand reference)
 - **`forget/`** — `/forget <query>`: find and delete memories or documents with confirmation
-- **`memory-status/`** — `/memory-status`: health check, stats, document listing
+- **`status/`** — `/memory:status`: health check, stats, document listing
 
 **`hooks/`** — Claude Code event hooks (symlinked to `~/.claude/hooks/`):
 - **`memory-session-start.sh`** — SessionStart: health check, daily cleanup, codebase map check

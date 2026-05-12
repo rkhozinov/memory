@@ -10,7 +10,7 @@ This document describes how the memory service integrates with the pi agent via 
 
 2. **Verify the extension is loaded**:
    - Look for the notification: `🧠 Memory service extension loaded`
-   - Run `/memory-status` to check service health
+   - Run `/memory:status` to check service health
 
 ## Available Tools
 
@@ -49,7 +49,7 @@ The pi extension provides the following tools that the LLM can call:
 
 User-accessible commands:
 
-- `/memory-status` - Check memory service health and get statistics
+- `/memory:status` - Check memory service health and get statistics
 - `/memory-briefing [budget]` - Generate compact briefing of top memories (default budget: 150 lines)
 
 ## Memory Types
@@ -128,7 +128,7 @@ The memory service includes skills that work with Claude Code:
 - `~/repos/memory/skills/recall/` - `/recall` command for retrieval
 - `~/repos/memory/skills/remember/` - `/remember` command for storage
 - `~/repos/memory/skills/forget/` - `/forget` command for deletion
-- `~/repos/memory/skills/memory-status/` - `/memory-status` command
+- `~/repos/memory/skills/status/` - `/memory:status` command
 
 These skills provide an alternative interface to the same functionality and can be symlinked into your project's `.claude/skills/` directory.
 
@@ -185,7 +185,7 @@ The memory service also provides an MCP server (`memory-mcp-server`) that can be
 
 ### Service health errors
 
-- Run `/memory-status` to diagnose
+- Run `/memory:status` to diagnose
 - Check if memory daemon is running: `memory health`
 - Verify database permissions: `ls -la ~/repos/memory/data/`
 

@@ -87,7 +87,7 @@ git checkout src/memory/models.py
 ## 6. Verify skills are symlinked and live
 
 ```
-ls -la ~/.claude/skills/{recall,remember,forget,memory-status}
+ls -la ~/.claude/skills/{recall,remember,forget,status}
 ```
 **Expected**: all 4 are symlinks pointing into `~/repos/memory/skills/`
 
