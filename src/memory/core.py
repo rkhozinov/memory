@@ -976,6 +976,111 @@ class MemoryStore:
             results.append(result)
         return results
 
+    def store_auto_extracted(
+        self,
+        entries: list[dict],
+        *,
+        max_similarity: float = 0.85,
+    ) -> dict:
+        """Bulk-insert LLM-extracted memories with dedup + injection guards.
+
+        For each entry:
+        1. Build an embedding.
+        2. Run a semantic similarity check against existing memories
+           (track_recall=False so this doesn't pollute recall stats).
+        3. Skip if top similarity ≥ max_similarity (near-duplicate).
+        4. Run injection screen; count flagged entries separately.
+        5. Store with confidence=0.7 and source:auto tag.
+
+        Returns a summary dict:
+        {
+            "attempted": N,
+            "stored": M,
+            "dedup_skipped": K,
+            "rejected_invalid": J,
+            "rejected_injection": L,
+            "stored_hashes": [...],
+        }
+        """
+        from .auto_extract import _validate_entry  # reuse validation logic
+        from .embeddings import get_model
+
+        attempted = len(entries)
+        stored = 0
+        dedup_skipped = 0
+        rejected_invalid = 0
+        rejected_injection = 0
+        stored_hashes: list[str] = []
+
+        model = get_model()
+        conn = self._get_conn()
+
+        for raw in entries:
+            # Validate entry shape
+            validated = _validate_entry(raw)
+            if validated is None:
+                rejected_invalid += 1
+                continue
+
+            content = validated["content"]
+            memory_type = validated["memory_type"]
+            importance = validated["importance"]
+            tags = list(validated["tags"])
+
+            # Ensure source:auto tag
+            if "source:auto" not in tags:
+                tags.append("source:auto")
+
+            # Injection screen — always reject flagged auto entries
+            suspicious, matched_pat = _screen_injection(content)
+            if suspicious:
+                rejected_injection += 1
+                continue
+
+            # Build embedding once for both dedup check and storage
+            embedding = model.embed_doc(content)
+
+            # Semantic dedup check (no recall tracking)
+            similar = self._search_semantic(
+                conn,
+                query=None,
+                limit=5,
+                tags=None,
+                time_expr=None,
+                after=None,
+                before=None,
+                _embedding=embedding,
+            )
+            if similar and similar[0].get("similarity", 0.0) >= max_similarity:
+                dedup_skipped += 1
+                continue
+
+            # Store with capped confidence
+            result = self.store(
+                content,
+                tags=tags,
+                memory_type=memory_type,
+                metadata={"confidence": 0.7, "source": "auto_extract"},
+                importance=importance,
+                _embedding=embedding,
+                reject_injection=True,  # belt-and-suspenders
+            )
+
+            if result.get("status") == "stored":
+                stored += 1
+                stored_hashes.append(result["content_hash"])
+            elif result.get("status") == "rejected":
+                rejected_injection += 1
+
+        return {
+            "attempted": attempted,
+            "stored": stored,
+            "dedup_skipped": dedup_skipped,
+            "rejected_invalid": rejected_invalid,
+            "rejected_injection": rejected_injection,
+            "stored_hashes": stored_hashes,
+        }
+
     # --- Search ---
 
     def search(

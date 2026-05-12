@@ -300,6 +300,25 @@ def cmd_admin_decay(args, store: MemoryStore) -> None:
     _json_out(store.apply_decay(min_confidence=args.min_confidence))
 
 
+def cmd_admin_auto_extract(args, store: MemoryStore) -> None:
+    """Extract memories from a brief file and optionally insert them."""
+    from .auto_extract import extract_memories
+
+    brief_text = Path(args.brief_file).read_text(encoding="utf-8")
+    entries = extract_memories(
+        brief_text,
+        model=args.model,
+        max_entries=args.max_entries,
+    )
+
+    if args.dry_run:
+        _json_out({"dry_run": True, "extracted": entries, "count": len(entries)})
+        return
+
+    result = store.store_auto_extracted(entries)
+    _json_out(result)
+
+
 def cmd_admin_dream(args, store: MemoryStore) -> None:
     _json_out(
         store.dream(
@@ -385,7 +404,7 @@ def cmd_admin(args, store: MemoryStore) -> None:
     admin_cmd = getattr(args, "admin_command", None)
     if not admin_cmd:
         print(
-            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|export|import|tags|stats|briefing|graph}",
+            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|export|import|tags|stats|briefing|graph|auto-extract}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -443,6 +462,7 @@ _ADMIN_DISPATCH = {
     "import": cmd_admin_import,
     "stats": cmd_admin_stats,
     "briefing": cmd_admin_briefing,
+    "auto-extract": cmd_admin_auto_extract,
 }
 
 _ADMIN_TAGS_DISPATCH = {
@@ -605,6 +625,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = admin_sub.add_parser("briefing", help="Session briefing")
     p.add_argument("--budget", default=150, type=int)
+
+    p = admin_sub.add_parser("auto-extract", help="Extract memories from a brief file using LLM")
+    p.add_argument("--brief-file", required=True, help="Path to session brief text file")
+    p.add_argument("--dry-run", action="store_true", help="Extract but do not insert")
+    p.add_argument("--model", default="claude-haiku-4-5", help="Anthropic model to use")
+    p.add_argument("--max-entries", default=20, type=int, help="Max entries to extract")
 
     # admin tags
     tags_parser = admin_sub.add_parser("tags", help="Tag management")
