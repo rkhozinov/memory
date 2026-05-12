@@ -285,6 +285,16 @@ def cmd_admin_decay(args, store: MemoryStore) -> None:
     _json_out(store.apply_decay(min_confidence=args.min_confidence))
 
 
+def cmd_admin_dream(args, store: MemoryStore) -> None:
+    _json_out(
+        store.dream(
+            dry_run=args.dry_run,
+            threshold_new=args.threshold_new,
+            threshold_age_hours=args.threshold_age_hours,
+        )
+    )
+
+
 def cmd_admin_purge(args, store: MemoryStore) -> None:
     _json_out(store.purge(retention_days=args.retention_days, dry_run=args.dry_run))
 
@@ -356,7 +366,7 @@ def cmd_admin(args, store: MemoryStore) -> None:
     admin_cmd = getattr(args, "admin_command", None)
     if not admin_cmd:
         print(
-            "Usage: memory admin {cleanup|consolidate|decay|purge|export|import|tags|stats|briefing|graph}",
+            "Usage: memory admin {cleanup|consolidate|decay|dream|purge|export|import|tags|stats|briefing|graph}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -407,6 +417,7 @@ _ADMIN_DISPATCH = {
     "cleanup": cmd_admin_cleanup,
     "consolidate": cmd_admin_consolidate,
     "decay": cmd_admin_decay,
+    "dream": cmd_admin_dream,
     "purge": cmd_admin_purge,
     "export": cmd_admin_export,
     "import": cmd_admin_import,
@@ -542,6 +553,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p = admin_sub.add_parser("purge", help="Hard-delete old soft-deletes")
     p.add_argument("--retention-days", default=30, type=int)
     p.add_argument("--dry-run", action="store_true")
+
+    p = admin_sub.add_parser("dream", help="Composite maintenance pass")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--threshold-new", default=50, type=int)
+    p.add_argument("--threshold-age-hours", default=24, type=int)
 
     p = admin_sub.add_parser("export", help="Export to JSON")
     p.add_argument("--output", "-o", default=None)

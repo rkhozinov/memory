@@ -1,5 +1,6 @@
 """Tests for MemoryStore core operations."""
 
+import json
 import time
 
 import pytest
@@ -1435,3 +1436,263 @@ def test_graph_search_max_hops(populated_store):
     results_1 = populated_store.search("TICKET-24", mode="graph", max_hops=1)
     # Fewer hops should return <= results than more hops
     assert len(results_1) <= len(results_2)
+
+
+# ---------------------------------------------------------------------------
+# Dream pass tests
+# ---------------------------------------------------------------------------
+
+
+def test_dream_returns_expected_keys(store):
+    """dream() returns a dict with all required keys."""
+    store.store("just a note", tags=["test"])
+    result = store.dream(dry_run=True)
+    for key in (
+        "dry_run",
+        "dates_rewritten",
+        "superseded",
+        "superseded_pairs",
+        "consolidated",
+        "tag_merge_suggestions",
+        "demoted",
+        "duration_ms",
+    ):
+        assert key in result, f"Missing key: {key}"
+    assert result["dry_run"] is True
+    assert isinstance(result["duration_ms"], float)
+
+
+def test_dream_idempotent(store):
+    """Running dream twice should produce ~0 changes the second time."""
+    store.store("The server was fixed yesterday.", tags=["source:auto"])
+    store.store("Kubernetes pods keep crashing today.", tags=["source:auto"])
+
+    # First pass — may rewrite dates
+    store.dream(dry_run=False)
+
+    # Second pass — nothing should change
+    result2 = store.dream(dry_run=False)
+    assert result2["dates_rewritten"] == 0
+    assert result2["superseded"] == 0
+    assert result2["demoted"] == 0
+
+
+def test_dream_date_rewrite_yesterday(store):
+    """'yesterday' in memory body is rewritten to an absolute date."""
+    result = store.store("The deployment failed yesterday due to a config error.", tags=["ops"])
+    mem_hash = result["content_hash"]
+
+    dream_result = store.dream(dry_run=False)
+    assert dream_result["dates_rewritten"] >= 1
+
+    # The original hash is no longer in the DB (content changed → new hash)
+    conn = store._get_conn()
+    row = conn.execute(
+        "SELECT content FROM memories WHERE deleted_at IS NULL"
+    ).fetchone()
+    assert "yesterday" not in row["content"]
+    # Should contain an ISO date fragment
+    assert "-" in row["content"]  # YYYY-MM-DD format
+
+
+def test_dream_date_rewrite_n_days_ago(store):
+    """'N days ago' is rewritten to an absolute date."""
+    store.store("We noticed the issue 3 days ago during the standup.", tags=["ops"])
+
+    result = store.dream(dry_run=False)
+    assert result["dates_rewritten"] >= 1
+
+    conn = store._get_conn()
+    row = conn.execute(
+        "SELECT content FROM memories WHERE deleted_at IS NULL"
+    ).fetchone()
+    assert "days ago" not in row["content"]
+
+
+def test_dream_date_rewrite_dry_run_no_change(store):
+    """dry_run=True counts but does not write."""
+    store.store("Something happened yesterday in production.", tags=["ops"])
+
+    result = store.dream(dry_run=True)
+    assert result["dates_rewritten"] >= 1
+
+    # Content should NOT have been rewritten
+    conn = store._get_conn()
+    row = conn.execute("SELECT content FROM memories WHERE deleted_at IS NULL").fetchone()
+    assert "yesterday" in row["content"]
+
+
+def test_dream_date_rewrite_no_relative_dates(store):
+    """Memory with no relative dates is not rewritten."""
+    store.store("Use absolute timestamps like 2024-01-15 in logs.", tags=["tip"])
+
+    result = store.dream(dry_run=False)
+    assert result["dates_rewritten"] == 0
+
+
+def test_dream_supersession_soft_deletes_older(store):
+    """Supersession soft-deletes older memory when newer has contradiction keyword."""
+    # Store two very similar memories with ≥2 shared tags
+    store.store(
+        "Kubernetes liveness probe path is /health",
+        tags=["k8s", "ops", "probe"],
+        memory_type="decision",
+    )
+    time.sleep(0.05)  # ensure created_at differs
+    store.store(
+        "Kubernetes liveness probe path is /healthz — updated endpoint",
+        tags=["k8s", "ops", "probe"],
+        memory_type="decision",
+    )
+
+    result = store.dream(dry_run=False)
+    # The older memory should have been superseded
+    assert result["superseded"] >= 1
+    assert len(result["superseded_pairs"]) >= 1
+    pair = result["superseded_pairs"][0]
+    assert "older" in pair
+    assert "newer" in pair
+    assert pair["similarity"] >= 0.85
+
+    # Older should be soft-deleted
+    conn = store._get_conn()
+    older_hash = pair["older"]
+    row = conn.execute(
+        "SELECT deleted_at, metadata FROM memories WHERE content_hash = ?",
+        (older_hash,),
+    ).fetchone()
+    assert row["deleted_at"] is not None
+    meta = json.loads(row["metadata"])
+    assert meta.get("superseded_by") == pair["newer"]
+
+
+def test_dream_supersession_no_keyword_no_delete(store):
+    """Supersession does NOT fire when newer memory lacks contradiction keyword and type is not superseding."""
+    store.store(
+        "Redis cache is used for session storage",
+        tags=["redis", "cache", "session"],
+        memory_type="note",
+    )
+    time.sleep(0.05)
+    store.store(
+        "Redis cache is used for session storage in the API",
+        tags=["redis", "cache", "session"],
+        memory_type="note",
+    )
+
+    result = store.dream(dry_run=False)
+    # No supersession should occur — no contradiction keyword and type is 'note'
+    assert result["superseded"] == 0
+
+
+def test_dream_supersession_dry_run(store):
+    """dry_run=True reports supersession pairs without deleting."""
+    store.store(
+        "Database connection pool size is 10",
+        tags=["db", "config", "pool"],
+        memory_type="decision",
+    )
+    time.sleep(0.05)
+    store.store(
+        "Database connection pool size is 20 — now updated for scale",
+        tags=["db", "config", "pool"],
+        memory_type="decision",
+    )
+
+    result = store.dream(dry_run=True)
+    # dry_run should still report pairs
+    assert result["dry_run"] is True
+    # No actual soft-delete
+    conn = store._get_conn()
+    active = conn.execute(
+        "SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL"
+    ).fetchone()["cnt"]
+    assert active == 2  # neither deleted
+
+
+def test_dream_tag_suggestions_case_difference(store):
+    """Tag normalisation suggests merge for case-only tag differences."""
+    store.store("memory one", tags=["project:Acme"])
+    store.store("memory two", tags=["project:acme"])
+
+    result = store.dream(dry_run=True)
+    suggestions = result["tag_merge_suggestions"]
+    # Should suggest merging the two case variants
+    froms = {s["from"] for s in suggestions}
+    tos = {s["to"] for s in suggestions}
+    all_tags = froms | tos
+    assert "project:Acme" in all_tags or "project:acme" in all_tags
+
+
+def test_dream_demote_old_auto_tagged(store):
+    """Old never-recalled source:auto memories are marked demoted."""
+    conn = store._get_conn()
+    now = time.time()
+    old_ts = now - 35 * 86400  # 35 days ago
+
+    # Insert directly to control created_at (store() sets it to now)
+    import hashlib as _hashlib
+
+    content = "An old auto-generated note that nobody recalled"
+    h = _hashlib.sha256(content.encode()).hexdigest()
+    conn.execute(
+        "INSERT INTO memories (content_hash, content, tags, memory_type, metadata, "
+        "created_at, updated_at, recall_count, confidence, importance) "
+        "VALUES (?, ?, ?, 'note', '{}', ?, ?, 0, 1.0, 0.5)",
+        (h, content, '["source:auto"]', old_ts, old_ts),
+    )
+
+    result = store.dream(dry_run=False)
+    assert result["demoted"] >= 1
+
+    row = conn.execute("SELECT metadata FROM memories WHERE content_hash = ?", (h,)).fetchone()
+    meta = json.loads(row["metadata"])
+    assert meta.get("demoted") is True
+
+
+def test_dream_demote_skips_tagged_memories(store):
+    """Memories with non-auto tags are not demoted even if old and unrecalled."""
+    conn = store._get_conn()
+    now = time.time()
+    old_ts = now - 35 * 86400
+
+    import hashlib as _hashlib
+
+    content = "Important old memory with a real tag"
+    h = _hashlib.sha256(content.encode()).hexdigest()
+    conn.execute(
+        "INSERT INTO memories (content_hash, content, tags, memory_type, metadata, "
+        "created_at, updated_at, recall_count, confidence, importance) "
+        "VALUES (?, ?, ?, 'decision', '{}', ?, ?, 0, 1.0, 0.9)",
+        (h, content, '["project:myproject"]', old_ts, old_ts),
+    )
+
+    result = store.dream(dry_run=False)
+    # This memory must NOT be demoted
+    row = conn.execute("SELECT metadata FROM memories WHERE content_hash = ?", (h,)).fetchone()
+    meta = json.loads(row["metadata"])
+    assert not meta.get("demoted")
+
+
+def test_dream_last_dream_at_persisted(store):
+    """dream() persists last_dream_at in the metadata table."""
+    store.store("a note", tags=["test"])
+    before = time.time()
+    store.dream(dry_run=False)
+    after = time.time()
+
+    conn = store._get_conn()
+    row = conn.execute("SELECT value FROM metadata WHERE key = 'last_dream_at'").fetchone()
+    assert row is not None
+    ts = float(row["value"])
+    assert before <= ts <= after
+
+
+def test_dream_last_dream_at_not_persisted_on_dry_run(store):
+    """dream(dry_run=True) does NOT update last_dream_at."""
+    store.store("a note", tags=["test"])
+    store.dream(dry_run=True)
+
+    conn = store._get_conn()
+    row = conn.execute("SELECT value FROM metadata WHERE key = 'last_dream_at'").fetchone()
+    assert row is None
