@@ -927,8 +927,14 @@ class MemoryStore:
         memory_types: list[str] | None = None,
         min_importance: float | None = None,
         max_hops: int = 2,
+        track_recall: bool = True,
     ) -> list[dict]:
-        """Search memories. Modes: hybrid (default), semantic, exact, fts, graph."""
+        """Search memories. Modes: hybrid (default), semantic, exact, fts, graph.
+
+        Set track_recall=False for automated/background searches (e.g. session-start
+        hooks) so they don't inflate recall_count or refresh confidence — that
+        signal should reflect user-initiated retrievals only.
+        """
         start = time.time()
         conn = self._get_conn()
         fetch_limit = limit
@@ -1008,14 +1014,17 @@ class MemoryStore:
                 top_similarity=results[0].get("similarity") if results else None,
                 chars_returned=sum(len(m.get("content", "")) for m in results),
             )
-            # Update recall counts and reset confidence (reinforcement) for returned memories
-            now = time.time()
-            for m in results:
-                conn.execute(
-                    "UPDATE memories SET recall_count = recall_count + 1, "
-                    "last_recalled_at = ?, confidence = 1.0 WHERE content_hash = ?",
-                    (now, m["content_hash"]),
-                )
+            # Update recall counts and reset confidence (reinforcement) for returned memories.
+            # Skip when track_recall=False (automated hooks) so recall_count reflects
+            # only user-initiated retrievals, preventing auto-recall echo chambers.
+            if track_recall:
+                now = time.time()
+                for m in results:
+                    conn.execute(
+                        "UPDATE memories SET recall_count = recall_count + 1, "
+                        "last_recalled_at = ?, confidence = 1.0 WHERE content_hash = ?",
+                        (now, m["content_hash"]),
+                    )
             conn.execute("COMMIT")
         except BaseException:
             self._rollback_safe(conn)

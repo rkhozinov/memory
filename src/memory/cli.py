@@ -117,6 +117,7 @@ def cmd_search(args, store: MemoryStore) -> None:
         tags=_parse_tags(args.tags),
         memory_types=_parse_tags(args.types),
         max_hops=args.hops,
+        track_recall=not args.no_track_recall,
     )
     _json_out(results)
 
@@ -452,6 +453,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--types", default="", help="Comma-separated memory types")
     p.add_argument("--hops", type=int, default=2, help="Graph mode hops")
+    p.add_argument(
+        "--no-track-recall",
+        action="store_true",
+        help="Don't bump recall_count/last_recalled_at/confidence. Use for automated/hook searches.",
+    )
 
     # get
     p = sub.add_parser("get", help="Get memory by hash (prefix supported)")
