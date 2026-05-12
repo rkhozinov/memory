@@ -104,3 +104,9 @@ Scan the repository and store structural metadata into memory.
    ```
 
 5. Report summary: number of entries stored per category.
+
+## Note: `memory admin index` is different
+
+`memory admin index` rebuilds the **memory topic index** (a curated TOC of all stored memories), not the codebase map.
+Use `/codebase index [--refresh]` (this skill) for codebase structural indexing.
+Use `memory admin index` (via `/memory:status`) for regenerating the memory-store TOC.

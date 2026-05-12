@@ -86,3 +86,26 @@ To see pending todos:
 ```bash
 memory search "TODO" --tags "todo" --limit 20 --mode exact
 ```
+
+## Track-recall flag
+
+By default, `memory search` counts each search as a recall event (used for scoring and decay).
+Pass `--no-track-recall` to search without incrementing the recall counter — useful for internal/tooling queries
+that should not be treated as user-initiated recalls:
+```bash
+memory search "query" --no-track-recall
+```
+When invoked via the `/recall` skill, tracking is **on** (default), so manual invocations correctly register
+as user-initiated recalls.
+
+## Score filtering (topic-recall hook)
+
+The topic-recall hook that fires automatically on session start applies a minimum score threshold before
+surfacing results. The default minimum score is **0.5**. Results below this threshold are silently dropped.
+
+Override via environment variable:
+```bash
+MEMORY_RECALL_MIN_SCORE=0.3 memory search "query"   # lower threshold, more results
+MEMORY_RECALL_MIN_SCORE=0.7 memory search "query"   # higher threshold, stricter
+```
+The env var is read at runtime — no restart needed.

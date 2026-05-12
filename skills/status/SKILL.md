@@ -1,6 +1,6 @@
 ---
 name: status
-description: Check memory service health and stats.
+description: Check memory service health, stats, demoted memories, dream consolidation, index, and auto-extracted entries.
 allowed-tools: Bash
 ---
 
@@ -51,3 +51,37 @@ memory admin purge --retention-days 7         # hard-delete old entries
 memory admin export -o /tmp/backup.json
 memory admin import -f /tmp/backup.json
 ```
+
+### Demoted memories
+
+List memories that have low recall counts and have been ranked down:
+```bash
+memory admin demoted
+```
+Use this to identify candidates for deletion or promotion. Demoted entries are retained but ranked lower in search results.
+
+### Dream pass (composite consolidation)
+
+A "dream" pass reads all memories and merges related clusters into composite summaries:
+```bash
+memory admin dream --dry-run   # preview what would be merged
+memory admin dream             # run consolidation
+```
+Run this periodically (e.g., after large ingestion) to reduce redundancy and improve search quality.
+
+### Index regeneration
+
+Rebuild the curated front-door TOC (table of contents) for the memory store:
+```bash
+memory admin index             # rebuild index
+memory admin index --dry-run   # preview index entries
+```
+The index provides a fast navigable overview of all stored topics and is updated automatically on dream passes.
+
+### Auto-extracted entries
+
+Entries extracted automatically (e.g., from session handoffs) are tagged `source:auto`. To view them:
+```bash
+memory search "" --tags "source:auto" --limit 50
+```
+These are lower-confidence entries — review and promote or delete as needed.

@@ -39,3 +39,16 @@ Permanently remove old soft-deleted entries:
 memory admin purge --dry-run           # preview
 memory admin purge --retention-days 7  # hard-delete
 ```
+
+## Auto-extracted entries
+
+Memories tagged `source:auto` were ingested automatically (e.g., from session handoffs or `memory admin auto-extract`).
+To bulk-preview and delete them:
+```bash
+# Preview
+memory delete --tags "source:auto" --dry-run
+
+# Bulk delete all auto-extracted entries
+memory delete --tags "source:auto"
+```
+Confirm the dry-run count before proceeding — bulk deletes cannot be undone (soft-deleted entries can be purged).
