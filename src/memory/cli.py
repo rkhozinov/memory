@@ -295,6 +295,10 @@ def cmd_admin_dream(args, store: MemoryStore) -> None:
     )
 
 
+def cmd_admin_demoted(args, store: MemoryStore) -> None:
+    _json_out(store.demoted(limit=args.limit))
+
+
 def cmd_admin_purge(args, store: MemoryStore) -> None:
     _json_out(store.purge(retention_days=args.retention_days, dry_run=args.dry_run))
 
@@ -366,7 +370,7 @@ def cmd_admin(args, store: MemoryStore) -> None:
     admin_cmd = getattr(args, "admin_command", None)
     if not admin_cmd:
         print(
-            "Usage: memory admin {cleanup|consolidate|decay|dream|purge|export|import|tags|stats|briefing|graph}",
+            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|export|import|tags|stats|briefing|graph}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -418,6 +422,7 @@ _ADMIN_DISPATCH = {
     "consolidate": cmd_admin_consolidate,
     "decay": cmd_admin_decay,
     "dream": cmd_admin_dream,
+    "demoted": cmd_admin_demoted,
     "purge": cmd_admin_purge,
     "export": cmd_admin_export,
     "import": cmd_admin_import,
@@ -558,6 +563,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--threshold-new", default=50, type=int)
     p.add_argument("--threshold-age-hours", default=24, type=int)
+
+    p = admin_sub.add_parser("demoted", help="List memories most penalised by demotion ranker")
+    p.add_argument("--limit", "-n", default=50, type=int)
 
     p = admin_sub.add_parser("export", help="Export to JSON")
     p.add_argument("--output", "-o", default=None)

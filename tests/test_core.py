@@ -1696,3 +1696,113 @@ def test_dream_last_dream_at_not_persisted_on_dry_run(store):
     conn = store._get_conn()
     row = conn.execute("SELECT value FROM metadata WHERE key = 'last_dream_at'").fetchone()
     assert row is None
+
+
+# --- Demotion ranker tests ---
+
+
+def test_demotion_penalizes_hot_memories(tmp_path):
+    """Hot memories get a lower demotion factor than cold ones in search results."""
+    store = MemoryStore(db_path=tmp_path / "demo.db")
+    h1 = store.store("python typing union", tags=["python"])["content_hash"]
+    h2 = store.store("python typing optional", tags=["python"])["content_hash"]
+    # Force h1 to be hot via direct UPDATE
+    conn = store._get_conn()
+    conn.execute("UPDATE memories SET recall_count = 100 WHERE content_hash = ?", (h1,))
+    conn.commit()
+    results = store.search("python typing", limit=2, track_recall=False)
+    by_hash = {r["content_hash"]: r for r in results}
+    assert h1 in by_hash and h2 in by_hash
+    # Hot memory demotion factor must be strictly less than cold memory's
+    assert by_hash[h1]["score_breakdown"]["demotion"] < by_hash[h2]["score_breakdown"]["demotion"]
+    assert by_hash[h1]["score_breakdown"]["recall_count"] == 100
+    assert by_hash[h2]["score_breakdown"]["recall_count"] == 0
+
+
+def test_demotion_factor_is_one_for_cold_memory(tmp_path):
+    """A never-recalled memory has demotion factor == 1.0 (no penalty)."""
+    store = MemoryStore(db_path=tmp_path / "cold.db")
+    store.store("cold memory never recalled")
+    results = store.search("cold memory", limit=1, track_recall=False)
+    assert len(results) >= 1
+    sb = results[0]["score_breakdown"]
+    assert sb["recall_count"] == 0
+    assert sb["demotion"] == 1.0
+
+
+def test_demotion_disabled_by_weight_zero(tmp_path, monkeypatch):
+    """MEMORY_DEMOTION_WEIGHT=0 means demotion factor is 1.0 for all memories."""
+    import importlib
+
+    import memory.core as core_mod
+
+    monkeypatch.setenv("MEMORY_DEMOTION_WEIGHT", "0")
+    monkeypatch.setattr(core_mod, "DEMOTION_WEIGHT", 0.0)
+
+    store = MemoryStore(db_path=tmp_path / "nodemo.db")
+    h = store.store("zero demotion test memory")["content_hash"]
+    conn = store._get_conn()
+    conn.execute("UPDATE memories SET recall_count = 999 WHERE content_hash = ?", (h,))
+    conn.commit()
+
+    results = store.search("zero demotion test", limit=1, track_recall=False)
+    assert len(results) >= 1
+    sb = results[0]["score_breakdown"]
+    # With weight=0, factor must be exactly 1.0 regardless of recall_count
+    assert sb["demotion"] == 1.0
+
+
+def test_demoted_method_returns_expected_ordering(tmp_path):
+    """demoted() returns most-penalised memories first (highest score_loss_pct)."""
+    store = MemoryStore(db_path=tmp_path / "demoted.db")
+    h_low = store.store("low recall memory alpha")["content_hash"]
+    h_high = store.store("high recall memory beta")["content_hash"]
+
+    conn = store._get_conn()
+    conn.execute("UPDATE memories SET recall_count = 5 WHERE content_hash = ?", (h_low,))
+    conn.execute("UPDATE memories SET recall_count = 500 WHERE content_hash = ?", (h_high,))
+    conn.commit()
+
+    results = store.demoted(limit=10)
+    # Both should appear (both have recall_count > 0)
+    hashes = [r["hash"] for r in results]
+    assert h_low in hashes
+    assert h_high in hashes
+
+    # The high-recall one should rank first (higher score_loss_pct)
+    high_idx = hashes.index(h_high)
+    low_idx = hashes.index(h_low)
+    assert high_idx < low_idx
+
+    # Each entry must have the required fields
+    entry = results[0]
+    assert "hash" in entry
+    assert "content_preview" in entry
+    assert "recall_count" in entry
+    assert "demotion_factor" in entry
+    assert "score_loss_pct" in entry
+    assert entry["demotion_factor"] < 1.0
+    assert entry["score_loss_pct"] > 0.0
+
+
+def test_demoted_cold_memories_excluded(tmp_path):
+    """demoted() omits memories with recall_count == 0."""
+    store = MemoryStore(db_path=tmp_path / "cold2.db")
+    store.store("never recalled content")
+    results = store.demoted(limit=50)
+    # Nothing should appear since recall_count == 0
+    assert results == []
+
+
+def test_search_score_breakdown_has_demotion_fields(tmp_path):
+    """Semantic search score_breakdown always includes demotion and recall_count."""
+    store = MemoryStore(db_path=tmp_path / "breakdown.db")
+    store.store("demotion breakdown test content", tags=["test"])
+    results = store.search("demotion breakdown test", limit=1, track_recall=False)
+    assert len(results) >= 1
+    sb = results[0]["score_breakdown"]
+    assert "demotion" in sb
+    assert "recall_count" in sb
+    assert isinstance(sb["demotion"], float)
+    assert 0.0 < sb["demotion"] <= 1.0
+    assert isinstance(sb["recall_count"], int)

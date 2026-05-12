@@ -203,3 +203,38 @@ def test_health(cli_env):
     data = _invoke(cli_env, ["health"])
     assert data["status"] == "healthy"
     assert "total_memories" in data
+
+
+# --- admin demoted ---
+
+
+def test_admin_demoted_returns_valid_json(cli_env):
+    """CLI 'memory admin demoted' returns a JSON list (possibly empty)."""
+    data = _invoke(cli_env, ["admin", "demoted"])
+    assert isinstance(data, list)
+
+
+def test_admin_demoted_hot_memory_appears(cli_env):
+    """CLI 'memory admin demoted' lists memories with recall_count > 0."""
+    stored = _invoke(cli_env, ["store", "hot demoted memory for cli test"])
+    h = stored["content_hash"]
+
+    # Manually bump recall_count so it shows up in demoted list
+    from memory.core import MemoryStore
+
+    with patch("memory.core.DB_PATH", cli_env):
+        s = MemoryStore(db_path=cli_env)
+        conn = s._get_conn()
+        conn.execute("UPDATE memories SET recall_count = 50 WHERE content_hash = ?", (h,))
+        conn.commit()
+
+    data = _invoke(cli_env, ["admin", "demoted", "--limit", "10"])
+    assert isinstance(data, list)
+    hashes = [entry["hash"] for entry in data]
+    assert h in hashes
+
+    entry = next(e for e in data if e["hash"] == h)
+    assert entry["recall_count"] == 50
+    assert entry["demotion_factor"] < 1.0
+    assert entry["score_loss_pct"] > 0.0
+    assert "content_preview" in entry

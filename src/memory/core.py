@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
+import os
 import re
 import sqlite3
 import struct
@@ -56,6 +58,14 @@ _IMPORTANCE_BY_TYPE: dict[str, float] = {
 # --- Composite scoring defaults ---
 DEFAULT_SCORING_WEIGHTS = (0.8, 0.1, 0.1)  # similarity, importance, recency
 MIN_SIMILARITY_THRESHOLD = 0.45  # filter out semantically irrelevant results
+
+# --- Demotion weight ---
+# Penalises over-recalled memories so they don't crowd out genuine matches.
+# 0 disables entirely (demotion factor == 1.0 for all memories).
+# At 0.1: recall_count=100 (~log1p≈4.6) loses ~32% of score.
+# At 0.2: same memory loses ~48%.
+# Override via MEMORY_DEMOTION_WEIGHT env var (read once at import time).
+DEMOTION_WEIGHT: float = float(os.environ.get("MEMORY_DEMOTION_WEIGHT", "0.1"))
 
 
 def _serialize_f32(vec: object) -> bytes:
@@ -1240,6 +1250,12 @@ class MemoryStore:
                 "importance": round(mem.importance, 4),
                 "recency": round(recency, 4),
             }
+            # Demotion: penalise hot memories so they don't crowd out genuine matches.
+            recall_count = row.get("recall_count", 0) or 0
+            demotion = 1.0 / (1.0 + DEMOTION_WEIGHT * math.log1p(recall_count))
+            d["score"] = round(d["score"] * demotion, 4)
+            d["score_breakdown"]["demotion"] = round(demotion, 4)
+            d["score_breakdown"]["recall_count"] = recall_count
             memories.append(d)
 
         if tags or exclude_tags:
@@ -1395,6 +1411,12 @@ class MemoryStore:
                 "importance": round(mem.importance, 4),
                 "recency": round(recency, 4),
             }
+            # Demotion: penalise hot memories so they don't crowd out genuine matches.
+            recall_count = row_dict.get("recall_count", 0) or 0
+            demotion = 1.0 / (1.0 + DEMOTION_WEIGHT * math.log1p(recall_count))
+            d["score"] = round(d["score"] * demotion, 4)
+            d["score_breakdown"]["demotion"] = round(demotion, 4)
+            d["score_breakdown"]["recall_count"] = recall_count
             memories.append(d)
 
         if tags or exclude_tags:
@@ -3182,6 +3204,61 @@ class MemoryStore:
             raise
 
         return result
+
+    def demoted(self, limit: int = 50) -> list[dict]:
+        """Return memories most penalised by the demotion ranker.
+
+        Computes a representative composite score for each recalled memory
+        (using DEFAULT_SCORING_WEIGHTS and recency at query time), then shows
+        how much of that score the demotion factor is taking away.
+
+        Each entry: {hash, content_preview, recall_count, demotion_factor,
+                     score_loss_pct}
+
+        Sorted by score_loss_pct descending so the most-penalised memories
+        appear first — useful for auditing recall-count inflation.
+        """
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT content_hash, content, importance, created_at, recall_count "
+            "FROM memories "
+            "WHERE recall_count > 0 AND deleted_at IS NULL"
+        ).fetchall()
+
+        if not rows:
+            return []
+
+        w_sim, w_imp, w_rec = DEFAULT_SCORING_WEIGHTS
+        entries = []
+        for row in rows:
+            rc = row["recall_count"] or 0
+            recency = compute_recency(row["created_at"])
+            importance = row["importance"] or 0.5
+
+            # Representative score without demotion (use similarity = 1.0
+            # as a canonical upper-bound proxy so the loss is comparable).
+            score_without = w_sim * 1.0 + w_imp * importance + w_rec * recency
+            demotion = 1.0 / (1.0 + DEMOTION_WEIGHT * math.log1p(rc))
+            score_with = score_without * demotion
+            score_loss_pct = round((1.0 - demotion) * 100, 2)
+
+            preview = row["content"][:120]
+
+            entries.append(
+                {
+                    "hash": row["content_hash"],
+                    "content_preview": preview,
+                    "recall_count": rc,
+                    "demotion_factor": round(demotion, 4),
+                    "score_loss_pct": score_loss_pct,
+                    # Include raw scores for debugging
+                    "score_without_demotion": round(score_without, 4),
+                    "score_with_demotion": round(score_with, 4),
+                }
+            )
+
+        entries.sort(key=lambda e: e["score_loss_pct"], reverse=True)
+        return entries[:limit]
 
     def apply_decay(self, min_confidence: float = 0.0) -> dict:
         """Recompute and persist decayed confidence for all memories.
