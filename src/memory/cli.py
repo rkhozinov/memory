@@ -329,6 +329,19 @@ def cmd_admin_dream(args, store: MemoryStore) -> None:
     )
 
 
+def cmd_admin_auto_extract_pending(args, store: MemoryStore) -> None:
+    """Scan abandoned session transcripts and extract memories."""
+    _json_out(
+        store.auto_extract_pending(
+            cwd=args.cwd,
+            min_age_minutes=args.min_age_minutes,
+            max_sessions=args.max_sessions,
+            marker_dir=args.marker_dir,
+            dry_run=args.dry_run,
+        )
+    )
+
+
 def cmd_admin_demoted(args, store: MemoryStore) -> None:
     _json_out(store.demoted(limit=args.limit))
 
@@ -423,7 +436,7 @@ def cmd_admin(args, store: MemoryStore) -> None:
     admin_cmd = getattr(args, "admin_command", None)
     if not admin_cmd:
         print(
-            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|export|import|tags|stats|briefing|graph|auto-extract|index}",
+            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|export|import|tags|stats|briefing|graph|auto-extract|auto-extract-pending|index}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -482,6 +495,7 @@ _ADMIN_DISPATCH = {
     "stats": cmd_admin_stats,
     "briefing": cmd_admin_briefing,
     "auto-extract": cmd_admin_auto_extract,
+    "auto-extract-pending": cmd_admin_auto_extract_pending,
     "index": cmd_admin_index,
 }
 
@@ -651,6 +665,38 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="Extract but do not insert")
     p.add_argument("--model", default="claude-haiku-4-5", help="Anthropic model to use")
     p.add_argument("--max-entries", default=20, type=int, help="Max entries to extract")
+
+    p = admin_sub.add_parser(
+        "auto-extract-pending",
+        help="Scan abandoned session transcripts and extract memories",
+    )
+    p.add_argument(
+        "--cwd",
+        default=None,
+        help="Project directory (default: current working directory)",
+    )
+    p.add_argument(
+        "--min-age-minutes",
+        default=5,
+        type=int,
+        help="Minimum session age in minutes to process (default: 5)",
+    )
+    p.add_argument(
+        "--max-sessions",
+        default=10,
+        type=int,
+        help="Max sessions to process per run (default: 10)",
+    )
+    p.add_argument(
+        "--marker-dir",
+        default=None,
+        help="Directory for processed-session marker files (default: ~/.claude/memory/extracted/)",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Trim and extract but do not store or write markers",
+    )
 
     p = admin_sub.add_parser("index", help="Build curated memory index TOC")
     p.add_argument(

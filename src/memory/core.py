@@ -1081,6 +1081,186 @@ class MemoryStore:
             "stored_hashes": stored_hashes,
         }
 
+    def auto_extract_pending(
+        self,
+        *,
+        cwd: str | None = None,
+        min_age_minutes: int = 5,
+        max_sessions: int = 10,
+        marker_dir: str | Path | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Scan ~/.claude/projects/<cwd-encoded>/*.jsonl for abandoned sessions.
+
+        For sessions modified >= min_age_minutes ago that lack a marker file,
+        trims the transcript, extracts memories, stores them, and writes a marker
+        so the session isn't re-processed.
+
+        Returns:
+            {scanned, processed, skipped_marked, skipped_too_recent,
+             stored_total, dedup_total, sessions: [...]}
+        """
+        import time as _time
+
+        from .auto_extract import extract_memories
+        from .transcript import trim_transcript
+
+        # Guard: ANTHROPIC_API_KEY must be present or we'll silently get []
+        # and write markers, preventing future retries after key is added.
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print(
+                "auto_extract_pending: ANTHROPIC_API_KEY missing — skipping auto-extract",
+                file=sys.stderr,
+            )
+            return {
+                "scanned": 0,
+                "processed": 0,
+                "skipped_marked": 0,
+                "skipped_too_recent": 0,
+                "stored_total": 0,
+                "dedup_total": 0,
+                "sessions": [],
+            }
+
+        # Resolve cwd and encode like Claude Code does:
+        # every non-alphanumeric/dash char → "-"
+        resolved_cwd = cwd or os.getcwd()
+
+        def _encode_cwd(path: str) -> str:
+            return re.sub(r"[^a-zA-Z0-9-]", "-", path)
+
+        encoded = _encode_cwd(resolved_cwd)
+        projects_dir = Path.home() / ".claude" / "projects" / encoded
+
+        # Resolve marker directory
+        if marker_dir is None:
+            marker_dir = Path.home() / ".claude" / "memory" / "extracted"
+        marker_path = Path(marker_dir)
+        if not dry_run:
+            marker_path.mkdir(parents=True, exist_ok=True)
+
+        # Collect candidate JSONL files
+        if not projects_dir.exists():
+            return {
+                "scanned": 0,
+                "processed": 0,
+                "skipped_marked": 0,
+                "skipped_too_recent": 0,
+                "stored_total": 0,
+                "dedup_total": 0,
+                "sessions": [],
+            }
+
+        now = _time.time()
+        min_age_seconds = min_age_minutes * 60
+
+        candidates: list[tuple[float, Path]] = []
+        skipped_marked = 0
+        skipped_too_recent = 0
+
+        for jsonl_file in projects_dir.glob("*.jsonl"):
+            session_id = jsonl_file.stem
+            marker_file = marker_path / f"{session_id}.marker"
+
+            # Skip already-processed sessions
+            if marker_file.exists():
+                skipped_marked += 1
+                continue
+
+            # Skip too-recent sessions (still active)
+            mtime = jsonl_file.stat().st_mtime
+            age_seconds = now - mtime
+            if age_seconds < min_age_seconds:
+                skipped_too_recent += 1
+                continue
+
+            candidates.append((mtime, jsonl_file))
+
+        # Sort oldest-first, cap at max_sessions
+        candidates.sort(key=lambda x: x[0])
+        candidates = candidates[:max_sessions]
+
+        scanned = skipped_marked + skipped_too_recent + len(candidates)
+        stored_total = 0
+        dedup_total = 0
+        session_results: list[dict] = []
+
+        for _mtime, jsonl_file in candidates:
+            session_id = jsonl_file.stem
+            marker_file = marker_path / f"{session_id}.marker"
+            session_info: dict = {"session_id": session_id, "file": str(jsonl_file)}
+
+            # Trim transcript
+            try:
+                text = trim_transcript(jsonl_file)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"auto_extract_pending: failed to read {jsonl_file.name}: {exc}",
+                    file=sys.stderr,
+                )
+                # Write marker to avoid retrying an unreadable file
+                if not dry_run:
+                    marker_file.write_text("error\n", encoding="utf-8")
+                session_info["status"] = "error"
+                session_info["error"] = str(exc)
+                session_results.append(session_info)
+                continue
+
+            if not text.strip():
+                # Empty transcript — write marker to skip next time
+                if not dry_run:
+                    marker_file.write_text("empty\n", encoding="utf-8")
+                session_info["status"] = "empty"
+                session_results.append(session_info)
+                continue
+
+            # Extract memories via LLM
+            entries = extract_memories(text)
+
+            # If empty result AND no API key failure (key is present), mark as done.
+            # extract_memories returns [] on API failure too, but we already guarded
+            # ANTHROPIC_API_KEY above — so [] here means "API said no memories".
+            deliberate_empty = len(entries) == 0  # API key present, just nothing found
+
+            if dry_run:
+                session_info["status"] = "dry_run"
+                session_info["extracted"] = len(entries)
+                session_info["entries"] = entries
+                session_results.append(session_info)
+                continue
+
+            if deliberate_empty:
+                # Still mark so we don't retry
+                marker_file.write_text("no_memories\n", encoding="utf-8")
+                session_info["status"] = "no_memories"
+                session_results.append(session_info)
+                continue
+
+            # Store extracted memories
+            result = self.store_auto_extracted(entries)
+            stored = result.get("stored", 0)
+            dedup = result.get("dedup_skipped", 0)
+            stored_total += stored
+            dedup_total += dedup
+
+            # Write marker on successful extract + store
+            marker_file.write_text("ok\n", encoding="utf-8")
+            session_info["status"] = "ok"
+            session_info["extracted"] = len(entries)
+            session_info["stored"] = stored
+            session_info["dedup_skipped"] = dedup
+            session_results.append(session_info)
+
+        return {
+            "scanned": scanned,
+            "processed": len(candidates),
+            "skipped_marked": skipped_marked,
+            "skipped_too_recent": skipped_too_recent,
+            "stored_total": stored_total,
+            "dedup_total": dedup_total,
+            "sessions": session_results,
+        }
+
     # --- Search ---
 
     def search(
