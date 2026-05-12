@@ -100,3 +100,41 @@ echo ""
 echo "To review specific memories: memory search [--tags <tag>] [--types <type>]"
 echo "To delete a memory: memory delete <id>"
 echo "Never run automated cleanup without manual review."
+
+# Index refresh trigger
+# Count new memories since last index build marker; rebuild in background if >= 25
+LAST_INDEX_MARKER="$HOME/repos/memory/data/.last-index-build"
+INDEX_FILE="$HOME/.claude/memory/INDEX.md"
+
+INDEX_REFRESH_THRESHOLD=25
+
+if [[ ! -f "$LAST_INDEX_MARKER" ]]; then
+  # No marker: always rebuild
+  echo ""
+  echo -e "${BLUE}[index] No previous index marker — building index in background...${NC}"
+  mkdir -p "$(dirname "$INDEX_FILE")"
+  (memory admin index --out "$INDEX_FILE" >/dev/null 2>&1 && touch "$LAST_INDEX_MARKER" &)
+else
+  # Count memories created/updated since marker mtime
+  MARKER_TS=$(python3 -c "import os; print(os.path.getmtime('$LAST_INDEX_MARKER'))" 2>/dev/null || echo "0")
+  NEW_SINCE=$(memory admin stats 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('stores_total', 0))
+except Exception:
+    print(0)
+" 2>/dev/null || echo "0")
+
+  # Use a simpler approach: check raw DB count via memory health
+  TOTAL_NOW=$(memory health 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_memories',0))" 2>/dev/null || echo "0")
+  TOTAL_AT_MARKER=$(cat "${LAST_INDEX_MARKER}.count" 2>/dev/null || echo "0")
+  DIFF=$(( TOTAL_NOW - TOTAL_AT_MARKER ))
+
+  if [[ "$DIFF" -ge "$INDEX_REFRESH_THRESHOLD" ]]; then
+    echo ""
+    echo -e "${BLUE}[index] ${DIFF} new memories since last index — rebuilding in background...${NC}"
+    mkdir -p "$(dirname "$INDEX_FILE")"
+    (memory admin index --out "$INDEX_FILE" >/dev/null 2>&1 && touch "$LAST_INDEX_MARKER" && echo "$TOTAL_NOW" > "${LAST_INDEX_MARKER}.count" &)
+  fi
+fi

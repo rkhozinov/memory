@@ -4105,3 +4105,203 @@ class MemoryStore:
             "documents_imported": documents_imported,
             "documents_skipped": documents_skipped,
         }
+
+    # ------------------------------------------------------------------ #
+    #  Index front door                                                    #
+    # ------------------------------------------------------------------ #
+
+    def build_index(self, *, max_lines: int = 200, max_tokens: int = 4000) -> str:
+        """Build a curated TOC of the memory store for SessionStart injection.
+
+        Selection rules (priority order):
+        1. Exclude: deleted_at NOT NULL, metadata.demoted==true,
+           metadata.injection_suspicious==true.
+        2. Top tier: memory_type in (decision, reference) AND at least one
+           non-'source:auto' tag (human-curated).
+        3. Second tier: memory_type in (learning, pattern, error), ranked by
+           recency × importance × distinct_recall_proxy / log(recall_count+1),
+           with 0.5× multiplier for source:auto entries.
+        4. Third tier: memory_type == 'todo', status PENDING or BLOCKED
+           (parsed from [TODO:PENDING|DONE|BLOCKED] prefix).
+        5. Hard cap: stop when adding next entry would exceed max_lines or
+           max_tokens (approximated as len(text)//4).
+
+        Returns markdown string with a Demoted footer.
+        """
+        conn = self._get_conn()
+
+        # Fetch all active memories
+        rows = conn.execute(
+            "SELECT content_hash, content, tags, memory_type, metadata, "
+            "       importance, created_at, recall_count, last_recalled_at "
+            "FROM memories WHERE deleted_at IS NULL"
+        ).fetchall()
+
+        total_active = len(rows)
+        now = time.time()
+
+        # --- Filter and classify ---
+        tier1: list[dict] = []  # decisions + references (human-curated)
+        tier2: list[dict] = []  # learning / pattern / error
+        tier3: list[dict] = []  # todo (PENDING / BLOCKED)
+        excluded_count = 0
+
+        _todo_re = re.compile(r"^\[TODO:(PENDING|DONE|BLOCKED)\]", re.IGNORECASE)
+
+        for row in rows:
+            tags = _safe_tags(row["tags"])
+            try:
+                meta = json.loads(row["metadata"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+
+            # Rule 1: hard exclusions
+            if meta.get("demoted") is True or meta.get("injection_suspicious") is True:
+                excluded_count += 1
+                continue
+
+            mtype = row["memory_type"] or "note"
+            content = row["content"] or ""
+            imp = row["importance"] or 0.5
+            rc = row["recall_count"] or 0
+            created_at = row["created_at"] or now
+            is_auto = "source:auto" in tags
+            auto_mult = 0.5 if is_auto else 1.0
+
+            entry = {
+                "hash": row["content_hash"],
+                "content": content,
+                "memory_type": mtype,
+                "tags": tags,
+                "is_auto": is_auto,
+            }
+
+            if mtype in ("decision", "reference"):
+                # Top tier only if has at least one non-source:auto tag
+                has_curated_tag = any(t != "source:auto" for t in tags)
+                if has_curated_tag:
+                    tier1.append(entry)
+                else:
+                    # Falls to tier 2 scoring (no human curation)
+                    recency = compute_recency(created_at)
+                    score = auto_mult * recency * imp / math.log1p(rc + 1)
+                    entry["score"] = score
+                    tier2.append(entry)
+
+            elif mtype in ("learning", "pattern", "error"):
+                recency = compute_recency(created_at)
+                # distinct_recall_proxy: approximate unique sessions via log
+                distinct_proxy = math.log1p(rc) if rc > 0 else 1.0
+                score = auto_mult * recency * imp * distinct_proxy / math.log1p(rc + 1)
+                entry["score"] = score
+                tier2.append(entry)
+
+            elif mtype == "todo":
+                m = _todo_re.match(content)
+                if m:
+                    status = m.group(1).upper()
+                    if status in ("PENDING", "BLOCKED"):
+                        tier3.append(entry)
+                    # DONE todos silently excluded (not demoted)
+                else:
+                    # No status prefix — include as PENDING
+                    tier3.append(entry)
+
+            # Everything else (note, observation, etc.) is excluded from index
+            # but not counted as "demoted" (they're tier-4 / not curated)
+
+        # Sort tier2 by score descending
+        tier2.sort(key=lambda e: e.get("score", 0.0), reverse=True)
+
+        # --- Build markdown sections ---
+        iso_now = datetime.fromtimestamp(now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        def _entry_line(e: dict) -> str:
+            h = e["hash"][:12]
+            mtype = e["memory_type"]
+            tags_str = " ".join(e["tags"][:3]) if e["tags"] else ""
+            preview = e["content"][:80].replace("\n", " ")
+            return f"- `{h}` {mtype} {tags_str} — {preview}"
+
+        def _approx_tokens(text: str) -> int:
+            return len(text) // 4
+
+        # Header placeholder — filled at end
+        sections: dict[str, list[str]] = {
+            "Decisions": [],
+            "References": [],
+            "Learnings / Patterns / Errors": [],
+            "Active TODOs": [],
+        }
+
+        line_count = 0
+        token_estimate = 0
+        included_count = 0
+        demoted_from_cap = 0
+
+        def _would_exceed(line: str) -> bool:
+            return (line_count + 1 > max_lines) or (
+                token_estimate + _approx_tokens(line) > max_tokens
+            )
+
+        def _add_to(section: str, entry: dict) -> bool:
+            nonlocal line_count, token_estimate, included_count, demoted_from_cap
+            line = _entry_line(entry)
+            if _would_exceed(line):
+                demoted_from_cap += 1
+                return False
+            sections[section].append(line)
+            line_count += 1
+            token_estimate += _approx_tokens(line)
+            included_count += 1
+            return True
+
+        # Tier 1: decisions then references
+        for e in tier1:
+            if e["memory_type"] == "decision":
+                _add_to("Decisions", e)
+            else:
+                _add_to("References", e)
+
+        # Tier 2: learning/pattern/error
+        for e in tier2:
+            _add_to("Learnings / Patterns / Errors", e)
+
+        # Tier 3: todos
+        for e in tier3:
+            _add_to("Active TODOs", e)
+
+        # Total demoted = explicitly excluded + cap-overflow
+        total_demoted = excluded_count + demoted_from_cap
+
+        # --- Assemble markdown ---
+        lines: list[str] = [
+            f"# Memory Index — {iso_now}",
+            "",
+            f"**Total memories:** {total_active} (active: {total_active}, demoted: {total_demoted})",
+            f"**Index lines:** {line_count} / {max_lines}",
+            "**Generated by:** memory admin index",
+            "",
+        ]
+
+        section_order = [
+            ("## Decisions", "Decisions"),
+            ("## References", "References"),
+            ("## Learnings / Patterns / Errors", "Learnings / Patterns / Errors"),
+            ("## Active TODOs", "Active TODOs"),
+        ]
+        for heading, key in section_order:
+            lines.append(heading)
+            if sections[key]:
+                lines.extend(sections[key])
+            else:
+                lines.append("*none*")
+            lines.append("")
+
+        lines.append("## Demoted (search-only; not auto-loaded)")
+        lines.append(
+            f"*{total_demoted}* entries available via `memory search` or "
+            "`memory get <hash>` but excluded from this index."
+        )
+
+        return "\n".join(lines) + "\n"

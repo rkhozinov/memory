@@ -400,11 +400,30 @@ def cmd_admin_graph_search(args, store: MemoryStore) -> None:
     _json_out(results)
 
 
+def cmd_admin_index(args, store: MemoryStore) -> None:
+    """Build and write (or print) a curated memory index."""
+    markdown = store.build_index(
+        max_lines=args.max_lines,
+        max_tokens=args.max_tokens,
+    )
+
+    out_path = getattr(args, "out", None)
+    if out_path:
+        p = Path(out_path).expanduser()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(markdown, encoding="utf-8")
+        # Print a small JSON confirmation
+        _json_out({"status": "written", "path": str(p), "lines": markdown.count("\n")})
+    else:
+        # Raw markdown to stdout (no JSON wrapper — hook reads it directly)
+        print(markdown, end="")
+
+
 def cmd_admin(args, store: MemoryStore) -> None:
     admin_cmd = getattr(args, "admin_command", None)
     if not admin_cmd:
         print(
-            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|export|import|tags|stats|briefing|graph|auto-extract}",
+            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|export|import|tags|stats|briefing|graph|auto-extract|index}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -463,6 +482,7 @@ _ADMIN_DISPATCH = {
     "stats": cmd_admin_stats,
     "briefing": cmd_admin_briefing,
     "auto-extract": cmd_admin_auto_extract,
+    "index": cmd_admin_index,
 }
 
 _ADMIN_TAGS_DISPATCH = {
@@ -631,6 +651,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="Extract but do not insert")
     p.add_argument("--model", default="claude-haiku-4-5", help="Anthropic model to use")
     p.add_argument("--max-entries", default=20, type=int, help="Max entries to extract")
+
+    p = admin_sub.add_parser("index", help="Build curated memory index TOC")
+    p.add_argument(
+        "--out",
+        default=None,
+        metavar="PATH",
+        help="Write to file (default: print to stdout). Use ~/.claude/memory/INDEX.md for hook injection.",
+    )
+    p.add_argument("--max-lines", default=200, type=int, help="Hard line cap (default 200)")
+    p.add_argument("--max-tokens", default=4000, type=int, help="Hard token cap (default 4000)")
 
     # admin tags
     tags_parser = admin_sub.add_parser("tags", help="Tag management")

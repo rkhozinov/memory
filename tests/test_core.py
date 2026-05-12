@@ -1879,3 +1879,102 @@ def test_store_batch_injection_flags_suspicious_keeps_clean(store):
     stored_clean = store.get(content_hash=results[1]["content_hash"])
     assert not stored_clean["metadata"].get("injection_suspicious")
     assert "flagged:injection" not in stored_clean["tags"]
+
+
+# ---------------------------------------------------------------------------
+# build_index() tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_index_returns_nonempty_string_with_required_sections(store):
+    """build_index() produces a non-empty string containing all four sections."""
+    store.store("Use IaC for all infrastructure changes", memory_type="decision", tags=["project:infra"])
+    store.store("Terraform S3 backend needs DynamoDB lock table", memory_type="pattern", tags=["tool:terraform"])
+    store.store("[TODO:PENDING] Migrate test env to GCP", memory_type="todo", tags=["project:infra"])
+    store.store("Reference: VPC CIDR 10.30.0.0/16", memory_type="reference", tags=["cloud:aws"])
+
+    idx = store.build_index()
+    assert isinstance(idx, str)
+    assert len(idx) > 0
+    assert "## Decisions" in idx
+    assert "## References" in idx
+    assert "## Learnings / Patterns / Errors" in idx
+    assert "## Active TODOs" in idx
+    assert "## Demoted (search-only; not auto-loaded)" in idx
+
+
+def test_build_index_excludes_demoted_metadata(store):
+    """build_index() must not include memories with metadata.demoted==true."""
+    store.store(
+        "This should be excluded",
+        memory_type="decision",
+        tags=["project:infra"],
+        metadata={"demoted": True},
+    )
+    store.store("This should appear", memory_type="decision", tags=["project:infra"])
+
+    idx = store.build_index()
+    assert "This should be excluded" not in idx
+    assert "This should appear" in idx
+
+
+def test_build_index_excludes_injection_suspicious(store):
+    """build_index() must not include memories with metadata.injection_suspicious==true."""
+    store.store(
+        "Suspicious payload content here",
+        memory_type="reference",
+        tags=["tool:test"],
+        metadata={"injection_suspicious": True},
+    )
+    store.store("Clean reference entry", memory_type="reference", tags=["cloud:aws"])
+
+    idx = store.build_index()
+    assert "Suspicious payload content here" not in idx
+    assert "Clean reference entry" in idx
+
+
+def test_build_index_respects_max_lines_cap_with_demoted_footer(store):
+    """When max_lines is tiny, overflow entries appear only in Demoted footer count."""
+    # Store many decisions
+    for i in range(20):
+        store.store(
+            f"Decision entry number {i} about infrastructure",
+            memory_type="decision",
+            tags=[f"project:proj{i}"],
+        )
+
+    idx = store.build_index(max_lines=5)
+    content_lines = [ln for ln in idx.splitlines() if ln.startswith("- `")]
+    assert len(content_lines) <= 5
+
+    # Demoted section must mention excluded entries
+    assert "## Demoted (search-only; not auto-loaded)" in idx
+    # Footer line must reference a positive count
+    import re as _re
+    match = _re.search(r"\*(\d+)\* entries available", idx)
+    assert match, "Demoted footer should show count"
+    demoted_count = int(match.group(1))
+    assert demoted_count > 0
+
+
+def test_build_index_decisions_before_learnings(store):
+    """Decisions and references appear before learnings/patterns in the output."""
+    store.store("A decision to remember", memory_type="decision", tags=["project:infra"])
+    store.store("A learning about terraform", memory_type="learning", tags=["tool:terraform"])
+
+    idx = store.build_index()
+    dec_pos = idx.find("## Decisions")
+    learn_pos = idx.find("## Learnings / Patterns / Errors")
+    assert dec_pos < learn_pos, "Decisions section must come before Learnings section"
+
+
+def test_build_index_todo_keeps_pending_and_blocked_drops_done(store):
+    """Active TODOs includes PENDING and BLOCKED but not DONE."""
+    store.store("[TODO:PENDING] Set up monitoring alerts", memory_type="todo", tags=["project:ops"])
+    store.store("[TODO:BLOCKED] Awaiting vendor access for SSO", memory_type="todo", tags=["project:ops"])
+    store.store("[TODO:DONE] Rotate API keys in production", memory_type="todo", tags=["project:ops"])
+
+    idx = store.build_index()
+    assert "Set up monitoring alerts" in idx
+    assert "Awaiting vendor access for SSO" in idx
+    assert "Rotate API keys in production" not in idx
