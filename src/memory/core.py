@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import struct
+import sys
 import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -66,6 +67,30 @@ MIN_SIMILARITY_THRESHOLD = 0.45  # filter out semantically irrelevant results
 # At 0.2: same memory loses ~48%.
 # Override via MEMORY_DEMOTION_WEIGHT env var (read once at import time).
 DEMOTION_WEIGHT: float = float(os.environ.get("MEMORY_DEMOTION_WEIGHT", "0.1"))
+
+# --- Injection-pattern screening ---
+# Compiled once at import time.  Case-insensitive.
+INJECTION_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|messages?)\b", re.IGNORECASE),
+    re.compile(r"\bdisregard\s+(all\s+)?(previous|prior|above)\b", re.IGNORECASE),
+    re.compile(r"^\s*(system|assistant)\s*:", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"<\s*/?(system|assistant)\s*>", re.IGNORECASE),
+    re.compile(r"\bact\s+as\s+(if\s+you\s+are\s+)?(a\s+)?(system|administrator|root)\b", re.IGNORECASE),
+    re.compile(r"\byou\s+(must|will|shall)\s+(now\s+)?(always|never)\b.*\b(ignore|forget|override)\b", re.IGNORECASE),
+    re.compile(r"\[\s*INST\s*\]|\[\s*/INST\s*\]", re.IGNORECASE),
+]
+
+
+def _screen_injection(content: str) -> tuple[bool, str | None]:
+    """Scan *content* for prompt-injection patterns.
+
+    Returns ``(suspicious, matched_pattern_string)`` where *matched_pattern_string*
+    is the regex pattern that first matched, or ``None`` when content is clean.
+    """
+    for pat in INJECTION_PATTERNS:
+        if pat.search(content):
+            return True, pat.pattern
+    return False, None
 
 
 def _serialize_f32(vec: object) -> bytes:
@@ -685,6 +710,7 @@ class MemoryStore:
         dedup_threshold: float | None = None,
         importance: float | None = None,
         _embedding: object | None = None,
+        reject_injection: bool | None = None,
     ) -> dict:
         """Store a single memory. Returns dict with hash and status.
 
@@ -693,12 +719,38 @@ class MemoryStore:
         similarity check and the stored embedding.
 
         importance: explicit 0-1 score. If None, auto-inferred from content/type.
+
+        reject_injection: if True, refuse to store content that matches an injection
+        pattern.  If None (default), the env var MEMORY_REJECT_INJECTION=1 acts as a
+        global override; absent that, the memory is stored but flagged.
         """
         start = time.time()
         # Normalize string tags to list (defensive — callers may pass comma-separated strings)
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
         imp = importance if importance is not None else infer_importance(content, memory_type)
+
+        # --- Injection screening ---
+        suspicious, matched_pat = _screen_injection(content)
+        if suspicious:
+            # Resolve effective reject mode: explicit arg > env var > default (flag-only)
+            if reject_injection is None:
+                reject_injection = os.environ.get("MEMORY_REJECT_INJECTION", "") == "1"
+            if reject_injection:
+                return {
+                    "error": f"rejected: matches injection pattern '{matched_pat}'",
+                    "status": "rejected",
+                }
+            # Flag-only mode: warn and annotate metadata/tags
+            sys.stderr.write(
+                f"[memory] WARNING: stored content matches injection pattern '{matched_pat}'\n"
+            )
+            metadata = dict(metadata or {})
+            metadata["injection_suspicious"] = True
+            tags = list(tags or [])
+            if "flagged:injection" not in tags:
+                tags.append("flagged:injection")
+
         mem = Memory(
             content=content,
             tags=tags or [],
@@ -889,10 +941,12 @@ class MemoryStore:
         self,
         items: list[dict],
         dedup_threshold: float | None = None,
+        reject_injection: bool | None = None,
     ) -> list[dict]:
         """Store multiple memories. Each item: {content, tags?, memory_type?, metadata?}.
 
         Batches embedding computation for all items upfront, then stores individually.
+        reject_injection: passed through to each store() call for injection screening.
         """
         if not items:
             return []
@@ -917,6 +971,7 @@ class MemoryStore:
                 dedup_threshold=dedup_threshold,
                 importance=item.get("importance"),
                 _embedding=embedding,
+                reject_injection=reject_injection,
             )
             results.append(result)
         return results

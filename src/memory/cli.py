@@ -61,8 +61,16 @@ def _resolve_hash(store: MemoryStore, prefix: str) -> str | None:
 # --- Command handlers ---
 
 
+def _check_rejected(result: dict) -> None:
+    """If store returned a rejected status, print the error JSON and exit 1."""
+    if isinstance(result, dict) and result.get("status") == "rejected":
+        _json_out(result)
+        sys.exit(1)
+
+
 def cmd_store(args, store: MemoryStore) -> None:
     content = args.content
+    reject_injection: bool | None = args.reject_injection or None  # False → None (use env default)
 
     # Try parsing content as JSON (single object or array)
     if content == "-":
@@ -75,8 +83,11 @@ def cmd_store(args, store: MemoryStore) -> None:
 
     if isinstance(parsed, list):
         # Batch mode
-        results = store.store_batch(parsed, dedup_threshold=args.dedup_threshold)
+        results = store.store_batch(parsed, dedup_threshold=args.dedup_threshold, reject_injection=reject_injection)
         _json_out(results)
+        # Exit 1 if any item was rejected
+        if any(isinstance(r, dict) and r.get("status") == "rejected" for r in results):
+            sys.exit(1)
         return
 
     if isinstance(parsed, dict):
@@ -90,7 +101,9 @@ def cmd_store(args, store: MemoryStore) -> None:
             },
             dedup_threshold=parsed.get("dedup", args.dedup_threshold),
             importance=parsed.get("importance"),
+            reject_injection=reject_injection,
         )
+        _check_rejected(result)
         _json_out(result)
         return
 
@@ -105,7 +118,9 @@ def cmd_store(args, store: MemoryStore) -> None:
         metadata=meta,
         dedup_threshold=dedup,
         importance=args.importance,
+        reject_injection=reject_injection,
     )
+    _check_rejected(result)
     _json_out(result)
 
 
@@ -460,6 +475,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dedup", dest="dedup_threshold", default=None, type=float, help="Dedup similarity threshold")
     p.add_argument("--importance", default=None, type=float, help="Importance (0-1)")
     p.add_argument("--force", action="store_true", help="Skip dedup check")
+    p.add_argument(
+        "--reject-injection",
+        action="store_true",
+        default=False,
+        help="Refuse to store content that matches a prompt-injection pattern (exit 1)",
+    )
 
     # search
     p = sub.add_parser("search", help="Search memories")
