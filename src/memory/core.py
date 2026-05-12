@@ -387,6 +387,55 @@ class MemoryStore:
         ALTERs are DDL and auto-commit in autocommit mode (isolation_level=None).
         """
         conn = self._conn
+        # Bootstrap base schema for fresh DBs. Older installations created
+        # these tables out-of-band; checking in the canonical CREATE keeps
+        # `memory health` / `memory store` working on a fresh sqlite file.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content_hash TEXT UNIQUE NOT NULL,
+                content TEXT NOT NULL,
+                tags TEXT,
+                memory_type TEXT,
+                metadata TEXT,
+                created_at REAL,
+                updated_at REAL,
+                created_at_iso TEXT,
+                updated_at_iso TEXT,
+                deleted_at REAL DEFAULT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_content_hash ON memories(content_hash);
+            CREATE INDEX IF NOT EXISTS idx_created_at ON memories(created_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_type ON memories(memory_type);
+            CREATE INDEX IF NOT EXISTS idx_deleted_at ON memories(deleted_at);
+
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_graph (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_hash TEXT NOT NULL,
+                target_hash TEXT NOT NULL,
+                relationship_type TEXT NOT NULL,
+                metadata TEXT,
+                created_at REAL,
+                UNIQUE(source_hash, target_hash, relationship_type)
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_source ON memory_graph(source_hash);
+            CREATE INDEX IF NOT EXISTS idx_graph_target ON memory_graph(target_hash);
+            CREATE INDEX IF NOT EXISTS idx_graph_relationship ON memory_graph(relationship_type);
+            """
+        )
+        # Vector index for memory embeddings (requires sqlite_vec loaded).
+        conn.executescript(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings
+                USING vec0(content_embedding FLOAT[768] distance_metric=cosine);
+            """
+        )
         # Create events table (executescript manages its own transactions)
         conn.executescript(
             """
