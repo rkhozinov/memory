@@ -116,6 +116,67 @@ def test_search_bumps_distinct_session_count_on_first_hit(store, monkeypatch):
     assert row["last_recall_session"] == "sess-B"
 
 
+def test_search_distinct_session_count_is_set_not_alternation(store, monkeypatch):
+    """Re-visiting an already-seen session must NOT re-bump distinct_session_count.
+
+    Walks A → B → A → A → C, expects DSC = 3 (true distinct), not 4 (alternation).
+    """
+    a = store.store("alpha service connection pool retries", memory_type="learning")
+    conn = store._get_conn()
+
+    seq = ["sess-A", "sess-B", "sess-A", "sess-A", "sess-C"]
+    for sid in seq:
+        monkeypatch.setenv("MEMORY_SESSION_ID", sid)
+        store.search(query="alpha service connection", mode="hybrid", limit=5)
+
+    row = conn.execute(
+        "SELECT distinct_session_count, recall_sessions, recall_count "
+        "FROM memories WHERE content_hash = ?",
+        (a["content_hash"],),
+    ).fetchone()
+    if row is None or row["recall_count"] == 0:
+        return  # corpus too small / similarity threshold cut
+
+    import json as _json
+
+    stored = _json.loads(row["recall_sessions"] or "[]")
+    assert set(stored) == {"sess-A", "sess-B", "sess-C"}
+    assert row["distinct_session_count"] == 3
+
+
+def test_recall_sessions_capped(store, monkeypatch):
+    """Stored recall_sessions list is bounded; oldest entries drop first."""
+    from memory.core import MemoryStore
+
+    a = store.store("capacity cap test memory", memory_type="learning")
+    conn = store._get_conn()
+
+    # Use 5 over cap so we can verify oldest are dropped.
+    cap = MemoryStore._RECALL_SESSION_CAP
+    n = cap + 5
+    for i in range(n):
+        monkeypatch.setenv("MEMORY_SESSION_ID", f"sess-{i:04d}")
+        store.search(query="capacity cap", mode="hybrid", limit=5)
+
+    row = conn.execute(
+        "SELECT recall_sessions, distinct_session_count, recall_count FROM memories WHERE content_hash = ?",
+        (a["content_hash"],),
+    ).fetchone()
+    if row is None or row["recall_count"] == 0:
+        return
+
+    import json as _json
+
+    stored = _json.loads(row["recall_sessions"] or "[]")
+    assert len(stored) <= cap
+    # Distinct count tracks current set length (we bumped n times, dropped some).
+    assert row["distinct_session_count"] == len(stored)
+    # Oldest sessions (lowest indices) must be gone.
+    assert "sess-0000" not in stored
+    # Newest must be present.
+    assert f"sess-{n - 1:04d}" in stored
+
+
 def test_search_no_session_env_keeps_legacy_behaviour(store, monkeypatch):
     """When MEMORY_SESSION_ID is absent, distinct_session_count must remain 0."""
     monkeypatch.delenv("MEMORY_SESSION_ID", raising=False)

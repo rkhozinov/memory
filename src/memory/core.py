@@ -640,6 +640,7 @@ class MemoryStore:
             # Phase C: session-aware recall (hot-cluster bias fix)
             "ALTER TABLE memories ADD COLUMN last_recall_session TEXT DEFAULT NULL",
             "ALTER TABLE memories ADD COLUMN distinct_session_count INTEGER DEFAULT 0",
+            "ALTER TABLE memories ADD COLUMN recall_sessions TEXT DEFAULT '[]'",
         ):
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(col_sql)
@@ -775,6 +776,64 @@ class MemoryStore:
         """Roll back the current transaction, ignoring errors if none is active."""
         with contextlib.suppress(Exception):
             conn.execute("ROLLBACK")
+
+    # Cap on stored session ids per memory.  Bounds storage and keeps the
+    # JSON column small.  200 distinct sessions is well past the point where
+    # session-score saturates, so capping doesn't distort the signal.
+    _RECALL_SESSION_CAP = 200
+
+    @staticmethod
+    def _bump_recall_session(
+        conn: sqlite3.Connection,
+        content_hash: str,
+        session_id: str,
+        now: float,
+    ) -> None:
+        """Increment recall_count and update the recall_sessions set.
+
+        Treats recall_sessions as a bounded set keyed by session_id.  Only
+        increments distinct_session_count when the session is genuinely new
+        for this memory.  Stored list is capped at _RECALL_SESSION_CAP entries
+        (LRU-style: oldest dropped first).
+        """
+        row = conn.execute(
+            "SELECT recall_sessions FROM memories WHERE content_hash = ?",
+            (content_hash,),
+        ).fetchone()
+        if row is None:
+            return  # memory was deleted between search and update — skip silently
+
+        raw = row["recall_sessions"] if isinstance(row["recall_sessions"], str) else None
+        try:
+            sessions = json.loads(raw) if raw else []
+            if not isinstance(sessions, list):
+                sessions = []
+        except (json.JSONDecodeError, TypeError):
+            sessions = []
+
+        if session_id in sessions:
+            # Move to end so the cap-trim drops oldest first.
+            sessions.remove(session_id)
+            sessions.append(session_id)
+            conn.execute(
+                "UPDATE memories SET recall_count = recall_count + 1, "
+                "last_recalled_at = ?, confidence = 1.0, "
+                "last_recall_session = ?, recall_sessions = ? "
+                "WHERE content_hash = ?",
+                (now, session_id, json.dumps(sessions), content_hash),
+            )
+        else:
+            sessions.append(session_id)
+            if len(sessions) > MemoryStore._RECALL_SESSION_CAP:
+                sessions = sessions[-MemoryStore._RECALL_SESSION_CAP :]
+            conn.execute(
+                "UPDATE memories SET recall_count = recall_count + 1, "
+                "last_recalled_at = ?, confidence = 1.0, "
+                "last_recall_session = ?, recall_sessions = ?, "
+                "distinct_session_count = ? "
+                "WHERE content_hash = ?",
+                (now, session_id, json.dumps(sessions), len(sessions), content_hash),
+            )
 
     @staticmethod
     def _enrich_with_activation(conn: sqlite3.Connection, results: list[dict]) -> None:
@@ -1554,23 +1613,15 @@ class MemoryStore:
             # only user-initiated retrievals, preventing auto-recall echo chambers.
             #
             # Session-aware: when a session id is available (MEMORY_SESSION_ID env
-            # var, set by the SessionStart hook), bump distinct_session_count only
-            # on the first hit per session.  Powers the hot-cluster fix in
-            # compute_activation().
+            # var, set by the SessionStart hook), maintain a recall_sessions set
+            # per memory and bump distinct_session_count only on truly-new
+            # session ids.  Powers the hot-cluster fix in compute_activation().
             if track_recall:
                 now = time.time()
                 session_id = os.environ.get("MEMORY_SESSION_ID") or None
                 for m in results:
                     if session_id:
-                        conn.execute(
-                            "UPDATE memories SET recall_count = recall_count + 1, "
-                            "last_recalled_at = ?, confidence = 1.0, "
-                            "distinct_session_count = distinct_session_count + "
-                            "  CASE WHEN COALESCE(last_recall_session, '') = ? THEN 0 ELSE 1 END, "
-                            "last_recall_session = ? "
-                            "WHERE content_hash = ?",
-                            (now, session_id, session_id, m["content_hash"]),
-                        )
+                        self._bump_recall_session(conn, m["content_hash"], session_id, now)
                     else:
                         conn.execute(
                             "UPDATE memories SET recall_count = recall_count + 1, "

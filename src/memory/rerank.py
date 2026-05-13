@@ -1,14 +1,14 @@
 """Cross-encoder reranker — ONNX CPU, lazy singleton with L1/L2 cache.
 
 Wraps a sequence-classification cross-encoder that scores (query, document) pairs.
-Default model: BAAI/bge-reranker-v2-m3 (cross-encoder, 568M, BEIR ~55, multilingual).
-Override via MEMORY_RERANK_REPO / MEMORY_RERANK_FILE / MEMORY_RERANK_TOKENIZER env vars
-(e.g. mixedbread-ai/mxbai-rerank-base-v2 when its ONNX export stabilises).
+Default model: Xenova/bge-reranker-base (XLM-RoBERTa-base, 278 M params, INT8
+quantized ONNX ~80 MB, BEIR ~53).  Override via MEMORY_RERANK_REPO /
+MEMORY_RERANK_FILE / MEMORY_RERANK_TOKENIZER env vars.
 
-Why default to bge-reranker-v2-m3 instead of mxbai-rerank-base-v2 as referenced in
-the upgrade plan: bge has reliable `onnx/model.onnx` artefacts on HF and is a true
-cross-encoder; mxbai-base-v2 is a hybrid generative reranker whose ONNX export path
-is less stable. Both fit the same calling convention here.
+Why Xenova fork rather than upstream BAAI: BAAI/bge-reranker-v2-m3 does not ship
+ONNX artefacts on HF.  Xenova's quantised export is well-maintained and works
+out of the box.  mxbai-rerank-base-v2 is a hybrid generative reranker whose
+ONNX path is less stable; mxbai-base-v1 (DeBERTa) is also a working alternative.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ DATA_DIR = Path.home() / "repos" / "memory" / "data"
 MODEL_DIR = DATA_DIR / "models" / "rerank"
 CACHE_DB_PATH = DATA_DIR / "rerank_cache.db"
 
-DEFAULT_REPO = "BAAI/bge-reranker-v2-m3"
-DEFAULT_ONNX_FILE = "onnx/model.onnx"
+DEFAULT_REPO = "Xenova/bge-reranker-base"
+DEFAULT_ONNX_FILE = "onnx/model_quantized.onnx"  # ~80 MB, INT8-quantized
 DEFAULT_TOKENIZER_FILE = "tokenizer.json"
 
 MAX_SEQ_LENGTH = 512
