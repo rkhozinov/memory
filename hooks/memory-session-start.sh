@@ -7,6 +7,20 @@ MARKER_FILE="$HOME/repos/memory/data/.last-cleanup"
 INDEX_FILE="$HOME/.claude/memory/INDEX.md"
 LAST_INDEX_MARKER="$HOME/repos/memory/data/.last-index-build"
 
+# Export a stable per-session id so `memory search` can bump
+# distinct_session_count exactly once per session (Phase C, hot-cluster fix).
+# Prefer Claude Code's own session var; fall back to a derived id stable
+# for the lifetime of this shell (epoch + parent pid).
+if [[ -z "$MEMORY_SESSION_ID" ]]; then
+  if [[ -n "$CLAUDE_SESSION_ID" ]]; then
+    export MEMORY_SESSION_ID="$CLAUDE_SESSION_ID"
+  elif [[ -n "$CLAUDECODE_SESSION_ID" ]]; then
+    export MEMORY_SESSION_ID="$CLAUDECODE_SESSION_ID"
+  else
+    export MEMORY_SESSION_ID="sess-$(date +%s)-$PPID"
+  fi
+fi
+
 # 1. Health check with timeout
 HEALTH_OUTPUT=$(timeout 2s memory health 2>/dev/null)
 HEALTH_STATUS=$?

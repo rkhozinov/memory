@@ -125,6 +125,7 @@ def cmd_store(args, store: MemoryStore) -> None:
 
 
 def cmd_search(args, store: MemoryStore) -> None:
+    rerank = args.rerank if args.rerank is not None else (args.mode == "hybrid")
     results = store.search(
         query=args.query,
         mode=args.mode,
@@ -133,6 +134,10 @@ def cmd_search(args, store: MemoryStore) -> None:
         memory_types=_parse_tags(args.types),
         max_hops=args.hops,
         track_recall=not args.no_track_recall,
+        rerank=rerank,
+        rerank_top_n=args.rerank_top_n,
+        score_fusion=args.score_fusion,
+        as_of=args.as_of,
     )
     _json_out(results)
 
@@ -528,6 +533,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-track-recall",
         action="store_true",
         help="Don't bump recall_count/last_recalled_at/confidence. Use for automated/hook searches.",
+    )
+    rr = p.add_mutually_exclusive_group()
+    rr.add_argument(
+        "--rerank",
+        dest="rerank",
+        action="store_true",
+        default=None,
+        help="Cross-encoder rerank top-K. Default: on for hybrid mode, off elsewhere.",
+    )
+    rr.add_argument("--no-rerank", dest="rerank", action="store_false", help="Disable rerank.")
+    p.add_argument("--rerank-top-n", type=int, default=None, help="Truncate after rerank (default: --limit)")
+    p.add_argument(
+        "--score-fusion",
+        choices=["rrf", "weighted"],
+        default="rrf",
+        help="Hybrid score fusion: rrf (default, rank-based) or weighted (legacy additive).",
+    )
+    p.add_argument(
+        "--as-of",
+        default=None,
+        help="ISO date or Unix timestamp; graph traversal restricts to edges valid then.",
     )
 
     # get

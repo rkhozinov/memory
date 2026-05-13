@@ -1,7 +1,7 @@
 {
   "name": "memory",
-  "version": "1.3.0",
-  "description": "Lean memory service for Claude Code: SQLite + sqlite-vec embeddings with FTS, recall/remember/forget skills, and session hooks.",
+  "version": "1.4.0",
+  "description": "Lean memory service for Claude Code: SQLite + sqlite-vec embeddings, FTS, cross-encoder rerank, bi-temporal graph edges, RRF fusion, ACT-R activation + active forgetting. Recall/remember/forget skills and session hooks.",
   "author": {
     "name": "Ruslan Khozinov",
     "url": "https://github.com/rkhozinov"

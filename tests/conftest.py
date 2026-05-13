@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS memories (
     updated_at_iso TEXT,
     deleted_at REAL DEFAULT NULL,
     confidence REAL DEFAULT 1.0,
-    importance REAL DEFAULT 0.5
+    importance REAL DEFAULT 0.5,
+    last_recall_session TEXT DEFAULT NULL,
+    distinct_session_count INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);
 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
@@ -76,10 +78,29 @@ CREATE TABLE IF NOT EXISTS entity_relations (
     weight         REAL DEFAULT 1.0,
     created_at     REAL NOT NULL,
     updated_at     REAL NOT NULL,
+    valid_from     REAL DEFAULT NULL,
+    valid_to       REAL DEFAULT NULL,
     PRIMARY KEY (source_id, target_id, relation_type)
 );
 CREATE INDEX IF NOT EXISTS idx_er_source ON entity_relations(source_id);
 CREATE INDEX IF NOT EXISTS idx_er_target ON entity_relations(target_id);
+CREATE INDEX IF NOT EXISTS idx_er_valid_to ON entity_relations(valid_to);
+
+CREATE TABLE IF NOT EXISTS memory_graph (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_hash TEXT NOT NULL,
+    target_hash TEXT NOT NULL,
+    relationship_type TEXT NOT NULL,
+    metadata TEXT,
+    created_at REAL,
+    weight REAL DEFAULT 1.0,
+    valid_from REAL DEFAULT NULL,
+    valid_to REAL DEFAULT NULL,
+    UNIQUE(source_hash, target_hash, relationship_type)
+);
+CREATE INDEX IF NOT EXISTS idx_graph_source ON memory_graph(source_hash);
+CREATE INDEX IF NOT EXISTS idx_graph_target ON memory_graph(target_hash);
+CREATE INDEX IF NOT EXISTS idx_graph_relationship ON memory_graph(relationship_type);
 """
 
 

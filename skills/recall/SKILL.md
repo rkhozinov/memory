@@ -66,7 +66,54 @@ Add to search command:
 --tags "project:X,tool:Y"   # Filter by tags
 --types decision,error       # Filter by memory type
 --rerank                     # Re-score with cross-encoder (slower, +45ms)
+--rerank-top-n N             # Truncate after rerank (default: --limit)
 ```
+
+## Hybrid score fusion (Phase B)
+
+`--score-fusion` controls how semantic + FTS sub-rankers blend:
+```bash
+memory search "query" --mode hybrid --score-fusion rrf       # default, rank-based
+memory search "query" --mode hybrid --score-fusion weighted  # legacy additive
+```
+RRF (`Σ 1/(60+rank)`) is robust to score-scale heterogeneity and is the default.
+
+## Temporal graph (Phase B)
+
+Edges in the entity / memory graph carry `valid_from`/`valid_to`. Use `--as-of` to
+restrict graph traversal to edges valid at a given instant:
+```bash
+memory search "primary database" --mode graph --as-of 2025-01-01
+memory search "primary database" --mode graph                  # defaults to now
+```
+Useful for "what did we decide about X *before* Y was deprecated?"
+
+Dream supersession + consolidation now write provenance edges (`supersedes`,
+`merged_into`) into `memory_graph` before soft-deleting older rows. Inspect:
+```bash
+sqlite3 ~/repos/memory/data/sqlite_vec.db \
+  "SELECT source_hash, target_hash, relationship_type, valid_from FROM memory_graph;"
+```
+
+## ACT-R activation + active forgetting (Phase C)
+
+Every search result now carries an `activation` score in [0, 1] computed from:
+similarity + type-weight + temporal-decay + distinct-session-score − staleness.
+
+`distinct_session_count` is bumped only on the first hit per `MEMORY_SESSION_ID`,
+which the SessionStart hook exports automatically. Penalises hot-cluster bias.
+
+Opt-in env vars (read once at import time):
+```bash
+MEMORY_USE_ACTIVATION=1 memory search "query"     # replace composite score with activation
+MEMORY_ACTIVE_FORGET=1  memory admin dream        # enable dream pass 6 soft-delete
+MEMORY_ACTIVATION_TAU=30.0                        # temporal-decay characteristic time (days)
+MEMORY_FORGET_THRESHOLD=0.05                      # activation below = forget candidate
+MEMORY_ACTIVATION_WEIGHTS=0.55,0.10,0.15,0.15,0.05  # 5-tuple: sim,type,temp,sess,stale
+```
+
+Active forgetting only soft-deletes notes/observations/learnings — never decisions
+or references. Bounded budget: max 5% of active corpus per dream pass.
 
 ## Reading Full Content
 

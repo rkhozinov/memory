@@ -69,6 +69,33 @@ memory admin dream             # run consolidation
 ```
 Run this periodically (e.g., after large ingestion) to reduce redundancy and improve search quality.
 
+The dream pass output includes:
+- `superseded` / `superseded_pairs` — older memories replaced by newer; provenance
+  edge of type `supersedes` is written to `memory_graph` before soft-delete.
+- `consolidated` — near-duplicate merges; `merged_into` edges written.
+- `demoted` — old, never-recalled, auto-tagged memories flagged (not deleted).
+- `forgotten` / `forgotten_pairs` — Phase C active forgetting (env-gated; see below).
+
+### Active forgetting (Phase C, env-gated)
+
+Pass 6 soft-deletes low-activation memories. Off by default; opt in:
+```bash
+MEMORY_ACTIVE_FORGET=1 memory admin dream --dry-run    # preview candidates
+MEMORY_ACTIVE_FORGET=1 memory admin dream              # apply
+```
+Criteria: activation < 0.05 AND distinct_session_count ≤ 1 AND age > 30 days AND
+memory_type NOT IN (decision, reference). Budget cap: max 5% of active corpus
+per pass. Tune via `MEMORY_FORGET_THRESHOLD`, `MEMORY_ACTIVATION_TAU`.
+
+### Activation scoring (Phase C, opt-in)
+
+Every search result carries an `activation` field. To make activation the primary
+ranking signal (replaces composite/RRF score on hybrid/semantic/fts):
+```bash
+MEMORY_USE_ACTIVATION=1 memory search "query"
+```
+Rerank (`--rerank`) always uses activation as the base score for blending.
+
 ### Index regeneration
 
 Rebuild the curated front-door TOC (table of contents) for the memory store:

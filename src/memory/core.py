@@ -9,7 +9,6 @@ import math
 import os
 import re
 import sqlite3
-import struct
 import sys
 import time
 from collections import Counter
@@ -23,10 +22,6 @@ if TYPE_CHECKING:
 from .models import Document, Memory
 
 DB_PATH = Path.home() / "repos" / "memory" / "data" / "sqlite_vec.db"
-
-EMBEDDING_DIM = 384
-
-_F32_STRUCT = struct.Struct(f"<{EMBEDDING_DIM}f")
 
 # --- Confidence decay rates (per day) ---
 # Higher = slower decay.  decision/pattern/reference are near-permanent.
@@ -68,6 +63,105 @@ MIN_SIMILARITY_THRESHOLD = 0.45  # filter out semantically irrelevant results
 # Override via MEMORY_DEMOTION_WEIGHT env var (read once at import time).
 DEMOTION_WEIGHT: float = float(os.environ.get("MEMORY_DEMOTION_WEIGHT", "0.1"))
 
+# --- ACT-R-style activation (Phase C) ---
+# activation = w_sim*similarity + w_type*type_weight + w_temporal*decay
+#            + w_session*distinct_session_score - w_stale*staleness_penalty
+# Defaults from HAI 2025 ablation; override via MEMORY_ACTIVATION_WEIGHTS env
+# var as comma-separated floats (5 values).
+_DEFAULT_ACTIVATION_WEIGHTS = (0.55, 0.10, 0.15, 0.15, 0.05)
+
+
+def _parse_activation_weights() -> tuple[float, float, float, float, float]:
+    raw = os.environ.get("MEMORY_ACTIVATION_WEIGHTS")
+    if not raw:
+        return _DEFAULT_ACTIVATION_WEIGHTS
+    try:
+        parts = tuple(float(x.strip()) for x in raw.split(","))
+    except ValueError:
+        return _DEFAULT_ACTIVATION_WEIGHTS
+    if len(parts) != 5:
+        return _DEFAULT_ACTIVATION_WEIGHTS
+    return parts  # type: ignore[return-value]
+
+
+ACTIVATION_WEIGHTS: tuple[float, float, float, float, float] = _parse_activation_weights()
+
+# Whether activation replaces the composite/RRF score on hybrid/semantic/fts modes
+# when rerank is OFF.  Default off for backwards compat; rerank=True always
+# uses activation as the rerank-blend base.
+USE_ACTIVATION: bool = os.environ.get("MEMORY_USE_ACTIVATION", "0") == "1"
+
+# Temporal decay characteristic time (days).  Smaller = faster forgetting.
+ACTIVATION_TAU_DAYS: float = float(os.environ.get("MEMORY_ACTIVATION_TAU", "30.0"))
+
+# Staleness kicks in once last_recall is older than this (days).
+ACTIVATION_STALE_DAYS: float = float(os.environ.get("MEMORY_ACTIVATION_STALE", "60.0"))
+
+# Active-forget threshold.  Memories below this activation become candidates
+# for soft-delete in dream pass 6 (only when MEMORY_ACTIVE_FORGET=1).
+FORGET_THRESHOLD: float = float(os.environ.get("MEMORY_FORGET_THRESHOLD", "0.05"))
+
+# Type weight in activation: higher = more "permanent" intent.
+_ACTIVATION_TYPE_WEIGHT: dict[str, float] = {
+    "decision": 1.0,
+    "pattern": 0.9,
+    "reference": 0.9,
+    "error": 0.75,
+    "learning": 0.7,
+    "observation": 0.4,
+    "note": 0.4,
+    "todo": 0.6,
+}
+
+
+def compute_activation(
+    similarity: float,
+    recall_count: int,
+    distinct_session_count: int,
+    memory_type: str,
+    created_at: float,
+    last_recalled_at: float | None,
+    now: float | None = None,
+) -> float:
+    """ACT-R-inspired activation score for memory ranking.
+
+    Components:
+      similarity         — cosine distance from current query
+      type_weight        — intent-permanence prior per memory_type
+      temporal_decay     — exp(-Δt / τ) where Δt is days since last touch
+      distinct_session   — log(distinct+1) / log(recall+1); penalises hot-cluster bias
+      staleness_penalty  — applied only after ACTIVATION_STALE_DAYS
+
+    Returns activation in roughly [0, 1].  Negative components clamped to 0.
+    """
+    if now is None:
+        now = time.time()
+
+    w_sim, w_type, w_temp, w_sess, w_stale = ACTIVATION_WEIGHTS
+    sim = max(0.0, float(similarity))
+    tw = _ACTIVATION_TYPE_WEIGHT.get(memory_type or "note", 0.4)
+
+    anchor = last_recalled_at if last_recalled_at else created_at
+    dt_days = max(0.0, (now - anchor) / 86400.0)
+    temporal = math.exp(-dt_days / ACTIVATION_TAU_DAYS)
+
+    rc = max(0, int(recall_count or 0))
+    dsc = max(0, int(distinct_session_count or 0))
+    # log(distinct+1) / log(recall+1) — 1.0 when every recall is from a fresh
+    # session; collapses toward 0 when one session pumps the same memory.
+    sess = 1.0 if rc == 0 else math.log1p(dsc) / math.log1p(rc)
+
+    staleness_penalty = max(0.0, (dt_days - ACTIVATION_STALE_DAYS) / ACTIVATION_STALE_DAYS)
+
+    activation = (
+        w_sim * sim
+        + w_type * tw
+        + w_temp * temporal
+        + w_sess * sess
+        - w_stale * staleness_penalty
+    )
+    return max(0.0, min(1.0, activation))
+
 # --- Injection-pattern screening ---
 # Compiled once at import time.  Case-insensitive.
 INJECTION_PATTERNS: list[re.Pattern] = [
@@ -94,10 +188,11 @@ def _screen_injection(content: str) -> tuple[bool, str | None]:
 
 
 def _serialize_f32(vec: object) -> bytes:
-    """Serialize embedding to little-endian bytes for sqlite-vec."""
-    if hasattr(vec, "tobytes"):
-        return vec.tobytes()  # numpy array, already float32
-    return _F32_STRUCT.pack(*vec)
+    """Serialize embedding to little-endian bytes for sqlite-vec.
+
+    All real call paths pass numpy float32 arrays; tobytes() is zero-copy.
+    """
+    return vec.tobytes()
 
 
 def _safe_tags(raw: str | None) -> list:
@@ -141,6 +236,46 @@ def _parse_time_expr(expr: str) -> datetime:
         return now - delta
 
     raise ValueError(f"Cannot parse time expression: {expr!r}")
+
+
+def _rrf_fuse(*result_lists: list[dict], limit: int, k: int = 60) -> list[dict]:
+    """Reciprocal Rank Fusion over arbitrary ranked result lists.
+
+    For each unique content_hash, score = Σ 1/(k + rank_i) across the lists it
+    appears in (rank is 1-based).  Robust to score-scale heterogeneity between
+    semantic cosine, BM25, and graph hop-weight.
+
+    Args:
+        *result_lists: each list must contain dicts with 'content_hash'.
+        limit: max results to return.
+        k: RRF dampening constant (60 is the literature standard).
+
+    Returns:
+        Merged list sorted by RRF score desc, truncated to `limit`.  Each result
+        carries the merged 'rrf_score' key and 'score' (alias of rrf_score) so
+        downstream code that sorts by 'score' keeps working.
+    """
+    fused: dict[str, dict] = {}
+    rrf_scores: dict[str, float] = {}
+    for lst in result_lists:
+        for rank, r in enumerate(lst, start=1):
+            h = r["content_hash"]
+            rrf_scores[h] = rrf_scores.get(h, 0.0) + 1.0 / (k + rank)
+            if h not in fused:
+                fused[h] = dict(r)
+            else:
+                # Preserve highest similarity seen across lists
+                fused[h]["similarity"] = max(
+                    fused[h].get("similarity", 0) or 0,
+                    r.get("similarity", 0) or 0,
+                )
+
+    for h, s in rrf_scores.items():
+        fused[h]["rrf_score"] = round(s, 6)
+        fused[h]["score"] = round(s, 6)
+
+    merged = sorted(fused.values(), key=lambda m: m["score"], reverse=True)
+    return merged[:limit]
 
 
 _FTS5_OPERATORS = {"OR", "AND", "NOT"}
@@ -450,6 +585,9 @@ class MemoryStore:
                 value TEXT NOT NULL
             );
 
+            -- Typed memory↔memory edges (supersedes, contradicts, refines,
+            -- references, merged_into).  Currently created but written only
+            -- by the dream/consolidate paths in a future patch.
             CREATE TABLE IF NOT EXISTS memory_graph (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_hash TEXT NOT NULL,
@@ -499,6 +637,9 @@ class MemoryStore:
             "ALTER TABLE memories ADD COLUMN last_recalled_at REAL DEFAULT NULL",
             "ALTER TABLE memories ADD COLUMN confidence REAL DEFAULT 1.0",
             "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 0.5",
+            # Phase C: session-aware recall (hot-cluster bias fix)
+            "ALTER TABLE memories ADD COLUMN last_recall_session TEXT DEFAULT NULL",
+            "ALTER TABLE memories ADD COLUMN distinct_session_count INTEGER DEFAULT 0",
         ):
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(col_sql)
@@ -615,12 +756,100 @@ class MemoryStore:
             CREATE INDEX IF NOT EXISTS idx_er_target ON entity_relations(target_id);
             """
         )
+        # Bi-temporal columns on edges.  Idempotent — older DBs get them via ALTER.
+        for col_sql in (
+            "ALTER TABLE entity_relations ADD COLUMN valid_from REAL DEFAULT NULL",
+            "ALTER TABLE entity_relations ADD COLUMN valid_to REAL DEFAULT NULL",
+            "ALTER TABLE memory_graph ADD COLUMN weight REAL DEFAULT 1.0",
+            "ALTER TABLE memory_graph ADD COLUMN valid_from REAL DEFAULT NULL",
+            "ALTER TABLE memory_graph ADD COLUMN valid_to REAL DEFAULT NULL",
+        ):
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute(col_sql)
+        # Index for "currently valid" filters on entity edges
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_er_valid_to ON entity_relations(valid_to)")
 
     @staticmethod
     def _rollback_safe(conn: sqlite3.Connection) -> None:
         """Roll back the current transaction, ignoring errors if none is active."""
         with contextlib.suppress(Exception):
             conn.execute("ROLLBACK")
+
+    @staticmethod
+    def _enrich_with_activation(conn: sqlite3.Connection, results: list[dict]) -> None:
+        """Attach 'activation' key to each result via compute_activation().
+
+        One bulk SQL fetch for memory_type / created_at / session counts; cheap
+        enough to run unconditionally on every search.
+        """
+        if not results:
+            return
+        hashes = [r["content_hash"] for r in results if r.get("content_hash")]
+        if not hashes:
+            return
+        placeholders = ",".join("?" * len(hashes))
+        rows = conn.execute(
+            "SELECT content_hash, memory_type, created_at, last_recalled_at, "
+            "recall_count, distinct_session_count "
+            f"FROM memories WHERE content_hash IN ({placeholders})",
+            hashes,
+        ).fetchall()
+        by_hash = {r["content_hash"]: dict(r) for r in rows}
+        for r in results:
+            row = by_hash.get(r["content_hash"])
+            if not row:
+                continue
+            # Use similarity if present, else fall back to whatever the mode produced.
+            sim = r.get("similarity")
+            if sim is None:
+                sim = r.get("rrf_score") or r.get("score") or 0.0
+            r["activation"] = round(
+                compute_activation(
+                    similarity=float(sim),
+                    recall_count=row.get("recall_count") or 0,
+                    distinct_session_count=row.get("distinct_session_count") or 0,
+                    memory_type=row.get("memory_type") or "note",
+                    created_at=row.get("created_at") or 0.0,
+                    last_recalled_at=row.get("last_recalled_at"),
+                ),
+                4,
+            )
+            r["distinct_session_count"] = row.get("distinct_session_count") or 0
+
+    @staticmethod
+    def _record_memory_edge(
+        conn: sqlite3.Connection,
+        source_hash: str,
+        target_hash: str,
+        relationship_type: str,
+        weight: float = 1.0,
+        valid_from: float | None = None,
+        valid_to: float | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        """Insert a typed memory↔memory edge into memory_graph.
+
+        Idempotent via UNIQUE(source_hash, target_hash, relationship_type).
+        Caller is responsible for transaction boundaries.
+        """
+        now = time.time()
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_graph "
+            "(source_hash, target_hash, relationship_type, metadata, "
+            " created_at, weight, valid_from, valid_to) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                source_hash,
+                target_hash,
+                relationship_type,
+                json.dumps(metadata or {}),
+                now,
+                weight,
+                valid_from if valid_from is not None else now,
+                valid_to,
+            ),
+        )
 
     def close(self) -> None:
         if self._conn:
@@ -692,11 +921,11 @@ class MemoryStore:
                 a, b = min(entity_ids[i], entity_ids[j]), max(entity_ids[i], entity_ids[j])
                 conn.execute(
                     "INSERT INTO entity_relations "
-                    "(source_id, target_id, relation_type, weight, created_at, updated_at) "
-                    "VALUES (?, ?, 'co_occurrence', 1.0, ?, ?) "
+                    "(source_id, target_id, relation_type, weight, created_at, updated_at, valid_from) "
+                    "VALUES (?, ?, 'co_occurrence', 1.0, ?, ?, ?) "
                     "ON CONFLICT(source_id, target_id, relation_type) DO UPDATE SET "
                     "weight = weight + 1.0, updated_at = ?",
-                    (a, b, now, now, now),
+                    (a, b, now, now, now, now),
                 )
 
     # --- Store ---
@@ -742,9 +971,7 @@ class MemoryStore:
                     "status": "rejected",
                 }
             # Flag-only mode: warn and annotate metadata/tags
-            sys.stderr.write(
-                f"[memory] WARNING: stored content matches injection pattern '{matched_pat}'\n"
-            )
+            sys.stderr.write(f"[memory] WARNING: stored content matches injection pattern '{matched_pat}'\n")
             metadata = dict(metadata or {})
             metadata["injection_suspicious"] = True
             tags = list(tags or [])
@@ -1108,7 +1335,11 @@ class MemoryStore:
                             obj = _json.loads(raw_line)
                         except _json.JSONDecodeError:
                             continue
-                        cwd_val = obj.get("cwd") or obj.get("message", {}).get("cwd") if isinstance(obj.get("message"), dict) else None
+                        cwd_val = (
+                            obj.get("cwd") or obj.get("message", {}).get("cwd")
+                            if isinstance(obj.get("message"), dict)
+                            else None
+                        )
                         if cwd_val:
                             cwd_basename = Path(cwd_val).name or "unknown"
                             break
@@ -1181,16 +1412,39 @@ class MemoryStore:
         min_importance: float | None = None,
         max_hops: int = 2,
         track_recall: bool = True,
+        rerank: bool = False,
+        rerank_top_n: int | None = None,
+        score_fusion: str = "rrf",
+        as_of: float | str | None = None,
     ) -> list[dict]:
         """Search memories. Modes: hybrid (default), semantic, exact, fts, graph.
 
         Set track_recall=False for automated/background searches (e.g. session-start
         hooks) so they don't inflate recall_count or refresh confidence — that
         signal should reflect user-initiated retrievals only.
+
+        rerank: if True and >=2 results, apply cross-encoder rerank. Final score
+        blends 0.4 * composite + 0.6 * cross_encoder_score. Recall tracking is
+        applied AFTER reranking so only the surviving top-N reinforce.
+        rerank_top_n: truncate to N after rerank (defaults to `limit`).
+
+        score_fusion: "rrf" (default) uses Reciprocal Rank Fusion to merge
+        hybrid sub-rankers; "weighted" keeps the legacy additive-score path.
+        as_of: Unix timestamp or ISO date.  Graph traversal restricts to edges
+        valid at this instant.  Defaults to now.
         """
         start = time.time()
         conn = self._get_conn()
         fetch_limit = limit
+
+        # Normalise as_of to a float timestamp
+        as_of_ts: float | None
+        if as_of is None:
+            as_of_ts = None
+        elif isinstance(as_of, (int, float)):
+            as_of_ts = float(as_of)
+        else:
+            as_of_ts = datetime.fromisoformat(as_of).replace(tzinfo=UTC).timestamp()
 
         # Read phase — no write lock needed yet
         if mode == "exact":
@@ -1233,6 +1487,7 @@ class MemoryStore:
                 exclude_tags=exclude_tags,
                 memory_types=memory_types,
                 min_importance=min_importance,
+                score_fusion=score_fusion,
             )
         elif mode == "fts":
             results = self._search_fts(
@@ -1249,9 +1504,36 @@ class MemoryStore:
                 min_importance=min_importance,
             )
         elif mode == "graph":
-            results = self._search_graph(conn, query, fetch_limit, max_hops=max_hops)
+            results = self._search_graph(conn, query, fetch_limit, max_hops=max_hops, as_of=as_of_ts)
         else:
             raise ValueError(f"Unknown search mode: {mode}")
+
+        # Phase C: enrich each result with ACT-R activation.  Cheap — one round
+        # trip to fetch session-count + memory_type for the result hashes.
+        self._enrich_with_activation(conn, results)
+
+        # Optional cross-encoder rerank.  Skipped when fewer than 2 results or no
+        # query text — single-result lists can't be reordered, and rerank without
+        # a query is meaningless.
+        if rerank and query and len(results) >= 2:
+            from .rerank import get_reranker
+
+            reranker = get_reranker()
+            reranker.rerank(query, results, top_n=None)
+            for r in results:
+                base = r.get("activation", r.get("score", 0.0))
+                rr = r.get("rerank_score", 0.0)
+                r["score"] = round(0.4 * base + 0.6 * rr, 4)
+            results.sort(key=lambda m: m.get("score", 0.0), reverse=True)
+            results = results[: rerank_top_n or limit]
+        elif USE_ACTIVATION and mode in {"hybrid", "semantic", "fts"} and results:
+            # When activation is opted-in, replace composite/RRF score with the
+            # session-aware activation so hot-cluster bias drops naturally.
+            for r in results:
+                if "activation" in r:
+                    r["score"] = r["activation"]
+            results.sort(key=lambda m: m.get("score", 0.0), reverse=True)
+            results = results[:limit]
 
         # Write phase — acquire lock for event + recall tracking
         duration_ms = (time.time() - start) * 1000
@@ -1270,14 +1552,31 @@ class MemoryStore:
             # Update recall counts and reset confidence (reinforcement) for returned memories.
             # Skip when track_recall=False (automated hooks) so recall_count reflects
             # only user-initiated retrievals, preventing auto-recall echo chambers.
+            #
+            # Session-aware: when a session id is available (MEMORY_SESSION_ID env
+            # var, set by the SessionStart hook), bump distinct_session_count only
+            # on the first hit per session.  Powers the hot-cluster fix in
+            # compute_activation().
             if track_recall:
                 now = time.time()
+                session_id = os.environ.get("MEMORY_SESSION_ID") or None
                 for m in results:
-                    conn.execute(
-                        "UPDATE memories SET recall_count = recall_count + 1, "
-                        "last_recalled_at = ?, confidence = 1.0 WHERE content_hash = ?",
-                        (now, m["content_hash"]),
-                    )
+                    if session_id:
+                        conn.execute(
+                            "UPDATE memories SET recall_count = recall_count + 1, "
+                            "last_recalled_at = ?, confidence = 1.0, "
+                            "distinct_session_count = distinct_session_count + "
+                            "  CASE WHEN COALESCE(last_recall_session, '') = ? THEN 0 ELSE 1 END, "
+                            "last_recall_session = ? "
+                            "WHERE content_hash = ?",
+                            (now, session_id, session_id, m["content_hash"]),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE memories SET recall_count = recall_count + 1, "
+                            "last_recalled_at = ?, confidence = 1.0 WHERE content_hash = ?",
+                            (now, m["content_hash"]),
+                        )
             conn.execute("COMMIT")
         except BaseException:
             self._rollback_safe(conn)
@@ -1681,8 +1980,14 @@ class MemoryStore:
         exclude_tags: list[str] | None = None,
         memory_types: list[str] | None = None,
         min_importance: float | None = None,
+        score_fusion: str = "weighted",
     ) -> list[dict]:
-        """True hybrid search: merge semantic + FTS results with dual-match boost."""
+        """Hybrid search: merge semantic + FTS results.
+
+        score_fusion="weighted" (legacy): semantic score + fts score additively.
+        score_fusion="rrf": Reciprocal Rank Fusion — robust to score-scale
+        mismatch between dense cosine and BM25.  Score = Σ 1/(60+rank_i).
+        """
         sem_results = self._search_semantic(
             conn,
             query,
@@ -1710,11 +2015,13 @@ class MemoryStore:
             min_importance=min_importance,
         )
 
-        # Merge by content_hash (follows search_docs() pattern)
+        if score_fusion == "rrf":
+            return _rrf_fuse(sem_results, fts_results, limit=limit, k=60)
+
+        # Legacy weighted-sum fusion
         results_by_hash: dict[str, dict] = {}
         for r in sem_results:
             results_by_hash[r["content_hash"]] = r
-
         for r in fts_results:
             h = r["content_hash"]
             if h in results_by_hash:
@@ -1737,10 +2044,18 @@ class MemoryStore:
         query: str | None,
         limit: int,
         max_hops: int = 2,
+        as_of: float | None = None,
     ) -> list[dict]:
-        """Graph traversal search: find memories connected through shared entities."""
+        """Graph traversal search: find memories connected through shared entities.
+
+        as_of: Unix timestamp.  Only edges valid at this instant are traversed
+        (valid_from <= as_of < valid_to, NULL endpoints treated as open).
+        Defaults to now.
+        """
         if not query:
             return []
+        if as_of is None:
+            as_of = time.time()
 
         # Extract entities from query using same regex patterns as store()
         extracted = extract_entities(query)
@@ -1770,7 +2085,8 @@ class MemoryStore:
 
         seed_ids = [r["id"] for r in seed_rows]
 
-        # Recursive CTE: traverse entity_relations up to max_hops
+        # Recursive CTE: traverse entity_relations up to max_hops, restricted
+        # to edges valid at `as_of`.
         placeholders = ",".join("?" * len(seed_ids))
         cte_sql = f"""
             WITH RECURSIVE graph_walk(entity_id, hops, path_weight) AS (
@@ -1780,7 +2096,7 @@ class MemoryStore:
 
                 UNION ALL
 
-                -- Walk edges (both directions)
+                -- Walk edges (both directions), bi-temporal filter
                 SELECT
                     CASE WHEN er.source_id = gw.entity_id THEN er.target_id ELSE er.source_id END,
                     gw.hops + 1,
@@ -1789,6 +2105,8 @@ class MemoryStore:
                 JOIN entity_relations er
                     ON er.source_id = gw.entity_id OR er.target_id = gw.entity_id
                 WHERE gw.hops < ?
+                  AND (er.valid_from IS NULL OR er.valid_from <= ?)
+                  AND (er.valid_to   IS NULL OR er.valid_to   >  ?)
             )
             SELECT DISTINCT
                 m.id, m.content_hash, m.content, m.tags, m.memory_type,
@@ -1805,7 +2123,7 @@ class MemoryStore:
             ORDER BY MIN(gw.hops) ASC, MAX(gw.path_weight) DESC
             LIMIT ?
         """
-        params = [*seed_ids, max_hops, limit]
+        params = [*seed_ids, max_hops, as_of, as_of, limit]
         rows = conn.execute(cte_sql, params).fetchall()
 
         if not rows:
@@ -2871,6 +3189,16 @@ class MemoryStore:
                     "UPDATE memories SET tags = ? WHERE content_hash = ?",
                     (json.dumps(merged_tags), keep_h),
                 )
+                # Record lineage edge BEFORE soft-deleting so audit survives.
+                self._record_memory_edge(
+                    conn,
+                    source_hash=remove_h,
+                    target_hash=keep_h,
+                    relationship_type="merged_into",
+                    weight=float(p["similarity"]),
+                    valid_from=now,
+                    metadata={"similarity": p["similarity"]},
+                )
                 # Soft-delete the removed memory
                 remove_row = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (remove_h,)).fetchone()
                 conn.execute(
@@ -2903,14 +3231,10 @@ class MemoryStore:
     _DREAM_THIS_MORNING_RE = re.compile(r"\bthis morning\b", re.IGNORECASE)
     _DREAM_N_DAYS_AGO_RE = re.compile(r"\b(\d+)\s+days?\s+ago\b", re.IGNORECASE)
     _DREAM_N_WEEKS_AGO_RE = re.compile(r"\b(\d+)\s+weeks?\s+ago\b", re.IGNORECASE)
-    _DREAM_WEEKDAY_RE = re.compile(
-        r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", re.IGNORECASE
-    )
+    _DREAM_WEEKDAY_RE = re.compile(r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", re.IGNORECASE)
 
     # Keywords that indicate the newer memory supersedes an older one
-    _DREAM_CONTRADICTION_RE = re.compile(
-        r"\b(now|actually|updated|fixed|replaced|instead)\b", re.IGNORECASE
-    )
+    _DREAM_CONTRADICTION_RE = re.compile(r"\b(now|actually|updated|fixed|replaced|instead)\b", re.IGNORECASE)
     _DREAM_SUPERSEDING_TYPES = {"decision", "error"}
 
     def _dream_rewrite_dates(self, conn: sqlite3.Connection, dry_run: bool) -> int:
@@ -3107,6 +3431,18 @@ class MemoryStore:
                 if dry_run:
                     continue
 
+                # Record typed memory↔memory edge BEFORE soft-delete so the
+                # lineage survives.  Direction: newer 'supersedes' older.
+                self._record_memory_edge(
+                    conn,
+                    source_hash=newer["content_hash"],
+                    target_hash=older["content_hash"],
+                    relationship_type="supersedes",
+                    weight=sim,
+                    valid_from=now,
+                    metadata={"similarity": round(sim, 4)},
+                )
+
                 # Soft-delete older, preserve audit trail in metadata
                 old_meta = json.loads(older["metadata"] or "{}")
                 old_meta["superseded_by"] = newer["content_hash"]
@@ -3173,8 +3509,7 @@ class MemoryStore:
         """
         cutoff = time.time() - 30 * 86400
         rows = conn.execute(
-            "SELECT id, tags, metadata FROM memories "
-            "WHERE deleted_at IS NULL AND recall_count = 0 AND created_at < ?",
+            "SELECT id, tags, metadata FROM memories WHERE deleted_at IS NULL AND recall_count = 0 AND created_at < ?",
             (cutoff,),
         ).fetchall()
 
@@ -3203,6 +3538,83 @@ class MemoryStore:
 
         return demoted
 
+    def _dream_active_forget(
+        self,
+        conn: sqlite3.Connection,
+        dry_run: bool,
+        max_fraction: float = 0.05,
+    ) -> tuple[int, list[dict]]:
+        """Pass 6: active budget-aware forgetting.
+
+        Candidate criteria:
+          - activation < FORGET_THRESHOLD
+          - distinct_session_count <= 1
+          - created_at older than 30 days
+          - NOT a 'decision' or 'reference' (intent-permanent types are sacred)
+
+        Soft-deletes at most ceil(max_fraction * total_active) per pass.
+        Gated on env var MEMORY_ACTIVE_FORGET=1 to make rollout opt-in;
+        when unset, this pass is a no-op (returns 0).
+        Always safe under dry_run.
+        """
+        if os.environ.get("MEMORY_ACTIVE_FORGET") != "1":
+            return 0, []
+
+        now = time.time()
+        cutoff = now - 30 * 86400
+
+        rows = conn.execute(
+            "SELECT id, content_hash, memory_type, created_at, last_recalled_at, "
+            "recall_count, distinct_session_count "
+            "FROM memories WHERE deleted_at IS NULL AND created_at < ? "
+            "AND memory_type NOT IN ('decision', 'reference') "
+            "AND COALESCE(distinct_session_count, 0) <= 1",
+            (cutoff,),
+        ).fetchall()
+
+        candidates: list[dict] = []
+        for r in rows:
+            row = dict(r)
+            act = compute_activation(
+                similarity=0.0,  # no query context during sleep
+                recall_count=row["recall_count"] or 0,
+                distinct_session_count=row["distinct_session_count"] or 0,
+                memory_type=row["memory_type"] or "note",
+                created_at=row["created_at"] or 0.0,
+                last_recalled_at=row["last_recalled_at"],
+                now=now,
+            )
+            if act < FORGET_THRESHOLD:
+                row["activation"] = round(act, 4)
+                candidates.append(row)
+
+        if not candidates:
+            return 0, []
+
+        # Bounded budget: never delete more than max_fraction of active corpus.
+        total_active = conn.execute(
+            "SELECT COUNT(*) AS n FROM memories WHERE deleted_at IS NULL"
+        ).fetchone()["n"]
+        budget = max(1, int(math.ceil(max_fraction * total_active)))
+        # Forget lowest-activation first.
+        candidates.sort(key=lambda c: c["activation"])
+        candidates = candidates[:budget]
+
+        forgotten_pairs = [
+            {"content_hash": c["content_hash"], "activation": c["activation"]}
+            for c in candidates
+        ]
+
+        if dry_run:
+            return len(forgotten_pairs), forgotten_pairs
+
+        for c in candidates:
+            conn.execute("UPDATE memories SET deleted_at = ? WHERE id = ?", (now, c["id"]))
+            conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (c["id"],))
+            conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (c["id"],))
+
+        return len(forgotten_pairs), forgotten_pairs
+
     def dream(
         self,
         dry_run: bool = False,
@@ -3217,6 +3629,7 @@ class MemoryStore:
           3. Consolidation          — merges near-duplicates (delegates to self.consolidate)
           4. Tag normalisation      — surfaces tag-merge suggestions (no auto-merge)
           5. Index demotion         — marks old never-recalled auto-tagged memories
+          6. Active forgetting      — soft-deletes low-activation memories (env-gated)
 
         Returns a JSON-serialisable summary dict.
 
@@ -3243,9 +3656,7 @@ class MemoryStore:
 
         # --- Pass 3: consolidate (manages its own transaction) ---
         consolidate_result = self.consolidate(dry_run=dry_run)
-        consolidated = consolidate_result.get("consolidated", 0) or consolidate_result.get(
-            "would_consolidate", 0
-        )
+        consolidated = consolidate_result.get("consolidated", 0) or consolidate_result.get("would_consolidate", 0)
 
         # --- Passes 4 & 5: read-only pass + demote (needs write) ---
         conn = self._begin_immediate()
@@ -3255,6 +3666,9 @@ class MemoryStore:
 
             # Pass 5: demote old unrecalled auto-tagged memories
             demoted = self._dream_demote(conn, dry_run=dry_run)
+
+            # Pass 6: active forgetting (env-gated)
+            forgotten, forgotten_pairs = self._dream_active_forget(conn, dry_run=dry_run)
 
             # Persist last_dream_at timestamp (skip on dry_run)
             now = time.time()
@@ -3269,7 +3683,7 @@ class MemoryStore:
                 conn,
                 "dream",
                 duration_ms=duration_ms,
-                result_count=dates_rewritten + superseded + consolidated + demoted,
+                result_count=dates_rewritten + superseded + consolidated + demoted + forgotten,
             )
             conn.execute("COMMIT")
         except BaseException:
@@ -3284,6 +3698,8 @@ class MemoryStore:
             "consolidated": consolidated,
             "tag_merge_suggestions": tag_suggestions,
             "demoted": demoted,
+            "forgotten": forgotten,
+            "forgotten_pairs": forgotten_pairs,
             "duration_ms": round((time.time() - start) * 1000, 2),
         }
 
@@ -4323,9 +4739,7 @@ class MemoryStore:
         demoted_from_cap = 0
 
         def _would_exceed(line: str) -> bool:
-            return (line_count + 1 > max_lines) or (
-                token_estimate + _approx_tokens(line) > max_tokens
-            )
+            return (line_count + 1 > max_lines) or (token_estimate + _approx_tokens(line) > max_tokens)
 
         def _add_to(section: str, entry: dict) -> bool:
             nonlocal line_count, token_estimate, included_count, demoted_from_cap

@@ -175,6 +175,26 @@ TOOLS = [
                     "maximum": 5,
                     "description": "Max hops for graph mode traversal (default 2)",
                 },
+                "rerank": {
+                    "type": "boolean",
+                    "description": "Cross-encoder rerank top-K. Default: on for hybrid mode, off elsewhere.",
+                },
+                "rerank_top_n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Truncate after rerank (default: limit)",
+                },
+                "score_fusion": {
+                    "type": "string",
+                    "enum": ["rrf", "weighted"],
+                    "default": "rrf",
+                    "description": "Hybrid score fusion: rrf (default) or weighted (legacy).",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "ISO date — graph traversal restricts to edges valid then.",
+                },
             },
         },
     ),
@@ -593,15 +613,30 @@ def _handle_store_batch(store: MemoryStore, args: dict) -> list[dict]:
 
 def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
     tags = _normalize_tags(args.get("tags"))
+    mode = args.get("mode", "hybrid")
+    rerank_raw = args.get("rerank")
+    if rerank_raw is None:
+        rerank = mode == "hybrid"
+    elif isinstance(rerank_raw, str):
+        rerank = rerank_raw.lower() in ("true", "1", "yes")
+    else:
+        rerank = bool(rerank_raw)
+    rerank_top_n = args.get("rerank_top_n")
+    if isinstance(rerank_top_n, str):
+        rerank_top_n = int(rerank_top_n) if rerank_top_n else None
     results = store.search(
         query=args.get("query"),
-        mode=args.get("mode", "hybrid"),
+        mode=mode,
         limit=args.get("limit", 10),
         tags=tags or None,
         time_expr=args.get("time_expr"),
         after=args.get("after"),
         before=args.get("before"),
         max_hops=args.get("max_hops", 2),
+        rerank=rerank,
+        rerank_top_n=rerank_top_n,
+        score_fusion=args.get("score_fusion", "rrf"),
+        as_of=args.get("as_of"),
     )
     depth = args.get("depth", "summary")
     if depth == "titles":
