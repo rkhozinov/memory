@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -125,7 +126,13 @@ def cmd_store(args, store: MemoryStore) -> None:
 
 
 def cmd_search(args, store: MemoryStore) -> None:
-    rerank = args.rerank if args.rerank is not None else (args.mode == "hybrid")
+    # Rerank default OFF — opt-in via --rerank or MEMORY_AUTO_RERANK=1.  Cross-
+    # encoder triggers a ~568 MB ONNX download on first use; don't surprise users.
+    if args.rerank is None:
+        auto = os.environ.get("MEMORY_AUTO_RERANK") == "1"
+        rerank = auto and args.mode == "hybrid"
+    else:
+        rerank = args.rerank
     results = store.search(
         query=args.query,
         mode=args.mode,

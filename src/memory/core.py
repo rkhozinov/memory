@@ -3465,10 +3465,11 @@ class MemoryStore:
         """
         import re as _re
 
+        # Pre-filter on json_valid() so legacy CSV-tagged rows don't crash json_each.
         rows = conn.execute(
             "SELECT DISTINCT value as tag FROM ("
             "  SELECT json_each.value FROM memories, json_each(memories.tags)"
-            "  WHERE deleted_at IS NULL"
+            "  WHERE deleted_at IS NULL AND json_valid(memories.tags) = 1"
             ")"
         ).fetchall()
         all_tags: list[str] = [r["tag"] for r in rows]
