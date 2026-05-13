@@ -553,9 +553,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rerank-top-n", type=int, default=None, help="Truncate after rerank (default: --limit)")
     p.add_argument(
         "--score-fusion",
-        choices=["rrf", "weighted"],
-        default="rrf",
-        help="Hybrid score fusion: rrf (default, rank-based) or weighted (legacy additive).",
+        choices=["weighted", "rrf"],
+        default="weighted",
+        help=(
+            "Hybrid score fusion: weighted (default, additive — preserves BM25's "
+            "strong signal on exact matches) or rrf (rank-based, robust to scale "
+            "heterogeneity).  Real-corpus replay showed RRF regressing identifier "
+            "queries; default kept on weighted until a multi-source fusion case "
+            "justifies RRF."
+        ),
     )
     p.add_argument(
         "--as-of",

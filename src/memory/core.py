@@ -1473,7 +1473,7 @@ class MemoryStore:
         track_recall: bool = True,
         rerank: bool = False,
         rerank_top_n: int | None = None,
-        score_fusion: str = "rrf",
+        score_fusion: str = "weighted",
         as_of: float | str | None = None,
     ) -> list[dict]:
         """Search memories. Modes: hybrid (default), semantic, exact, fts, graph.

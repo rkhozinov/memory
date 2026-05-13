@@ -50,7 +50,15 @@ CONFIGS: dict[str, dict] = {
 }
 
 
-def _reciprocal_rank(results: list[dict], expected: str) -> tuple[float, int | None]:
+def _reciprocal_rank(results: list[dict], expected: str, *, match: str = "substring") -> tuple[float, int | None]:
+    """match='substring' (default): expected is a content substring (legacy
+    synthetic corpus). match='hash': expected is a full content_hash (real DB
+    corpus from build_real_corpus.py)."""
+    if match == "hash":
+        for i, r in enumerate(results):
+            if r.get("content_hash") == expected:
+                return 1.0 / (i + 1), i + 1
+        return 0.0, None
     needle = expected.lower()
     for i, r in enumerate(results):
         if needle in r["content"].lower():
@@ -86,17 +94,27 @@ def _build_store(tmp: Path) -> MemoryStore:
     return s
 
 
-def _run_config(store: MemoryStore, cfg: dict, queries: list[tuple[str, str]]) -> dict:
-    """Execute all queries under one config; return aggregate metrics."""
-    # USE_ACTIVATION is read once at import time; mutate module attribute.
+def _run_config(
+    store: MemoryStore,
+    cfg: dict,
+    queries: list[tuple[str, str, str]],
+    *,
+    match: str = "substring",
+) -> dict:
+    """Execute all queries under one config; return aggregate metrics.
+
+    Each query tuple is (query_text, expected, category).  `match` is
+    "substring" (legacy corpus) or "hash" (real DB corpus).
+    """
     core_mod.USE_ACTIVATION = bool(cfg["use_activation"])
 
     rrs: list[float] = []
+    per_category: dict[str, list[float]] = {}
     recall_at_5_hits = 0
     top1_hits = 0
     latencies: list[float] = []
 
-    for query, expected in queries:
+    for query, expected, cat in queries:
         t0 = time.perf_counter()
         results = store.search(
             query,
@@ -108,8 +126,9 @@ def _run_config(store: MemoryStore, cfg: dict, queries: list[tuple[str, str]]) -
         )
         latencies.append((time.perf_counter() - t0) * 1000)
 
-        rr, rank = _reciprocal_rank(results, expected)
+        rr, rank = _reciprocal_rank(results, expected, match=match)
         rrs.append(rr)
+        per_category.setdefault(cat, []).append(rr)
         if rank == 1:
             top1_hits += 1
         if rank is not None and rank <= 5:
@@ -123,6 +142,7 @@ def _run_config(store: MemoryStore, cfg: dict, queries: list[tuple[str, str]]) -
         "p50_ms": statistics.median(latencies),
         "p95_ms": statistics.quantiles(latencies, n=20)[-1] if len(latencies) >= 20 else max(latencies),
         "n_queries": n,
+        "by_category_mrr": {c: sum(v) / len(v) for c, v in per_category.items()},
     }
 
 
@@ -165,6 +185,16 @@ def main() -> int:
         default=0,
         help="Cap number of queries (0 = all).  Useful for smoke runs.",
     )
+    parser.add_argument(
+        "--real-corpus",
+        default=None,
+        help="Path to JSON corpus built by tests/build_real_corpus.py (matches by content_hash).",
+    )
+    parser.add_argument(
+        "--use-prod-db",
+        action="store_true",
+        help="Replay against a snapshot copy of the production DB (only when --real-corpus is set).",
+    )
     args = parser.parse_args()
 
     selected = [c.strip() for c in args.configs.split(",") if c.strip()]
@@ -173,7 +203,15 @@ def main() -> int:
         print(f"unknown configs: {unknown}; choices: {list(CONFIGS)}", file=sys.stderr)
         return 2
 
-    queries = [(tc.query, tc.expected_top) for tc in corpus.ALL_TEST_CASES if tc.expected_top]
+    if args.real_corpus:
+        payload = json.loads(Path(args.real_corpus).read_text())
+        queries = [(q["query"], q["expected_hash"], q.get("category", "real")) for q in payload["queries"]]
+        match = "hash"
+        print(f"Loaded {len(queries)} real-corpus queries from {args.real_corpus}")
+    else:
+        queries = [(tc.query, tc.expected_top, getattr(tc, "category", "general")) for tc in corpus.ALL_TEST_CASES if tc.expected_top]
+        match = "substring"
+
     if args.limit:
         queries = queries[: args.limit]
 
@@ -181,10 +219,18 @@ def main() -> int:
 
     results: dict[str, dict] = {}
     with TemporaryDirectory() as td:
-        store = _build_store(Path(td))
+        if args.use_prod_db and args.real_corpus:
+            # Snapshot the live DB to avoid mutating it during replay.
+            import shutil
+            from memory.core import DB_PATH as _DB
+            snap = Path(td) / "snapshot.db"
+            shutil.copy2(_DB, snap)
+            store = MemoryStore(db_path=snap)
+        else:
+            store = _build_store(Path(td))
         for name in selected:
             t0 = time.perf_counter()
-            results[name] = _run_config(store, CONFIGS[name], queries)
+            results[name] = _run_config(store, CONFIGS[name], queries, match=match)
             results[name]["wall_s"] = time.perf_counter() - t0
             print(
                 f"  {name:<9} MRR={results[name]['mrr@10']:.3f} "
@@ -195,6 +241,15 @@ def main() -> int:
             )
 
     print(_format_table(results))
+
+    # Per-category MRR for the +all config gives us a "where does each phase help"
+    # view that the aggregate hides.
+    if "+all" in results and results["+all"].get("by_category_mrr"):
+        print("\nPer-category MRR (config: +all):")
+        for cat, m in sorted(results["+all"]["by_category_mrr"].items()):
+            base_cat = results.get("baseline", {}).get("by_category_mrr", {}).get(cat)
+            delta = f"  Δ={m - base_cat:+.3f}" if base_cat is not None else ""
+            print(f"  {cat:<14} MRR={m:.3f}{delta}")
 
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=2))

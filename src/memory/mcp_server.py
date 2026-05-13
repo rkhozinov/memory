@@ -187,9 +187,9 @@ TOOLS = [
                 },
                 "score_fusion": {
                     "type": "string",
-                    "enum": ["rrf", "weighted"],
-                    "default": "rrf",
-                    "description": "Hybrid score fusion: rrf (default) or weighted (legacy).",
+                    "enum": ["weighted", "rrf"],
+                    "default": "weighted",
+                    "description": "Hybrid score fusion: weighted (default) or rrf (rank-based).",
                 },
                 "as_of": {
                     "type": "string",
@@ -635,7 +635,7 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
         max_hops=args.get("max_hops", 2),
         rerank=rerank,
         rerank_top_n=rerank_top_n,
-        score_fusion=args.get("score_fusion", "rrf"),
+        score_fusion=args.get("score_fusion", "weighted"),
         as_of=args.get("as_of"),
     )
     depth = args.get("depth", "summary")
