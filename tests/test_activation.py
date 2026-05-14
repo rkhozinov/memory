@@ -87,7 +87,7 @@ def test_search_bumps_distinct_session_count_on_first_hit(store, monkeypatch):
     monkeypatch.setenv("MEMORY_SESSION_ID", "sess-A")
     store.search(query="kubernetes pod", mode="hybrid", limit=5)
     row = conn.execute(
-        "SELECT recall_count, distinct_session_count, last_recall_session FROM memories WHERE content_hash = ?",
+        "SELECT recall_count, json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count, last_recall_session FROM memories WHERE content_hash = ?",
         (a["content_hash"],),
     ).fetchone()
     if row is None or row["recall_count"] == 0:
@@ -100,7 +100,7 @@ def test_search_bumps_distinct_session_count_on_first_hit(store, monkeypatch):
     # Second search in same session → distinct stays the same
     store.search(query="kubernetes pod", mode="hybrid", limit=5)
     row = conn.execute(
-        "SELECT recall_count, distinct_session_count FROM memories WHERE content_hash = ?",
+        "SELECT recall_count, json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count FROM memories WHERE content_hash = ?",
         (a["content_hash"],),
     ).fetchone()
     assert row["distinct_session_count"] == initial_dsc
@@ -109,7 +109,7 @@ def test_search_bumps_distinct_session_count_on_first_hit(store, monkeypatch):
     monkeypatch.setenv("MEMORY_SESSION_ID", "sess-B")
     store.search(query="kubernetes pod", mode="hybrid", limit=5)
     row = conn.execute(
-        "SELECT distinct_session_count, last_recall_session FROM memories WHERE content_hash = ?",
+        "SELECT json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count, last_recall_session FROM memories WHERE content_hash = ?",
         (a["content_hash"],),
     ).fetchone()
     assert row["distinct_session_count"] == initial_dsc + 1
@@ -130,7 +130,7 @@ def test_search_distinct_session_count_is_set_not_alternation(store, monkeypatch
         store.search(query="alpha service connection", mode="hybrid", limit=5)
 
     row = conn.execute(
-        "SELECT distinct_session_count, recall_sessions, recall_count "
+        "SELECT json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count, recall_sessions, recall_count "
         "FROM memories WHERE content_hash = ?",
         (a["content_hash"],),
     ).fetchone()
@@ -159,7 +159,7 @@ def test_recall_sessions_capped(store, monkeypatch):
         store.search(query="capacity cap", mode="hybrid", limit=5)
 
     row = conn.execute(
-        "SELECT recall_sessions, distinct_session_count, recall_count FROM memories WHERE content_hash = ?",
+        "SELECT recall_sessions, json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count, recall_count FROM memories WHERE content_hash = ?",
         (a["content_hash"],),
     ).fetchone()
     if row is None or row["recall_count"] == 0:
@@ -185,7 +185,7 @@ def test_search_no_session_env_keeps_legacy_behaviour(store, monkeypatch):
 
     conn = store._get_conn()
     row = conn.execute(
-        "SELECT distinct_session_count FROM memories WHERE content_hash = ?",
+        "SELECT json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count FROM memories WHERE content_hash = ?",
         (a["content_hash"],),
     ).fetchone()
     assert (row["distinct_session_count"] or 0) == 0
@@ -240,7 +240,7 @@ def test_active_forget_soft_deletes_low_activation(store, monkeypatch):
     conn = store._get_conn()
     conn.execute(
         "UPDATE memories SET created_at = ?, last_recalled_at = NULL, "
-        "recall_count = 0, distinct_session_count = 0 WHERE content_hash = ?",
+        "recall_count = 0, recall_sessions = '[]' WHERE content_hash = ?",
         (time.time() - 365 * 86400, a["content_hash"]),
     )
     conn.commit()

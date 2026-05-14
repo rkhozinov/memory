@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS memories (
     confidence REAL DEFAULT 1.0,
     importance REAL DEFAULT 0.5,
     last_recall_session TEXT DEFAULT NULL,
-    distinct_session_count INTEGER DEFAULT 0,
     recall_sessions TEXT DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);

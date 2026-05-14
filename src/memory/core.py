@@ -830,11 +830,17 @@ class MemoryStore:
             "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 0.5",
             # Phase C: session-aware recall (hot-cluster bias fix)
             "ALTER TABLE memories ADD COLUMN last_recall_session TEXT DEFAULT NULL",
-            "ALTER TABLE memories ADD COLUMN distinct_session_count INTEGER DEFAULT 0",
             "ALTER TABLE memories ADD COLUMN recall_sessions TEXT DEFAULT '[]'",
         ):
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(col_sql)
+
+        # `distinct_session_count` is now derived from json_array_length(recall_sessions)
+        # at read time. Drop the redundant cache column if it exists (legacy DBs).
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
+        if "distinct_session_count" in cols:
+            with contextlib.suppress(sqlite3.OperationalError):
+                conn.execute("ALTER TABLE memories DROP COLUMN distinct_session_count")
 
         # FTS5 virtual table for BM25 keyword search (zero cold start, no model)
         conn.executescript(
@@ -1057,10 +1063,9 @@ class MemoryStore:
             conn.execute(
                 "UPDATE memories SET recall_count = recall_count + 1, "
                 "last_recalled_at = ?, confidence = 1.0, "
-                "last_recall_session = ?, recall_sessions = ?, "
-                "distinct_session_count = ? "
+                "last_recall_session = ?, recall_sessions = ? "
                 "WHERE content_hash = ?",
-                (now, session_id, json.dumps(sessions), len(sessions), content_hash),
+                (now, session_id, json.dumps(sessions), content_hash),
             )
 
     @staticmethod
@@ -1078,7 +1083,8 @@ class MemoryStore:
         placeholders = ",".join("?" * len(hashes))
         rows = conn.execute(
             "SELECT content_hash, memory_type, created_at, last_recalled_at, "
-            "recall_count, distinct_session_count "
+            "recall_count, "
+            "json_array_length(COALESCE(recall_sessions, '[]')) AS distinct_session_count "
             f"FROM memories WHERE content_hash IN ({placeholders})",
             hashes,
         ).fetchall()
@@ -4362,10 +4368,11 @@ class MemoryStore:
 
         rows = conn.execute(
             "SELECT id, content_hash, memory_type, created_at, last_recalled_at, "
-            "recall_count, distinct_session_count "
+            "recall_count, "
+            "json_array_length(COALESCE(recall_sessions, '[]')) AS distinct_session_count "
             "FROM memories WHERE deleted_at IS NULL AND created_at < ? "
             "AND memory_type NOT IN ('decision', 'reference') "
-            "AND COALESCE(distinct_session_count, 0) <= 1",
+            "AND json_array_length(COALESCE(recall_sessions, '[]')) <= 1",
             (cutoff,),
         ).fetchall()
 
@@ -4498,16 +4505,19 @@ class MemoryStore:
     def briefing(self, budget: int = 150) -> dict:
         """Generate a compact markdown briefing of top memories.
 
-        Ranks memories by confidence * importance * recency, groups by type,
-        and allocates a line budget per section.
+        Ranks memories by ACT-R activation when MEMORY_USE_ACTIVATION=1
+        (Phase C); otherwise falls back to confidence * importance * recency.
+        Groups by type and allocates a line budget per section.
+        Excludes injection-flagged memories from the read path.
         """
         start = time.time()
         conn = self._get_conn()
 
         rows = conn.execute(
             "SELECT content_hash, content, memory_type, confidence, importance, "
-            "recall_count, last_recalled_at, created_at "
-            "FROM memories WHERE deleted_at IS NULL"
+            "recall_count, last_recalled_at, created_at, "
+            "json_array_length(COALESCE(recall_sessions, '[]')) AS distinct_session_count "
+            f"FROM memories m WHERE m.deleted_at IS NULL AND {_NOT_INJECTED_SQL}"
         ).fetchall()
 
         total_memories = len(rows)
@@ -4535,19 +4545,33 @@ class MemoryStore:
         now = time.time()
         seven_days_ago = now - 7 * 86400
 
-        # Score each memory
+        use_activation = os.environ.get("MEMORY_USE_ACTIVATION") == "1"
         scored = []
         for r in rows:
-            conf = compute_confidence(
-                r["confidence"] or 1.0,
-                r["memory_type"],
-                r["last_recalled_at"],
-                r["created_at"],
-            )
-            imp = r["importance"] or 0.5
-            days = max(0.0, (now - r["created_at"]) / 86400)
-            recency = 1.0 / (1.0 + days)
-            score = conf * imp * recency
+            if use_activation:
+                # similarity=0 — no query context during briefing generation.
+                # The activation ranker still rewards type permanence, fresh
+                # recall, and diverse sessions, which is the whole point.
+                score = compute_activation(
+                    similarity=0.0,
+                    recall_count=r["recall_count"] or 0,
+                    distinct_session_count=r["distinct_session_count"] or 0,
+                    memory_type=r["memory_type"] or "note",
+                    created_at=r["created_at"] or 0.0,
+                    last_recalled_at=r["last_recalled_at"],
+                    now=now,
+                )
+            else:
+                conf = compute_confidence(
+                    r["confidence"] or 1.0,
+                    r["memory_type"],
+                    r["last_recalled_at"],
+                    r["created_at"],
+                )
+                imp = r["importance"] or 0.5
+                days = max(0.0, (now - r["created_at"]) / 86400)
+                recency = 1.0 / (1.0 + days)
+                score = conf * imp * recency
             scored.append(
                 {
                     "content": r["content"],
