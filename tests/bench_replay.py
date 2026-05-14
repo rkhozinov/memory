@@ -197,6 +197,12 @@ def main() -> int:
         action="store_true",
         help="Replay against a snapshot copy of the production DB (only when --real-corpus is set).",
     )
+    parser.add_argument(
+        "--db",
+        default=None,
+        help="Path to an existing SQLite DB to replay against directly (no snapshot). "
+        "Useful for before/after comparisons on the same mutated snapshot.",
+    )
     args = parser.parse_args()
 
     selected = [c.strip() for c in args.configs.split(",") if c.strip()]
@@ -221,7 +227,9 @@ def main() -> int:
 
     results: dict[str, dict] = {}
     with TemporaryDirectory() as td:
-        if args.use_prod_db and args.real_corpus:
+        if args.db:
+            store = MemoryStore(db_path=Path(args.db))
+        elif args.use_prod_db and args.real_corpus:
             # Snapshot the live DB to avoid mutating it during replay.
             import shutil
             from memory.core import DB_PATH as _DB

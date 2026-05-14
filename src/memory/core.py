@@ -975,24 +975,44 @@ class MemoryStore:
 
         Idempotent via UNIQUE(source_hash, target_hash, relationship_type).
         Caller is responsible for transaction boundaries.
+
+        Backwards-compatible with the legacy memory_graph schema that has
+        NOT NULL `similarity` + `connection_types` columns (older databases
+        that pre-date the typed-edge upgrade).  Those columns are populated
+        with derived defaults when present.
         """
         now = time.time()
-        conn.execute(
-            "INSERT OR IGNORE INTO memory_graph "
-            "(source_hash, target_hash, relationship_type, metadata, "
-            " created_at, weight, valid_from, valid_to) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                source_hash,
-                target_hash,
-                relationship_type,
-                json.dumps(metadata or {}),
-                now,
-                weight,
-                valid_from if valid_from is not None else now,
-                valid_to,
-            ),
-        )
+        # Probe the table once per call — cheap, and avoids module-level state.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_graph)").fetchall()}
+
+        columns = ["source_hash", "target_hash", "relationship_type", "metadata", "created_at"]
+        values: list = [
+            source_hash,
+            target_hash,
+            relationship_type,
+            json.dumps(metadata or {}),
+            now,
+        ]
+        if "weight" in cols:
+            columns.append("weight")
+            values.append(weight)
+        if "valid_from" in cols:
+            columns.append("valid_from")
+            values.append(valid_from if valid_from is not None else now)
+        if "valid_to" in cols:
+            columns.append("valid_to")
+            values.append(valid_to)
+        # Legacy NOT NULL columns on old prod DBs — feed sane defaults.
+        if "similarity" in cols:
+            columns.append("similarity")
+            values.append(float(weight))
+        if "connection_types" in cols:
+            columns.append("connection_types")
+            values.append(json.dumps([relationship_type]))
+
+        placeholders = ",".join("?" * len(values))
+        sql = f"INSERT OR IGNORE INTO memory_graph ({','.join(columns)}) VALUES ({placeholders})"
+        conn.execute(sql, values)
 
     def close(self) -> None:
         if self._conn:
