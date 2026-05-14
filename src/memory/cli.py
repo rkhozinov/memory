@@ -318,17 +318,33 @@ def cmd_admin_consolidate(args, store: MemoryStore) -> None:
 def cmd_admin_clusters(args, store: MemoryStore) -> None:
     """Discover near-duplicate clusters without mutating anything."""
     exclude = _parse_tags(args.exclude_types) or []
-    _json_out(
-        store.find_clusters(
-            threshold=args.threshold,
-            exclude_types=exclude,
-            project_scoped=not args.no_project_scope,
-            min_cluster_size=args.min_size,
-            max_cluster_size=args.max_size,
-            query=args.query,
-            tag=args.tag,
-        )
+    result = store.find_clusters(
+        threshold=args.threshold,
+        exclude_types=exclude,
+        project_scoped=not args.no_project_scope,
+        min_cluster_size=args.min_size,
+        max_cluster_size=args.max_size,
+        query=args.query,
+        tag=args.tag,
     )
+    if getattr(args, "depth", "summary") == "full":
+        _json_out(result)
+        return
+
+    # summary mode: one plain-text line per cluster
+    for i, cluster in enumerate(result.get("clusters", []), start=1):
+        survivor_hash = cluster.get("survivor_hash") or ""
+        size = cluster.get("size", 0)
+        members = cluster.get("members", []) or []
+        survivor_member = next(
+            (m for m in members if m.get("content_hash") == survivor_hash),
+            members[0] if members else None,
+        )
+        preview = ""
+        if survivor_member:
+            preview = (survivor_member.get("content_preview") or "")[:60]
+        preview = preview.replace("\n", " ").replace("\r", " ").strip()
+        print(f'{i} size={size} survivor={survivor_hash[:12]} "{preview}"')
 
 
 def cmd_admin_decay(args, store: MemoryStore) -> None:
@@ -697,6 +713,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-project-scope", action="store_true")
     p.add_argument("--query", default=None, help="Restrict to memories whose content contains the substring (case-insensitive)")
     p.add_argument("--tag", default=None, help="Restrict to memories carrying this exact tag")
+    p.add_argument(
+        "--depth",
+        choices=["summary", "full"],
+        default="summary",
+        help=(
+            "Output verbosity. 'summary' (default): one plain-text line per "
+            "cluster (id, size, survivor hash prefix, content preview). "
+            "'full': original JSON dump with all cluster members and metadata."
+        ),
+    )
 
     p = admin_sub.add_parser("decay", help="Apply confidence decay")
     p.add_argument("--min-confidence", default=0.0, type=float)
