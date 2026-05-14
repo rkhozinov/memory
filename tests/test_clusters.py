@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import io
+import json
+from unittest.mock import patch
+
 
 def _seed_similar_cluster(store, contents: list[str], project: str | None = None) -> list[str]:
     """Store memories and force identical embeddings so they cluster reliably."""
@@ -187,3 +191,98 @@ def test_rrsb_fuse_returns_score():
         assert "rrsb_score" in r
         assert r["score"] == r["rrsb_score"]
     assert out[0]["content_hash"] == "b"
+
+
+# --- CLI: memory admin clusters --depth {summary,full} ---
+
+
+def _run_admin_clusters_cli(store, extra_args: list[str] | None = None) -> str:
+    """Invoke `memory admin clusters` against the given store's DB. Returns stdout."""
+    from memory import cli as memory_cli
+
+    args = ["admin", "clusters", "--threshold", "0.85"]
+    if extra_args:
+        args.extend(extra_args)
+    buf = io.StringIO()
+    with (
+        patch("memory.core.DB_PATH", store.db_path),
+        patch("memory.cli.MemoryStore", lambda: store),
+        patch("sys.stdout", buf),
+    ):
+        memory_cli.main(args)
+    return buf.getvalue()
+
+
+def test_cli_clusters_depth_full_returns_json(store):
+    """--depth full preserves the original JSON dump shape from find_clusters()."""
+    _seed_similar_cluster(
+        store,
+        ["alpha topic one", "alpha topic two", "alpha topic three"],
+    )
+    raw = _run_admin_clusters_cli(store, ["--depth", "full"])
+    data = json.loads(raw)
+    assert data["threshold"] == 0.85
+    assert data["n_clusters"] == 1
+    cluster = data["clusters"][0]
+    assert cluster["size"] == 3
+    assert "survivor_hash" in cluster
+    assert "members" in cluster
+    member = cluster["members"][0]
+    assert "content_hash" in member
+    assert "content_preview" in member
+    assert "recall_count" in member
+
+
+def test_cli_clusters_depth_summary_one_line_per_cluster(store):
+    """--depth summary emits one plain-text line per cluster, not JSON."""
+    _seed_similar_cluster(
+        store,
+        ["beta topic one", "beta topic two", "beta topic three"],
+    )
+    _seed_similar_cluster(
+        store,
+        ["gamma topic one", "gamma topic two"],
+    )
+    raw = _run_admin_clusters_cli(store, ["--depth", "summary"])
+    lines = [ln for ln in raw.strip().splitlines() if ln.strip()]
+    assert len(lines) == 2
+    # Lines must NOT be JSON.
+    for ln in lines:
+        assert not ln.lstrip().startswith("{")
+        assert not ln.lstrip().startswith("[")
+    # Each line: <cluster_id> size=<N> survivor=<hash12> "..."
+    line_ids = []
+    for ln in lines:
+        parts = ln.split(" ", 3)
+        assert len(parts) >= 3
+        cluster_id, size_field, survivor_field = parts[0], parts[1], parts[2]
+        line_ids.append(cluster_id)
+        assert size_field.startswith("size=")
+        assert survivor_field.startswith("survivor=")
+        survivor_prefix = survivor_field.split("=", 1)[1]
+        assert len(survivor_prefix) == 12
+        # size value must parse as int >= 2
+        size_val = int(size_field.split("=", 1)[1])
+        assert size_val >= 2
+    # Cluster ids are distinct and the first line starts with "1"
+    assert line_ids[0] == "1"
+    assert len(set(line_ids)) == len(line_ids)
+
+
+def test_cli_clusters_default_depth_is_summary(store):
+    """No --depth flag falls back to summary output (plain text, not JSON)."""
+    _seed_similar_cluster(
+        store,
+        ["delta topic one", "delta topic two"],
+    )
+    raw = _run_admin_clusters_cli(store)
+    stripped = raw.strip()
+    assert stripped, "expected non-empty summary output"
+    # Must not be JSON.
+    assert not stripped.startswith("{")
+    assert not stripped.startswith("[")
+    first_line = stripped.splitlines()[0]
+    parts = first_line.split(" ", 3)
+    assert parts[0] == "1"
+    assert parts[1].startswith("size=")
+    assert parts[2].startswith("survivor=")
