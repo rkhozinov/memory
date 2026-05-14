@@ -298,6 +298,29 @@ TOOLS = [
         },
     ),
     Tool(
+        name="memory_undelete",
+        description=(
+            "Reverse a soft-delete on a memory by content hash. Sets deleted_at=NULL "
+            "and re-creates the embedding row if it was pruned by delete()/consolidate(). "
+            "Hash prefix lookup supported (like memory_get)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "hash": {
+                    "type": "string",
+                    "description": "Full content_hash or unique prefix of the deleted memory.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Preview without writing.",
+                },
+            },
+            "required": ["hash"],
+        },
+    ),
+    Tool(
         name="memory_decay",
         description="Apply confidence decay to all memories and optionally prune low-confidence ones.",
         inputSchema={
@@ -710,6 +733,14 @@ def _handle_decay(store: MemoryStore, args: dict) -> dict:
     )
 
 
+def _handle_undelete(store: MemoryStore, args: dict) -> dict:
+    content_hash = args.get("hash") or args.get("content_hash") or ""
+    return store.undelete(
+        content_hash=content_hash,
+        dry_run=args.get("dry_run", False),
+    )
+
+
 def _handle_doc_store(store: MemoryStore, args: dict) -> dict:
     tags = _normalize_tags(args.get("tags"))
     meta = args.get("metadata", {})
@@ -816,6 +847,7 @@ _HANDLERS = {
     "memory_health": lambda store, _: store.health(),
     "memory_cleanup": lambda store, _: store.cleanup(),
     "memory_consolidate": _handle_consolidate,
+    "memory_undelete": _handle_undelete,
     "memory_decay": _handle_decay,
     "memory_briefing": _handle_briefing,
     "document_store": _handle_doc_store,

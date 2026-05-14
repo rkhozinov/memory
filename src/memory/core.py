@@ -2889,6 +2889,145 @@ class MemoryStore:
             raise
         return {"deleted": len(deleted_hashes), "deleted_hashes": deleted_hashes}
 
+    # --- Undelete ---
+
+    def undelete(self, content_hash: str, dry_run: bool = False) -> dict:
+        """Reverse a soft-delete on a memory.
+
+        Sets ``deleted_at = NULL`` on the row identified by ``content_hash``.
+        Supports unique prefix lookup (mirroring :meth:`get`).
+
+        If the ``memory_embeddings`` row is missing for the resurrected memory
+        (delete() removes it; consolidate() too), the embedding is recomputed
+        from content and re-inserted. The FTS row is also re-inserted when
+        missing so the memory remains searchable.
+
+        Returns a dict with keys:
+
+        - ``undeleted`` (bool): True when a row was flipped from deleted to
+          live. False if the hash wasn't found or wasn't deleted.
+        - ``hash`` (str): the resolved full content_hash (when found).
+        - ``content_preview`` (str): first ~120 chars of content (when found).
+        - ``had_embedding`` (bool): whether the embedding row already existed.
+        - ``reindexed`` (bool): True iff the embedding had to be recreated.
+        - ``reason`` (str, only on ``undeleted=False``): why no-op.
+        - ``dry_run`` (bool, only when ``dry_run=True``): preview echo.
+        """
+        if not content_hash:
+            return {"undeleted": False, "reason": "No content_hash supplied."}
+
+        conn = self._begin_immediate()
+        try:
+            # Look up the row WITHOUT filtering by deleted_at — we need to
+            # see soft-deleted rows.
+            row = conn.execute(
+                "SELECT id, content_hash, content, deleted_at "
+                "FROM memories WHERE content_hash = ?",
+                (content_hash,),
+            ).fetchone()
+            if not row and len(content_hash) < 64:
+                rows = conn.execute(
+                    "SELECT id, content_hash, content, deleted_at "
+                    "FROM memories WHERE content_hash LIKE ?",
+                    (content_hash + "%",),
+                ).fetchall()
+                if len(rows) == 1:
+                    row = rows[0]
+                elif len(rows) > 1:
+                    conn.execute("ROLLBACK")
+                    return {
+                        "undeleted": False,
+                        "reason": (
+                            f"Ambiguous hash prefix '{content_hash}' matches {len(rows)} entries. "
+                            "Use a longer prefix (or the full 64-char hash) to uniquely identify the entry."
+                        ),
+                    }
+            if not row:
+                conn.execute("ROLLBACK")
+                return {
+                    "undeleted": False,
+                    "reason": f"Memory not found: {content_hash}",
+                }
+
+            row_id = row["id"]
+            full_hash = row["content_hash"]
+            content = row["content"]
+            preview = content[:120]
+
+            if row["deleted_at"] is None:
+                conn.execute("ROLLBACK")
+                return {
+                    "undeleted": False,
+                    "hash": full_hash,
+                    "content_preview": preview,
+                    "reason": "Memory is not deleted; nothing to undelete.",
+                }
+
+            # Probe whether ancillary rows still exist.
+            emb_row = conn.execute(
+                "SELECT rowid FROM memory_embeddings WHERE rowid = ?",
+                (row_id,),
+            ).fetchone()
+            had_embedding = emb_row is not None
+            fts_row = conn.execute(
+                "SELECT rowid FROM memory_fts WHERE rowid = ?",
+                (row_id,),
+            ).fetchone()
+            had_fts = fts_row is not None
+
+            if dry_run:
+                conn.execute("ROLLBACK")
+                return {
+                    "dry_run": True,
+                    "undeleted": False,
+                    "hash": full_hash,
+                    "content_preview": preview,
+                    "had_embedding": had_embedding,
+                    "would_reindex": not had_embedding,
+                }
+
+            # Flip deleted_at back to NULL.
+            conn.execute(
+                "UPDATE memories SET deleted_at = NULL WHERE id = ?",
+                (row_id,),
+            )
+
+            reindexed = False
+            if not had_embedding:
+                from .embeddings import get_model
+
+                embedding = get_model().embed_doc(content)
+                conn.execute(
+                    "INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                    (row_id, _serialize_f32(embedding)),
+                )
+                reindexed = True
+
+            if not had_fts:
+                conn.execute(
+                    "INSERT INTO memory_fts(rowid, content) VALUES (?, ?)",
+                    (row_id, content),
+                )
+
+            self._track_event(
+                conn,
+                "undelete",
+                content_hash=full_hash,
+                result_count=1,
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return {
+            "undeleted": True,
+            "hash": full_hash,
+            "content_preview": preview,
+            "had_embedding": had_embedding,
+            "reindexed": reindexed,
+        }
+
     # --- Get ---
 
     def get(self, content_hash: str) -> dict:
