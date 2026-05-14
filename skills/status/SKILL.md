@@ -39,12 +39,34 @@ memory admin tags merge "tag1,tag2" "merged:tag"
 ### Cleanup
 ```bash
 memory admin cleanup                          # remove exact duplicates
-memory admin consolidate --dry-run            # preview near-duplicate merges
-memory admin consolidate                      # merge >0.92 similarity
+memory admin consolidate --dry-run            # preview pairwise near-duplicate merges
+memory admin consolidate                      # merge >0.92 similarity (pairwise)
 memory admin decay --min-confidence 0.3       # decay + prune
 memory admin purge --dry-run                  # preview hard-deletes
 memory admin purge --retention-days 7         # hard-delete old entries
 ```
+
+### Cluster-based dedup (v1.5.0)
+
+Pairwise consolidate at default 0.92 only catches obvious clones.  Lower
+thresholds are unsafe pairwise (chain merges).  Cluster mode uses union-find
+on connected components so 0.85 becomes safe:
+
+```bash
+memory admin clusters --threshold 0.85                       # discover, no mutation
+memory admin consolidate --cluster --threshold 0.85 \
+  --strategy concat --dry-run                                # preview
+memory admin consolidate --cluster --threshold 0.85 \
+  --strategy concat                                          # apply
+```
+
+Strategies for the survivor's content:
+- `keep_higher_recall` (default) — survivor content unchanged
+- `keep_longer` — replace with longest member's content
+- `concat` — append a `Related (merged):` block with one-line snippets
+
+Project-scoped by default — only memories sharing a `project:*` tag merge.
+Use `--no-project-scope` to allow cross-project merges (rarely wanted).
 
 ### Export/Import
 ```bash
