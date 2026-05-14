@@ -1,5 +1,5 @@
 {
-  "description": "Memory session start, idle cleanup, and topic recall hooks.",
+  "description": "Memory session start, session end (dream), idle cleanup, and topic recall hooks.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,18 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-session-start.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-session-end.sh",
             "timeout": 5000
           }
         ]
