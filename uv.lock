@@ -636,7 +636,7 @@ wheels = [
 
 [[package]]
 name = "memory"
-version = "0.1.0"
+version = "1.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

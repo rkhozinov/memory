@@ -55,6 +55,16 @@ _IMPORTANCE_BY_TYPE: dict[str, float] = {
 DEFAULT_SCORING_WEIGHTS = (0.8, 0.1, 0.1)  # similarity, importance, recency
 MIN_SIMILARITY_THRESHOLD = 0.45  # filter out semantically irrelevant results
 
+# --- Untrusted-input filter (CVE-class: memory poisoning) ---
+# Read paths (search/list) must exclude memories that tripped the on-write
+# injection screen so flagged content never leaks to downstream LLMs/MCP
+# clients. Direct hash retrieval via get() is unaffected — caller has the
+# hash, so recovery use cases stay open.
+_NOT_INJECTED_SQL = (
+    "(m.metadata IS NULL "
+    "OR json_extract(m.metadata, '$.injection_suspicious') IS NOT 1)"
+)
+
 # --- Demotion weight ---
 # Penalises over-recalled memories so they don't crowd out genuine matches.
 # 0 disables entirely (demotion factor == 1.0 for all memories).
@@ -952,6 +962,43 @@ class MemoryStore:
         with contextlib.suppress(sqlite3.OperationalError):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_er_valid_to ON entity_relations(valid_to)")
 
+        # Legacy memory_graph migration: pre-v1.4 had NOT NULL `similarity` +
+        # `connection_types` and PRIMARY KEY (source, target). Rebuild table
+        # to match current shape if those legacy columns are present.
+        legacy_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_graph)").fetchall()}
+        if "similarity" in legacy_cols or "connection_types" in legacy_cols:
+            conn.executescript(
+                """
+                BEGIN;
+                CREATE TABLE memory_graph_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_hash TEXT NOT NULL,
+                    target_hash TEXT NOT NULL,
+                    relationship_type TEXT NOT NULL,
+                    metadata TEXT,
+                    created_at REAL,
+                    weight REAL DEFAULT 1.0,
+                    valid_from REAL DEFAULT NULL,
+                    valid_to REAL DEFAULT NULL,
+                    UNIQUE(source_hash, target_hash, relationship_type)
+                );
+                INSERT OR IGNORE INTO memory_graph_new
+                    (source_hash, target_hash, relationship_type, metadata, created_at, weight, valid_from, valid_to)
+                SELECT source_hash, target_hash,
+                       COALESCE(relationship_type, 'related'),
+                       metadata, created_at,
+                       COALESCE(weight, 1.0),
+                       valid_from, valid_to
+                FROM memory_graph;
+                DROP TABLE memory_graph;
+                ALTER TABLE memory_graph_new RENAME TO memory_graph;
+                CREATE INDEX IF NOT EXISTS idx_graph_source ON memory_graph(source_hash);
+                CREATE INDEX IF NOT EXISTS idx_graph_target ON memory_graph(target_hash);
+                CREATE INDEX IF NOT EXISTS idx_graph_relationship ON memory_graph(relationship_type);
+                COMMIT;
+                """
+            )
+
     @staticmethod
     def _rollback_safe(conn: sqlite3.Connection) -> None:
         """Roll back the current transaction, ignoring errors if none is active."""
@@ -1072,44 +1119,23 @@ class MemoryStore:
 
         Idempotent via UNIQUE(source_hash, target_hash, relationship_type).
         Caller is responsible for transaction boundaries.
-
-        Backwards-compatible with the legacy memory_graph schema that has
-        NOT NULL `similarity` + `connection_types` columns (older databases
-        that pre-date the typed-edge upgrade).  Those columns are populated
-        with derived defaults when present.
         """
         now = time.time()
-        # Probe the table once per call — cheap, and avoids module-level state.
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_graph)").fetchall()}
-
-        columns = ["source_hash", "target_hash", "relationship_type", "metadata", "created_at"]
-        values: list = [
-            source_hash,
-            target_hash,
-            relationship_type,
-            json.dumps(metadata or {}),
-            now,
-        ]
-        if "weight" in cols:
-            columns.append("weight")
-            values.append(weight)
-        if "valid_from" in cols:
-            columns.append("valid_from")
-            values.append(valid_from if valid_from is not None else now)
-        if "valid_to" in cols:
-            columns.append("valid_to")
-            values.append(valid_to)
-        # Legacy NOT NULL columns on old prod DBs — feed sane defaults.
-        if "similarity" in cols:
-            columns.append("similarity")
-            values.append(float(weight))
-        if "connection_types" in cols:
-            columns.append("connection_types")
-            values.append(json.dumps([relationship_type]))
-
-        placeholders = ",".join("?" * len(values))
-        sql = f"INSERT OR IGNORE INTO memory_graph ({','.join(columns)}) VALUES ({placeholders})"
-        conn.execute(sql, values)
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_graph "
+            "(source_hash, target_hash, relationship_type, metadata, created_at, weight, valid_from, valid_to) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                source_hash,
+                target_hash,
+                relationship_type,
+                json.dumps(metadata or {}),
+                now,
+                weight,
+                valid_from if valid_from is not None else now,
+                valid_to,
+            ),
+        )
 
     def close(self) -> None:
         if self._conn:
@@ -1993,6 +2019,7 @@ class MemoryStore:
             SELECT * FROM memories m
             WHERE m.id IN ({placeholders})
               AND m.deleted_at IS NULL
+              AND {_NOT_INJECTED_SQL}
         """
         params = list(rowids)
         if time_clause:
@@ -2075,7 +2102,7 @@ class MemoryStore:
     ) -> list[dict]:
         time_clause, time_params = self._build_time_filter(time_expr, after, before)
 
-        sql = "SELECT * FROM memories m WHERE m.deleted_at IS NULL"
+        sql = f"SELECT * FROM memories m WHERE m.deleted_at IS NULL AND {_NOT_INJECTED_SQL}"
         params: list = []
 
         if query:
@@ -2161,6 +2188,7 @@ class MemoryStore:
             SELECT * FROM memories m
             WHERE m.id IN ({placeholders})
               AND m.deleted_at IS NULL
+              AND {_NOT_INJECTED_SQL}
         """
         params = list(rowids)
         if time_clause:
@@ -2373,6 +2401,7 @@ class MemoryStore:
             JOIN memory_entities me ON me.entity_id = gw.entity_id
             JOIN memories m ON m.id = me.memory_id
             WHERE m.deleted_at IS NULL
+              AND {_NOT_INJECTED_SQL}
             GROUP BY m.id
             ORDER BY MIN(gw.hops) ASC, MAX(gw.path_weight) DESC
             LIMIT ?
@@ -2436,8 +2465,8 @@ class MemoryStore:
         conn = self._get_conn()
         offset = (page - 1) * page_size
 
-        sql = "SELECT * FROM memories m WHERE m.deleted_at IS NULL"
-        count_sql = "SELECT COUNT(*) as cnt FROM memories m WHERE m.deleted_at IS NULL"
+        sql = f"SELECT * FROM memories m WHERE m.deleted_at IS NULL AND {_NOT_INJECTED_SQL}"
+        count_sql = f"SELECT COUNT(*) as cnt FROM memories m WHERE m.deleted_at IS NULL AND {_NOT_INJECTED_SQL}"
         params: list = []
         count_params: list = []
 
@@ -4233,11 +4262,10 @@ class MemoryStore:
         """
         import re as _re
 
-        # Pre-filter on json_valid() so legacy CSV-tagged rows don't crash json_each.
         rows = conn.execute(
             "SELECT DISTINCT value as tag FROM ("
             "  SELECT json_each.value FROM memories, json_each(memories.tags)"
-            "  WHERE deleted_at IS NULL AND json_valid(memories.tags) = 1"
+            "  WHERE deleted_at IS NULL"
             ")"
         ).fetchall()
         all_tags: list[str] = [r["tag"] for r in rows]

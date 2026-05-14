@@ -99,12 +99,14 @@ def test_to_dict_structure():
         "tags",
         "memory_type",
         "metadata",
+        "trust",
         "created_at",
         "updated_at",
         "confidence",
         "importance",
     }
     assert set(d.keys()) == expected_keys
+    assert d["trust"] == "trusted"
     assert d["tags"] == ["x"]
     assert d["memory_type"] == "fact"
     assert d["metadata"] == {"k": 1}

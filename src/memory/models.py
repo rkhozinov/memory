@@ -91,12 +91,17 @@ class Memory:
 
     def to_dict(self) -> dict:
         """Serialize for JSON output."""
+        # `trust` lets consumers (LLMs, downstream tools) tell at a glance
+        # whether content tripped the on-write injection screen. Stored as a
+        # top-level field so it does not require digging into metadata.
+        trust = "untrusted" if (self.metadata or {}).get("injection_suspicious") else "trusted"
         return {
             "content_hash": self.content_hash,
             "content": self.content,
             "tags": self.tags,
             "memory_type": self.memory_type,
             "metadata": self.metadata,
+            "trust": trust,
             "created_at": self.created_at_iso,
             "updated_at": self.updated_at_iso,
             "confidence": round(self.confidence, 4),
