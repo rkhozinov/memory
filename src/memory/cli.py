@@ -325,6 +325,8 @@ def cmd_admin_clusters(args, store: MemoryStore) -> None:
             project_scoped=not args.no_project_scope,
             min_cluster_size=args.min_size,
             max_cluster_size=args.max_size,
+            query=args.query,
+            tag=args.tag,
         )
     )
 
@@ -688,6 +690,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-size", type=int, default=2)
     p.add_argument("--max-size", type=int, default=10)
     p.add_argument("--no-project-scope", action="store_true")
+    p.add_argument("--query", default=None, help="Restrict to memories whose content contains the substring (case-insensitive)")
+    p.add_argument("--tag", default=None, help="Restrict to memories carrying this exact tag")
 
     p = admin_sub.add_parser("decay", help="Apply confidence decay")
     p.add_argument("--min-confidence", default=0.0, type=float)

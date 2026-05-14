@@ -3208,6 +3208,8 @@ class MemoryStore:
         project_scoped: bool = True,
         min_cluster_size: int = 2,
         max_cluster_size: int = 10,
+        query: str | None = None,
+        tag: str | None = None,
     ) -> dict:
         """Find connected components of near-duplicate memories.
 
@@ -3246,6 +3248,15 @@ class MemoryStore:
             ph = ",".join("?" * len(exclude_types))
             sql += f" AND m.memory_type NOT IN ({ph})"
             params.extend(exclude_types)
+        if query:
+            sql += " AND lower(m.content) LIKE ?"
+            params.append(f"%{query.lower()}%")
+        if tag:
+            sql += (
+                " AND EXISTS (SELECT 1 FROM json_each(m.tags) je "
+                "WHERE json_valid(m.tags) AND je.value = ?)"
+            )
+            params.append(tag)
         rows = conn.execute(sql, params).fetchall()
         if len(rows) < 2:
             return {"threshold": threshold, "n_clusters": 0, "clusters": []}
