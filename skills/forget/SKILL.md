@@ -40,6 +40,18 @@ memory admin purge --dry-run           # preview
 memory admin purge --retention-days 7  # hard-delete
 ```
 
+## Undelete (recover soft-deleted)
+
+Reverse a soft-delete by content hash (prefix supported). Re-embeds and
+re-inserts FTS row if either was pruned, so the memory becomes searchable
+again.
+```bash
+memory admin undelete <hash-prefix> --dry-run   # preview
+memory admin undelete <hash-prefix>             # apply
+```
+Returns `{undeleted: true, hash, content_preview, had_embedding, reindexed}`.
+If the row was never deleted, returns `{undeleted: false, reason: "...not deleted..."}`.
+
 ## Auto-extracted entries
 
 Memories tagged `source:auto` were ingested automatically (e.g., from session handoffs or `memory admin auto-extract`).

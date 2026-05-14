@@ -27,6 +27,14 @@ Quick ranked overview:
 memory admin briefing --budget 50
 ```
 
+Default ranker: `confidence × importance × recency`.
+Opt-in activation ranker (v1.7.0+) — rewards type permanence, fresh recall,
+and diverse-session usage:
+```bash
+MEMORY_USE_ACTIVATION=1 memory admin briefing --budget 50
+```
+Briefing also filters out injection-flagged memories on read.
+
 ## Maintenance
 
 ### Tags
@@ -46,27 +54,38 @@ memory admin purge --dry-run                  # preview hard-deletes
 memory admin purge --retention-days 7         # hard-delete old entries
 ```
 
-### Cluster-based dedup (v1.5.0)
+### Cluster-based dedup (v1.5.0+)
 
 Pairwise consolidate at default 0.92 only catches obvious clones.  Lower
 thresholds are unsafe pairwise (chain merges).  Cluster mode uses union-find
 on connected components so 0.85 becomes safe:
 
 ```bash
-memory admin clusters --threshold 0.85                       # discover, no mutation
+memory admin clusters --threshold 0.85                       # one-line per cluster (default summary)
+memory admin clusters --threshold 0.85 --depth full          # full JSON dump with all members
+memory admin clusters --threshold 0.85 --query cloudfront    # scope to substring
+memory admin clusters --threshold 0.85 --tag project:foo     # scope to exact tag
 memory admin consolidate --cluster --threshold 0.85 \
-  --strategy concat --dry-run                                # preview
+  --strategy mmr_union --dry-run                             # preview
 memory admin consolidate --cluster --threshold 0.85 \
-  --strategy concat                                          # apply
+  --strategy mmr_union                                       # apply (recommended)
 ```
 
 Strategies for the survivor's content:
-- `keep_higher_recall` (default) — survivor content unchanged
+- `mmr_union` (v1.6.0+, recommended) — MMR extractive merge across all member
+  sentences; preserved ~97% chars in bench vs concat's ~12%
+- `keep_higher_recall` (legacy default) — survivor content unchanged
 - `keep_longer` — replace with longest member's content
-- `concat` — append a `Related (merged):` block with one-line snippets
+- `concat` — append a `Related (merged):` block with one-line snippets only
+  (lossy; use `mmr_union` instead)
 
 Project-scoped by default — only memories sharing a `project:*` tag merge.
 Use `--no-project-scope` to allow cross-project merges (rarely wanted).
+
+Provenance: every merge writes a `merged_into` edge to `memory_graph`
+before soft-deleting the loser. Lineage is queryable via raw SQL or via
+`memory admin undelete <hash>` (see `/forget` skill) to recover individual
+rows if a pass goes wrong.
 
 ### Export/Import
 ```bash
@@ -90,6 +109,11 @@ memory admin dream --dry-run   # preview what would be merged
 memory admin dream             # run consolidation
 ```
 Run this periodically (e.g., after large ingestion) to reduce redundancy and improve search quality.
+
+**Auto-runs on SessionEnd** (v1.7.0+): the `memory-session-end.sh` hook
+fires dream in the background after each Claude Code session, throttled to
+once every 6h. Marker file: `~/.claude/memory/dream/last_run.marker`.
+Override interval: `MEMORY_DREAM_INTERVAL_HOURS=N` (set `0` to always run).
 
 The dream pass output includes:
 - `superseded` / `superseded_pairs` — older memories replaced by newer; provenance
