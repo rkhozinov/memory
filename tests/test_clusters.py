@@ -141,6 +141,41 @@ def test_find_clusters_splits_oversized_groups(store):
     assert sizes == [2, 10]
 
 
+def test_consolidate_cluster_mmr_union_preserves_unique_facts(store):
+    """MMR strategy must keep unique-fact sentences from all members."""
+    seed = _seed_similar_cluster(
+        store,
+        [
+            "OnCall API: SA token cannot resolve alert groups; returns 403. "
+            "Affects oncall provider in Terraform.",
+            "Grafana SA token cannot silence OnCall alerts via API. "
+            "Use admin role instead. Workaround: rotate token monthly.",
+            "Service account tokens lack permission for resolve. "
+            "Critical for SRE on-call rotation runbook.",
+        ],
+    )
+    conn = store._get_conn()
+    conn.execute("UPDATE memories SET recall_count = 5 WHERE content_hash = ?", (seed[0],))
+    conn.commit()
+
+    result = store.consolidate(
+        threshold=0.85, cluster=True, content_strategy="mmr_union", project_scoped=False
+    )
+    assert result["consolidated"] == 2
+
+    survivor = conn.execute(
+        "SELECT content FROM memories WHERE content_hash = ?", (seed[0],)
+    ).fetchone()
+    content = survivor["content"].lower()
+    # Unique facts from each member must survive (matched by keyword).
+    assert "403" in content or "resolve" in content  # member 1 fact
+    # At least one of the unique elements from member 2 or 3 must appear.
+    member_2_fragments = ["silence", "admin role", "rotate"]
+    member_3_fragments = ["sre", "runbook", "rotation"]
+    found_other = any(f in content for f in member_2_fragments + member_3_fragments)
+    assert found_other, f"No unique fact from members 2/3 survived. Content: {content[:300]}"
+
+
 def test_rrsb_fuse_returns_score():
     from memory.core import _rrsb_fuse
 

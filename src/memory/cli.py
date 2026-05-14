@@ -674,9 +674,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--strategy",
-        choices=["keep_higher_recall", "keep_longer", "concat"],
+        choices=["keep_higher_recall", "keep_longer", "concat", "mmr_union"],
         default="keep_higher_recall",
-        help="Content strategy for the survivor. concat appends related members.",
+        help=(
+            "Content strategy for the survivor. "
+            "mmr_union: extractive sentence-level merge via Maximal Marginal "
+            "Relevance — picks unique sentences across all members, drops "
+            "near-duplicates, no LLM. Recommended."
+        ),
     )
     p.add_argument(
         "--no-project-scope",

@@ -273,6 +273,103 @@ def _rrf_fuse(*result_lists: list[dict], limit: int, k: int = 60) -> list[dict]:
     return merged[:limit]
 
 
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _mmr_union_merge(
+    member_contents: list[str],
+    *,
+    max_sentences: int = 40,
+    max_chars: int = 4000,
+    lambda_relevance: float = 0.7,
+    min_sentence_chars: int = 20,
+) -> str:
+    """Extractive multi-document merge via Maximal Marginal Relevance.
+
+    For each sentence across all cluster members:
+
+        score(s) = λ · sim(s, centroid) - (1 - λ) · max_{t in S} sim(s, t)
+
+    Greedy: pick the sentence with highest score, add to S, repeat.  Naturally
+    drops near-duplicate sentences (same fact rephrased across members) while
+    keeping novel content.  No LLM; reuses the existing ModernBERT embedder.
+
+    Args:
+        member_contents: full bodies of every cluster member (survivor first).
+        max_sentences: cap on output sentence count.
+        max_chars: hard cap on output length.
+        lambda_relevance: MMR mix; 1.0 = pure relevance, 0.0 = pure diversity.
+        min_sentence_chars: skip fragments shorter than this.
+
+    Returns:
+        Joined string of the selected sentences, in selection order.
+    """
+    import numpy as np
+
+    # Split bodies into deduplicated sentences.  Survivor first so it dominates
+    # ties (centroid is computed from full bodies, not sentence pool).
+    seen: set[str] = set()
+    sentences: list[str] = []
+    for body in member_contents:
+        for raw in _SENTENCE_SPLIT_RE.split(body):
+            s = raw.strip()
+            if len(s) < min_sentence_chars:
+                continue
+            key = s.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            sentences.append(s)
+
+    if not sentences:
+        return member_contents[0] if member_contents else ""
+    if len(sentences) == 1:
+        return sentences[0]
+
+    from .embeddings import get_model
+
+    model = get_model()
+    # Embed sentences in one batch
+    sent_emb = model.embed_doc_batch(sentences)
+    # Centroid: mean of member full-body embeddings (more stable than sentence-mean)
+    body_emb = model.embed_doc_batch(member_contents)
+    centroid = body_emb.mean(axis=0)
+    centroid /= np.linalg.norm(centroid) + 1e-9
+
+    sim_to_centroid = sent_emb @ centroid
+
+    # MMR greedy selection
+    selected: list[int] = []
+    remaining = set(range(len(sentences)))
+    # First pick: highest centroid similarity
+    first = int(np.argmax(sim_to_centroid))
+    selected.append(first)
+    remaining.discard(first)
+
+    selected_emb = sent_emb[[first]]
+
+    output_chars = len(sentences[first])
+    while remaining and len(selected) < max_sentences and output_chars < max_chars:
+        rem_list = list(remaining)
+        rem_emb = sent_emb[rem_list]
+        rel = sim_to_centroid[rem_list]
+        red = (rem_emb @ selected_emb.T).max(axis=1)
+        mmr = lambda_relevance * rel - (1.0 - lambda_relevance) * red
+        winner_local = int(np.argmax(mmr))
+        winner = rem_list[winner_local]
+        candidate = sentences[winner]
+        if output_chars + len(candidate) + 1 > max_chars:
+            break
+        selected.append(winner)
+        remaining.discard(winner)
+        selected_emb = np.vstack([selected_emb, sent_emb[winner]])
+        output_chars += len(candidate) + 1
+
+    # Preserve original sentence order (first occurrence) for readability.
+    selected.sort(key=lambda i: i)
+    return " ".join(sentences[i] for i in selected)
+
+
 def _format_cluster(member_idxs, meta, vecs, np_mod) -> dict:
     """Helper for find_clusters(): build a JSON-serialisable cluster summary."""
     mat = np_mod.stack([vecs[i] for i in member_idxs])
@@ -3724,6 +3821,14 @@ class MemoryStore:
             if appendix_parts:
                 return f"{current}\n\nRelated (merged):\n" + "\n".join(appendix_parts)
             return current
+
+        if strategy == "mmr_union":
+            return _mmr_union_merge(
+                [c for c, _ in all_contents],
+                max_sentences=40,
+                max_chars=4000,
+                lambda_relevance=0.7,
+            )
 
         return current  # unknown strategy → no-op
 
