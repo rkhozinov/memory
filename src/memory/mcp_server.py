@@ -187,9 +187,9 @@ TOOLS = [
                 },
                 "score_fusion": {
                     "type": "string",
-                    "enum": ["weighted", "rrf"],
+                    "enum": ["weighted", "rrf", "rrsb"],
                     "default": "weighted",
-                    "description": "Hybrid score fusion: weighted (default) or rrf (rank-based).",
+                    "description": "Hybrid score fusion: weighted (default), rrf (rank-only), rrsb (rank + score-boost).",
                 },
                 "as_of": {
                     "type": "string",

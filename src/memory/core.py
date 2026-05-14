@@ -153,14 +153,9 @@ def compute_activation(
 
     staleness_penalty = max(0.0, (dt_days - ACTIVATION_STALE_DAYS) / ACTIVATION_STALE_DAYS)
 
-    activation = (
-        w_sim * sim
-        + w_type * tw
-        + w_temp * temporal
-        + w_sess * sess
-        - w_stale * staleness_penalty
-    )
+    activation = w_sim * sim + w_type * tw + w_temp * temporal + w_sess * sess - w_stale * staleness_penalty
     return max(0.0, min(1.0, activation))
+
 
 # --- Injection-pattern screening ---
 # Compiled once at import time.  Case-insensitive.
@@ -272,6 +267,95 @@ def _rrf_fuse(*result_lists: list[dict], limit: int, k: int = 60) -> list[dict]:
 
     for h, s in rrf_scores.items():
         fused[h]["rrf_score"] = round(s, 6)
+        fused[h]["score"] = round(s, 6)
+
+    merged = sorted(fused.values(), key=lambda m: m["score"], reverse=True)
+    return merged[:limit]
+
+
+def _format_cluster(member_idxs, meta, vecs, np_mod) -> dict:
+    """Helper for find_clusters(): build a JSON-serialisable cluster summary."""
+    mat = np_mod.stack([vecs[i] for i in member_idxs])
+    centroid = mat.mean(axis=0)
+    norm = float(np_mod.linalg.norm(centroid)) + 1e-9
+    centroid /= norm
+    proximity = mat @ centroid
+    sorted_idxs = sorted(
+        range(len(member_idxs)),
+        key=lambda k: (-float(proximity[k]), -meta[member_idxs[k]]["recall_count"]),
+    )
+    members = []
+    for k in sorted_idxs:
+        idx = member_idxs[k]
+        m = meta[idx]
+        members.append(
+            {
+                "content_hash": m["content_hash"],
+                "memory_type": m["memory_type"],
+                "recall_count": m["recall_count"],
+                "content_preview": m["content"][:140],
+                "centroid_similarity": round(float(proximity[k]), 4),
+            }
+        )
+    # Suggest a "survivor": the member highest recall, tie-break by closest to centroid.
+    survivor_idx = max(
+        range(len(member_idxs)),
+        key=lambda k: (
+            meta[member_idxs[k]]["recall_count"],
+            float(proximity[k]),
+            -meta[member_idxs[k]]["created_at"],
+        ),
+    )
+    survivor_hash = meta[member_idxs[survivor_idx]]["content_hash"]
+    return {
+        "size": len(member_idxs),
+        "survivor_hash": survivor_hash,
+        "members": members,
+    }
+
+
+def _rrsb_fuse(
+    *result_lists: list[dict],
+    limit: int,
+    k: int = 10,
+    alpha: float = 0.5,
+) -> list[dict]:
+    """Reciprocal Rank Fusion with Score Boost.
+
+    Hybrid of plain RRF (rank-only) and weighted (score-only):
+
+        score(d) = Σ_i [ 1/(k+rank_i)  +  alpha * (raw_i / max_raw_i) ]
+
+    The first term keeps RRF's scale-free rank stability; the second adds back
+    the magnitude signal that pure RRF discards.  Smaller k (default 10) is
+    appropriate for the small top-K result sets we work with — k=60 (web-IR
+    convention) flattens rank-1 and rank-10 to nearly the same value.
+
+    Real-corpus replay (120 queries, prod DB):
+      weighted MRR 0.922 / RRF MRR 0.780 / RRSB target >= weighted.
+    """
+    fused: dict[str, dict] = {}
+    final_score: dict[str, float] = {}
+
+    for lst in result_lists:
+        if not lst:
+            continue
+        max_raw = max((r.get("score", 0.0) or 0.0) for r in lst) or 1.0
+        for rank, r in enumerate(lst, start=1):
+            h = r["content_hash"]
+            rank_term = 1.0 / (k + rank)
+            mag_term = alpha * ((r.get("score", 0.0) or 0.0) / max_raw)
+            final_score[h] = final_score.get(h, 0.0) + rank_term + mag_term
+            if h not in fused:
+                fused[h] = dict(r)
+            else:
+                fused[h]["similarity"] = max(
+                    fused[h].get("similarity", 0) or 0,
+                    r.get("similarity", 0) or 0,
+                )
+
+    for h, s in final_score.items():
+        fused[h]["rrsb_score"] = round(s, 6)
         fused[h]["score"] = round(s, 6)
 
     merged = sorted(fused.values(), key=lambda m: m["score"], reverse=True)
@@ -2068,6 +2152,8 @@ class MemoryStore:
 
         if score_fusion == "rrf":
             return _rrf_fuse(sem_results, fts_results, limit=limit, k=60)
+        if score_fusion == "rrsb":
+            return _rrsb_fuse(sem_results, fts_results, limit=limit, k=10, alpha=0.5)
 
         # Legacy weighted-sum fusion
         results_by_hash: dict[str, dict] = {}
@@ -3115,17 +3201,170 @@ class MemoryStore:
             "purged_hashes": [r["content_hash"] for r in rows],
         }
 
+    def find_clusters(
+        self,
+        threshold: float = 0.85,
+        exclude_types: list[str] | None = None,
+        project_scoped: bool = True,
+        min_cluster_size: int = 2,
+        max_cluster_size: int = 10,
+    ) -> dict:
+        """Find connected components of near-duplicate memories.
+
+        Builds an undirected graph over memories where an edge connects two
+        memories whose cosine similarity exceeds `threshold`, then returns
+        the connected components (via union-find) of size >= min_cluster_size.
+
+        project_scoped: when True, edges only form between memories that share
+        at least one `project:*` tag.  Prevents cross-project merges (e.g.
+        Kubernetes-related memories from different teams).
+
+        max_cluster_size: clusters larger than this are split — large
+        components usually indicate a too-low threshold or an over-broad topic.
+        The largest sub-cluster is preferred and the rest emitted separately.
+
+        Returns:
+            {
+              "threshold": 0.85,
+              "n_clusters": 12,
+              "clusters": [
+                {"size": 3, "members": [{hash, recall_count, content_preview}, ...]},
+                ...
+              ]
+            }
+        """
+        if exclude_types is None:
+            exclude_types = ["reference"]
+        conn = self._get_conn()
+
+        sql = (
+            "SELECT m.id, m.content_hash, m.content, m.recall_count, m.created_at, "
+            "m.tags, m.memory_type FROM memories m WHERE m.deleted_at IS NULL"
+        )
+        params: list = []
+        if exclude_types:
+            ph = ",".join("?" * len(exclude_types))
+            sql += f" AND m.memory_type NOT IN ({ph})"
+            params.extend(exclude_types)
+        rows = conn.execute(sql, params).fetchall()
+        if len(rows) < 2:
+            return {"threshold": threshold, "n_clusters": 0, "clusters": []}
+
+        ids = [r["id"] for r in rows]
+        ph = ",".join("?" * len(ids))
+        emb_rows = conn.execute(
+            f"SELECT rowid, content_embedding FROM memory_embeddings WHERE rowid IN ({ph})",
+            ids,
+        ).fetchall()
+        emb_by_id = {r["rowid"]: r["content_embedding"] for r in emb_rows}
+
+        import numpy as np
+
+        meta: list[dict] = []
+        vecs: list[np.ndarray] = []
+        for r in rows:
+            emb = emb_by_id.get(r["id"])
+            if emb is None:
+                continue
+            vecs.append(np.frombuffer(emb, dtype=np.float32).copy())
+            tags = _safe_tags(r["tags"])
+            projects = {t for t in tags if isinstance(t, str) and t.startswith("project:")}
+            meta.append(
+                {
+                    "id": r["id"],
+                    "content_hash": r["content_hash"],
+                    "content": r["content"],
+                    "recall_count": r["recall_count"] or 0,
+                    "created_at": r["created_at"],
+                    "memory_type": r["memory_type"],
+                    "projects": projects,
+                    "tags": tags,
+                }
+            )
+        if len(vecs) < 2:
+            return {"threshold": threshold, "n_clusters": 0, "clusters": []}
+
+        sim = np.stack(vecs) @ np.stack(vecs).T
+
+        # Union-find
+        parent = list(range(len(meta)))
+
+        def _find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]  # path compression
+                x = parent[x]
+            return x
+
+        def _union(a: int, b: int) -> None:
+            ra, rb = _find(a), _find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        n = len(meta)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if float(sim[i, j]) < threshold:
+                    continue
+                if (
+                    project_scoped
+                    and meta[i]["projects"]
+                    and meta[j]["projects"]
+                    and not (meta[i]["projects"] & meta[j]["projects"])
+                ):
+                    continue
+                _union(i, j)
+
+        # Group by root
+        groups: dict[int, list[int]] = {}
+        for idx in range(n):
+            groups.setdefault(_find(idx), []).append(idx)
+
+        clusters: list[dict] = []
+        for member_idxs in groups.values():
+            if len(member_idxs) < min_cluster_size:
+                continue
+            # Split if too large: keep top-K closest to centroid, emit remainder separately.
+            if len(member_idxs) > max_cluster_size:
+                mat = np.stack([vecs[i] for i in member_idxs])
+                centroid = mat.mean(axis=0)
+                centroid /= np.linalg.norm(centroid) + 1e-9
+                proximity = mat @ centroid
+                order = np.argsort(-proximity)
+                kept = [member_idxs[int(k)] for k in order[:max_cluster_size]]
+                spill = [member_idxs[int(k)] for k in order[max_cluster_size:]]
+                if len(spill) >= min_cluster_size:
+                    clusters.append(_format_cluster(spill, meta, vecs, np))
+                member_idxs = kept
+            clusters.append(_format_cluster(member_idxs, meta, vecs, np))
+
+        clusters.sort(key=lambda c: -c["size"])
+        return {"threshold": threshold, "n_clusters": len(clusters), "clusters": clusters}
+
     def consolidate(
         self,
         threshold: float = 0.92,
         dry_run: bool = False,
         exclude_types: list[str] | None = None,
+        cluster: bool = False,
+        content_strategy: str = "keep_higher_recall",
+        project_scoped: bool = True,
     ) -> dict:
         """Merge near-duplicate memories deterministically.
 
-        Finds memory pairs with cosine similarity > threshold.
-        Keeps the one with higher recall_count (ties: older memory wins),
-        soft-deletes the other, and unions tags.
+        Default (cluster=False): pairwise mode.  Finds pairs with cosine
+        similarity > threshold, keeps the one with higher recall_count
+        (ties: older memory wins), soft-deletes the other, and unions tags.
+
+        Cluster mode (cluster=True): runs find_clusters() and merges each
+        connected component as a unit.  Lower thresholds (e.g. 0.85) become
+        safe because near-duplicates form tight clusters whose centroid memory
+        gets all members merged into it instead of arbitrary pair chains.
+
+        content_strategy controls what the survivor's content becomes:
+          - "keep_higher_recall" (default, legacy) — survivor unchanged
+          - "keep_longer" — survivor.content replaced by the longest member
+          - "concat" — survivor.content gets a "Related:" appendix with the
+            other members' first sentences (max 200 chars per member)
 
         exclude_types: memory types to skip (default: ["reference"]).
         Pass empty list to include all types.
@@ -3135,7 +3374,19 @@ class MemoryStore:
         start = time.time()
         conn = self._get_conn()
 
-        # Gather all active memory embeddings
+        # --- Cluster mode: merge whole connected components ---
+        if cluster:
+            return self._consolidate_clusters(
+                conn,
+                start=start,
+                threshold=threshold,
+                dry_run=dry_run,
+                exclude_types=exclude_types,
+                content_strategy=content_strategy,
+                project_scoped=project_scoped,
+            )
+
+        # --- Pairwise mode (legacy default) ---
         sql = (
             "SELECT m.id, m.content_hash, m.recall_count, m.created_at, m.tags, "
             "m.importance, m.confidence, m.memory_type "
@@ -3272,6 +3523,197 @@ class MemoryStore:
             raise
 
         return {"consolidated": len(pairs), "pairs": pairs}
+
+    def _consolidate_clusters(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        start: float,
+        threshold: float,
+        dry_run: bool,
+        exclude_types: list[str],
+        content_strategy: str,
+        project_scoped: bool,
+    ) -> dict:
+        """Cluster-mode consolidation — merge whole connected components.
+
+        Uses find_clusters() to identify groups, then for each cluster:
+          1. Pick survivor (highest recall, closest to centroid)
+          2. Apply content_strategy to survivor's content
+          3. Union all members' tags into survivor
+          4. Write 'merged_into' provenance edge for each non-survivor
+          5. Soft-delete non-survivors
+
+        Returns the same shape as pairwise consolidate() plus "clusters" key.
+        """
+        clusters_info = self.find_clusters(
+            threshold=threshold,
+            exclude_types=exclude_types,
+            project_scoped=project_scoped,
+        )
+        clusters = clusters_info["clusters"]
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "mode": "cluster",
+                "threshold": threshold,
+                "n_clusters": len(clusters),
+                "would_consolidate": sum(c["size"] - 1 for c in clusters),
+                "clusters": clusters,
+            }
+
+        if not clusters:
+            return {"consolidated": 0, "n_clusters": 0, "clusters": []}
+
+        consolidated_total = 0
+        now = time.time()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for c in clusters:
+                survivor_hash = c["survivor_hash"]
+                members = c["members"]
+                survivor_row = conn.execute(
+                    "SELECT id, content, tags FROM memories WHERE content_hash = ?",
+                    (survivor_hash,),
+                ).fetchone()
+                if survivor_row is None:
+                    continue
+
+                # Build new survivor content + tags from the cluster.
+                new_content = self._cluster_content(conn, survivor_row, survivor_hash, members, content_strategy)
+                merged_tags = self._cluster_tags(conn, survivor_hash, members)
+
+                conn.execute(
+                    "UPDATE memories SET content = ?, tags = ?, updated_at = ? WHERE content_hash = ?",
+                    (new_content, json.dumps(merged_tags), now, survivor_hash),
+                )
+                # Re-embed survivor if content changed substantively.
+                if content_strategy != "keep_higher_recall":
+                    from .embeddings import get_model
+
+                    new_emb = get_model().embed_doc(new_content)
+                    conn.execute(
+                        "DELETE FROM memory_embeddings WHERE rowid = ?",
+                        (survivor_row["id"],),
+                    )
+                    conn.execute(
+                        "INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                        (survivor_row["id"], _serialize_f32(new_emb)),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO memory_fts (rowid, content) VALUES (?, ?)",
+                        (survivor_row["id"], new_content),
+                    )
+
+                # Merge + soft-delete each non-survivor.
+                for m in members:
+                    h = m["content_hash"]
+                    if h == survivor_hash:
+                        continue
+                    self._record_memory_edge(
+                        conn,
+                        source_hash=h,
+                        target_hash=survivor_hash,
+                        relationship_type="merged_into",
+                        weight=float(m.get("centroid_similarity", 0.0)),
+                        valid_from=now,
+                        metadata={
+                            "cluster_size": c["size"],
+                            "centroid_similarity": m.get("centroid_similarity"),
+                            "strategy": content_strategy,
+                        },
+                    )
+                    rm = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (h,)).fetchone()
+                    if rm is None:
+                        continue
+                    conn.execute(
+                        "UPDATE memories SET deleted_at = ? WHERE id = ?",
+                        (now, rm["id"]),
+                    )
+                    conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (rm["id"],))
+                    conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (rm["id"],))
+                    consolidated_total += 1
+
+            duration_ms = (time.time() - start) * 1000
+            self._track_event(
+                conn,
+                "consolidate_cluster",
+                duration_ms=duration_ms,
+                result_count=consolidated_total,
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+
+        return {
+            "consolidated": consolidated_total,
+            "n_clusters": len(clusters),
+            "mode": "cluster",
+            "threshold": threshold,
+            "clusters": clusters,
+        }
+
+    @staticmethod
+    def _cluster_content(
+        conn: sqlite3.Connection,
+        survivor_row,
+        survivor_hash: str,
+        members: list[dict],
+        strategy: str,
+    ) -> str:
+        """Apply the content_strategy to produce the survivor's new content."""
+        current = survivor_row["content"]
+        if strategy == "keep_higher_recall":
+            return current
+
+        all_contents: list[tuple[str, int]] = [(current, len(current))]
+        for m in members:
+            h = m["content_hash"]
+            if h == survivor_hash or h is None:
+                continue
+            row = conn.execute("SELECT content FROM memories WHERE content_hash = ?", (h,)).fetchone()
+            if row is None:
+                continue
+            all_contents.append((row["content"], len(row["content"])))
+
+        if strategy == "keep_longer":
+            return max(all_contents, key=lambda x: x[1])[0]
+
+        if strategy == "concat":
+            # Survivor first, then a short appendix from each other member.
+            seen_prefix = current.strip()
+            appendix_parts: list[str] = []
+            for body, _ in all_contents[1:]:
+                snippet = body.strip().split("\n")[0][:200]
+                if snippet and snippet not in seen_prefix:
+                    appendix_parts.append(f"- {snippet}")
+                    seen_prefix += "\n" + snippet
+            if appendix_parts:
+                return f"{current}\n\nRelated (merged):\n" + "\n".join(appendix_parts)
+            return current
+
+        return current  # unknown strategy → no-op
+
+    @staticmethod
+    def _cluster_tags(conn: sqlite3.Connection, survivor_hash: str, members: list[dict]) -> list[str]:
+        """Union of all member tags, preserving survivor-order first."""
+        survivor_tags = _safe_tags(
+            conn.execute("SELECT tags FROM memories WHERE content_hash = ?", (survivor_hash,)).fetchone()["tags"]
+        )
+        seen = list(dict.fromkeys(survivor_tags))
+        for m in members:
+            h = m["content_hash"]
+            if h == survivor_hash:
+                continue
+            row = conn.execute("SELECT tags FROM memories WHERE content_hash = ?", (h,)).fetchone()
+            if row is None:
+                continue
+            for t in _safe_tags(row["tags"]):
+                if t not in seen:
+                    seen.append(t)
+        return seen
 
     # --- Dream pass ---
 
@@ -3644,18 +4086,13 @@ class MemoryStore:
             return 0, []
 
         # Bounded budget: never delete more than max_fraction of active corpus.
-        total_active = conn.execute(
-            "SELECT COUNT(*) AS n FROM memories WHERE deleted_at IS NULL"
-        ).fetchone()["n"]
+        total_active = conn.execute("SELECT COUNT(*) AS n FROM memories WHERE deleted_at IS NULL").fetchone()["n"]
         budget = max(1, int(math.ceil(max_fraction * total_active)))
         # Forget lowest-activation first.
         candidates.sort(key=lambda c: c["activation"])
         candidates = candidates[:budget]
 
-        forgotten_pairs = [
-            {"content_hash": c["content_hash"], "activation": c["activation"]}
-            for c in candidates
-        ]
+        forgotten_pairs = [{"content_hash": c["content_hash"], "activation": c["activation"]} for c in candidates]
 
         if dry_run:
             return len(forgotten_pairs), forgotten_pairs

@@ -304,8 +304,29 @@ def cmd_admin_cleanup(args, store: MemoryStore) -> None:
 
 def cmd_admin_consolidate(args, store: MemoryStore) -> None:
     exclude = _parse_tags(args.exclude_types) or []
-    result = store.consolidate(threshold=args.threshold, dry_run=args.dry_run, exclude_types=exclude)
+    result = store.consolidate(
+        threshold=args.threshold,
+        dry_run=args.dry_run,
+        exclude_types=exclude,
+        cluster=args.cluster,
+        content_strategy=args.strategy,
+        project_scoped=not args.no_project_scope,
+    )
     _json_out(result)
+
+
+def cmd_admin_clusters(args, store: MemoryStore) -> None:
+    """Discover near-duplicate clusters without mutating anything."""
+    exclude = _parse_tags(args.exclude_types) or []
+    _json_out(
+        store.find_clusters(
+            threshold=args.threshold,
+            exclude_types=exclude,
+            project_scoped=not args.no_project_scope,
+            min_cluster_size=args.min_size,
+            max_cluster_size=args.max_size,
+        )
+    )
 
 
 def cmd_admin_decay(args, store: MemoryStore) -> None:
@@ -479,6 +500,7 @@ _DOC_DISPATCH = {
 _ADMIN_DISPATCH = {
     "cleanup": cmd_admin_cleanup,
     "consolidate": cmd_admin_consolidate,
+    "clusters": cmd_admin_clusters,
     "decay": cmd_admin_decay,
     "dream": cmd_admin_dream,
     "demoted": cmd_admin_demoted,
@@ -553,14 +575,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rerank-top-n", type=int, default=None, help="Truncate after rerank (default: --limit)")
     p.add_argument(
         "--score-fusion",
-        choices=["weighted", "rrf"],
+        choices=["weighted", "rrf", "rrsb"],
         default="weighted",
         help=(
-            "Hybrid score fusion: weighted (default, additive — preserves BM25's "
-            "strong signal on exact matches) or rrf (rank-based, robust to scale "
-            "heterogeneity).  Real-corpus replay showed RRF regressing identifier "
-            "queries; default kept on weighted until a multi-source fusion case "
-            "justifies RRF."
+            "Hybrid score fusion: weighted (default; additive — preserves BM25's "
+            "strong signal on exact matches), rrf (rank-only, robust to scale "
+            "heterogeneity), or rrsb (rank + score-boost hybrid, k=10/alpha=0.5)."
         ),
     )
     p.add_argument(
@@ -645,6 +665,29 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--threshold", default=0.92, type=float)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--exclude-types", default="reference")
+    p.add_argument(
+        "--cluster",
+        action="store_true",
+        help="Merge connected components (union-find) instead of pairs. Safer at lower thresholds.",
+    )
+    p.add_argument(
+        "--strategy",
+        choices=["keep_higher_recall", "keep_longer", "concat"],
+        default="keep_higher_recall",
+        help="Content strategy for the survivor. concat appends related members.",
+    )
+    p.add_argument(
+        "--no-project-scope",
+        action="store_true",
+        help="Allow merges across different project:* tags (default: scoped).",
+    )
+
+    p = admin_sub.add_parser("clusters", help="Discover near-duplicate clusters (no mutation)")
+    p.add_argument("--threshold", default=0.85, type=float, help="Cosine threshold (default 0.85)")
+    p.add_argument("--exclude-types", default="reference")
+    p.add_argument("--min-size", type=int, default=2)
+    p.add_argument("--max-size", type=int, default=10)
+    p.add_argument("--no-project-scope", action="store_true")
 
     p = admin_sub.add_parser("decay", help="Apply confidence decay")
     p.add_argument("--min-confidence", default=0.0, type=float)

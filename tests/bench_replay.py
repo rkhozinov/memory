@@ -45,8 +45,10 @@ corpus = importlib.import_module("corpus")
 CONFIGS: dict[str, dict] = {
     "baseline": dict(score_fusion="weighted", rerank=False, use_activation=False),
     "+rrf": dict(score_fusion="rrf", rerank=False, use_activation=False),
-    "+rerank": dict(score_fusion="rrf", rerank=True, use_activation=False),
-    "+all": dict(score_fusion="rrf", rerank=True, use_activation=True),
+    "+rrsb": dict(score_fusion="rrsb", rerank=False, use_activation=False),
+    "+rerank": dict(score_fusion="weighted", rerank=True, use_activation=False),
+    "+rrsb+rr": dict(score_fusion="rrsb", rerank=True, use_activation=False),
+    "+all": dict(score_fusion="weighted", rerank=True, use_activation=True),
 }
 
 
