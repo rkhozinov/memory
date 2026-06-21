@@ -1,0 +1,21 @@
+# Keep build context small + never bake the local DB / venv into the image.
+.git
+.git/**
+.venv
+.venv/**
+.worktrees
+.worktrees/**
+.idea
+.pytest_cache
+.ruff_cache
+.infinity_cache
+__pycache__
+**/__pycache__
+data
+data/**
+models
+benchmarks
+*.db
+*.db.*
+daemon.log
+*.log

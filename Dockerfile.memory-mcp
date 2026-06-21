@@ -1,0 +1,38 @@
+# memory-mcp: containerized memory MCP server (ONNX embeddings, Linux).
+# Build context = ~/repos/memory (the memory package source).
+FROM python:3.12-slim
+
+ENV HOME=/opt/memstack \
+    MEMORY_DB_PATH=/data/sqlite_vec.db \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# onnxruntime needs libgomp; curl/ca-certs to bake the embedding model.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/memstack/app
+COPY . /opt/memstack/app
+
+# Install the memory package (mlx markers are darwin-only -> skipped on linux,
+# so onnxruntime path is used) plus the stdio->SSE bridge.
+RUN pip install . && pip install mcp-proxy
+
+# Bake the ONNX embedding model + tokenizer so first boot needs no network.
+# MODEL_DIR resolves to $HOME/repos/memory/data/models (see embeddings.py).
+RUN mkdir -p "$HOME/repos/memory/data/models/modernbert-embed-base/onnx" \
+ && curl -fSL https://huggingface.co/nomic-ai/modernbert-embed-base/resolve/main/onnx/model_uint8.onnx \
+      -o "$HOME/repos/memory/data/models/modernbert-embed-base/onnx/model_uint8.onnx" \
+ && curl -fSL https://huggingface.co/nomic-ai/modernbert-embed-base/resolve/main/tokenizer.json \
+      -o "$HOME/repos/memory/data/models/modernbert-embed-base/tokenizer.json"
+
+# /data holds the shared SQLite DB (mounted volume). rerank cache lives here too.
+RUN mkdir -p /data
+VOLUME ["/data"]
+
+EXPOSE 8096
+
+# Bridge the stdio memory-mcp-server to streamable-HTTP/SSE on :8096.
+# Flags verified against installed mcp-proxy at build time via entrypoint check.
+CMD ["mcp-proxy", "--host", "0.0.0.0", "--port", "8096", "--", "memory-mcp-server"]
