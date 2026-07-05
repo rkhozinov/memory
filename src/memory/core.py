@@ -337,7 +337,12 @@ def compute_hubness(vecs: dict[str, object], k: int = 10) -> dict[str, float]:
     mat = np.nan_to_num(mat, nan=0.0, posinf=0.0, neginf=0.0)
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     mat = np.divide(mat, norms, out=np.zeros_like(mat), where=norms > 1e-9)
-    sims = mat @ mat.T
+    # errstate: Apple Accelerate's float32 BLAS raises spurious divide/overflow
+    # FPE warnings on this large matmul even though the output is finite (unit
+    # vectors → sims in [-1,1]).  Silence the noise; inputs are already sanitized.
+    with np.errstate(all="ignore"):
+        sims = mat @ mat.T
+    sims = np.nan_to_num(sims, nan=0.0, posinf=1.0, neginf=-1.0)
     np.fill_diagonal(sims, -np.inf)  # exclude self
     kk = min(k, len(hashes) - 1)
     topk = np.sort(sims, axis=1)[:, -kk:]
