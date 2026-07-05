@@ -69,14 +69,18 @@ Add to search command:
 --rerank-top-n N             # Truncate after rerank (default: --limit)
 ```
 
-## Hybrid score fusion (Phase B)
+## Hybrid score fusion
 
 `--score-fusion` controls how semantic + FTS sub-rankers blend:
 ```bash
-memory search "query" --mode hybrid --score-fusion rrf       # default, rank-based
-memory search "query" --mode hybrid --score-fusion weighted  # legacy additive
+memory search "query" --mode hybrid --score-fusion weighted_best  # default (v1.8+)
+memory search "query" --mode hybrid --score-fusion weighted       # additive baseline
+memory search "query" --mode hybrid --score-fusion rrf            # rank-only RRF
 ```
-RRF (`Σ 1/(60+rank)`) is robust to score-scale heterogeneity and is the default.
+`weighted_best` (default) = additive fusion + CSLS hubness correction (demotes
+generic centroid-hugging memories) + exact-identifier promotion (a memory
+literally containing a queried id like `TICKET-194` is lifted to rank 1). Also
+available: `weighted_id`, `weighted_csls` (each half alone), `rrsb`.
 
 ## Temporal graph (Phase B)
 
