@@ -106,6 +106,19 @@ def test_identifier_precision_requires_fts(pipeline_store):
     assert mrr_hyb >= mrr_sem, f"Hybrid ({mrr_hyb:.3f}) should not degrade vs semantic ({mrr_sem:.3f}) for identifiers"
 
 
+def test_weighted_best_beats_weighted_on_identifiers(pipeline_store):
+    """weighted_best (shipped default: CSLS + exact-ID promotion) must not regress
+    identifier retrieval vs the plain weighted fusion, and should improve it."""
+    queries = [(tc.query, tc.expected_top) for tc in IDENTIFIER_CASES if tc.expected_top]
+
+    mrr_weighted = _compute_mrr(pipeline_store, queries, mode="hybrid", score_fusion="weighted")
+    mrr_best = _compute_mrr(pipeline_store, queries, mode="hybrid", score_fusion="weighted_best")
+
+    assert mrr_best >= mrr_weighted, (
+        f"weighted_best ({mrr_best:.3f}) regressed vs weighted ({mrr_weighted:.3f}) on identifiers"
+    )
+
+
 def test_boolean_queries_require_fts(pipeline_store):
     """OR queries only work with FTS component."""
     for tc in BOOLEAN_CASES:

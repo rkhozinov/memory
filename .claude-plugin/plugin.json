@@ -1,6 +1,6 @@
 {
   "name": "memory",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Lean memory service for Claude Code: SQLite + sqlite-vec embeddings, FTS, cross-encoder rerank, bi-temporal graph edges, ACT-R activation + active forgetting, cluster-based dedup with MMR extractive merge, untrusted-input filter on read, SessionEnd dream hook, and `memory admin undelete`/`clusters --depth` admin tooling.",
   "author": {
     "name": "Ruslan Khozinov",

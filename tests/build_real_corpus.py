@@ -141,108 +141,91 @@ def _validate_query(store: MemoryStore, query: str, expected_hash: str, top_k: i
     return None
 
 
+def generate_candidates(store: MemoryStore, max_queries: int, rng: random.Random) -> list[dict]:
+    """Build candidate (query, expected_hash, category) pairs from memory content.
+    Model-agnostic — pure text extraction, NO retrieval/validation.  The same
+    candidate list can then be validated independently by any embedder so the
+    gold set isn't biased toward whichever model validated it."""
+    sample = _sample_memories(store, n_per_type=40)
+    print(f"sampled {len(sample)} memories")
+
+    cands: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    conn = store._get_conn()
+    hot_rows = conn.execute(
+        "SELECT content_hash, content, recall_count, tags FROM memories "
+        "WHERE deleted_at IS NULL AND recall_count >= 20"
+    ).fetchall()
+    hot_by_tag: dict[str, list[dict]] = {}
+    for r in hot_rows:
+        try:
+            tags = json.loads(r["tags"] or "[]")
+        except Exception:  # noqa: BLE001
+            tags = []
+        if not isinstance(tags, list):
+            continue
+        for t in tags:
+            hot_by_tag.setdefault(t, []).append(dict(r))
+
+    def add(query: str | None, ch: str, category: str, **extra) -> None:
+        if query and (query, ch) not in seen:
+            cands.append({"query": query, "expected_hash": ch, "category": category, **extra})
+            seen.add((query, ch))
+
+    for mem in sample:
+        content, ch = mem["content"], mem["content_hash"]
+        add(_make_identifier_query(content), ch, "identifier")
+        pq = _make_paraphrase_query(content, rng)
+        add(pq, ch, "paraphrase")
+        cq = _make_cross_topic_query(content)
+        if cq != pq:
+            add(cq, ch, "cross_topic")
+        if len(cands) >= max_queries * 3:  # over-generate; validation prunes
+            break
+
+    for tag, mems in hot_by_tag.items():
+        if len(mems) < 2:
+            continue
+        mems_sorted = sorted(mems, key=lambda m: m["recall_count"], reverse=True)
+        hot, cold = mems_sorted[0], mems_sorted[-1]
+        if hot["content_hash"] == cold["content_hash"]:
+            continue
+        add(
+            _make_paraphrase_query(cold["content"], rng),
+            cold["content_hash"],
+            "hot_cluster",
+            competing_hot_hash=hot["content_hash"],
+            competing_recall_count=hot["recall_count"],
+        )
+
+    print(f"generated {len(cands)} candidates: {dict(Counter(c['category'] for c in cands))}")
+    return cands
+
+
+def validate_candidates(store: MemoryStore, candidates: list[dict], max_queries: int, top_k: int = 10) -> list[dict]:
+    """Keep candidates whose expected memory is in this store's top-K hybrid."""
+    out: list[dict] = []
+    for c in candidates:
+        rank = _validate_query(store, c["query"], c["expected_hash"], top_k)
+        if rank is not None:
+            out.append({**c, "baseline_rank": rank})
+        if len(out) >= max_queries:
+            break
+    print(f"validated {len(out)}/{len(candidates)}: {dict(Counter(q['category'] for q in out))}")
+    return out
+
+
 def build_corpus(out_path: Path, max_queries: int, seed: int, db_src: Path) -> dict:
     rng = random.Random(seed)
-
-    # Operate on a temp copy of the production DB to avoid bumping recall counts
-    # or otherwise mutating the user's live store.
     with tempfile.TemporaryDirectory() as td:
-        td_path = Path(td)
-        copy_db = td_path / "snapshot.db"
+        copy_db = Path(td) / "snapshot.db"
         shutil.copy2(db_src, copy_db)
         store = MemoryStore(db_path=copy_db)
-
-        sample = _sample_memories(store, n_per_type=40)
-        print(f"sampled {len(sample)} memories")
-
-        queries: list[dict] = []
-        seen: set[tuple[str, str]] = set()
-
-        # Build hot-cluster pool: memories with recall_count >= 20 grouped by tag.
-        conn = store._get_conn()
-        hot_rows = conn.execute(
-            "SELECT content_hash, content, recall_count, tags FROM memories "
-            "WHERE deleted_at IS NULL AND recall_count >= 20"
-        ).fetchall()
-        hot_by_tag: dict[str, list[dict]] = {}
-        for r in hot_rows:
-            try:
-                tags = json.loads(r["tags"] or "[]")
-            except Exception:  # noqa: BLE001
-                tags = []
-            if not isinstance(tags, list):
-                continue
-            for t in tags:
-                hot_by_tag.setdefault(t, []).append(dict(r))
-
-        for mem in sample:
-            content = mem["content"]
-            ch = mem["content_hash"]
-
-            # 1. identifier query
-            iq = _make_identifier_query(content)
-            if iq and (iq, ch) not in seen:
-                rank = _validate_query(store, iq, ch)
-                if rank is not None and rank <= 10:
-                    queries.append({"query": iq, "expected_hash": ch, "category": "identifier", "baseline_rank": rank})
-                    seen.add((iq, ch))
-
-            # 2. paraphrase
-            pq = _make_paraphrase_query(content, rng)
-            if pq and (pq, ch) not in seen:
-                rank = _validate_query(store, pq, ch)
-                if rank is not None and rank <= 10:
-                    queries.append({"query": pq, "expected_hash": ch, "category": "paraphrase", "baseline_rank": rank})
-                    seen.add((pq, ch))
-
-            # 3. cross-topic
-            cq = _make_cross_topic_query(content)
-            if cq and cq != pq and (cq, ch) not in seen:
-                rank = _validate_query(store, cq, ch)
-                if rank is not None and rank <= 10:
-                    queries.append({"query": cq, "expected_hash": ch, "category": "cross_topic", "baseline_rank": rank})
-                    seen.add((cq, ch))
-
-            if len(queries) >= max_queries:
-                break
-
-        # 4. hot-cluster queries: take a tag with multiple recall-rich memories,
-        #    expected is the LESS-recalled sibling; the hot one should naturally
-        #    win without activation, lose with activation.
-        for tag, mems in hot_by_tag.items():
-            if len(mems) < 2 or len(queries) >= max_queries:
-                continue
-            mems_sorted = sorted(mems, key=lambda m: m["recall_count"], reverse=True)
-            hot, cold = mems_sorted[0], mems_sorted[-1]
-            if hot["content_hash"] == cold["content_hash"]:
-                continue
-            # Build a query from the cold memory's tokens — it should be findable.
-            cq = _make_paraphrase_query(cold["content"], rng)
-            if not cq:
-                continue
-            rank = _validate_query(store, cq, cold["content_hash"])
-            if rank is None or rank > 10:
-                continue
-            queries.append(
-                {
-                    "query": cq,
-                    "expected_hash": cold["content_hash"],
-                    "category": "hot_cluster",
-                    "baseline_rank": rank,
-                    "competing_hot_hash": hot["content_hash"],
-                    "competing_recall_count": hot["recall_count"],
-                }
-            )
-
+        cands = generate_candidates(store, max_queries, rng)
+        queries = validate_candidates(store, cands, max_queries)
         by_cat = Counter(q["category"] for q in queries)
-        print(f"built {len(queries)} validated queries: {dict(by_cat)}")
-
-        payload = {
-            "source_db": str(db_src),
-            "n_sample": len(sample),
-            "queries": queries,
-            "categories": dict(by_cat),
-        }
+        payload = {"source_db": str(db_src), "queries": queries, "categories": dict(by_cat)}
         out_path.write_text(json.dumps(payload, indent=2))
         print(f"wrote {out_path}")
         return payload
@@ -254,7 +237,41 @@ def main() -> int:
     parser.add_argument("--max", default=120, type=int, help="cap on number of validated queries")
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument("--db", default=str(DB_PATH), help="source SQLite DB path")
+    parser.add_argument(
+        "--emit-candidates",
+        type=Path,
+        default=None,
+        help="Generate model-agnostic candidate (query,gold) pairs WITHOUT validation and exit. "
+        "Validate later per-model with --validate-candidates for an unbiased union corpus.",
+    )
+    parser.add_argument(
+        "--validate-candidates",
+        type=Path,
+        default=None,
+        help="Load candidates from this file and keep those reachable by the current-process "
+        "embedder (set via MEMORY_EMBED_MODEL) on --db. Writes reachable subset to --out.",
+    )
     args = parser.parse_args()
+
+    if args.emit_candidates:
+        rng = random.Random(args.seed)
+        with tempfile.TemporaryDirectory() as td:
+            copy_db = Path(td) / "snapshot.db"
+            shutil.copy2(args.db, copy_db)
+            cands = generate_candidates(MemoryStore(db_path=copy_db), args.max, rng)
+        args.emit_candidates.write_text(json.dumps({"candidates": cands}, indent=2))
+        print(f"wrote {len(cands)} candidates to {args.emit_candidates}")
+        return 0
+
+    if args.validate_candidates:
+        cands = json.loads(args.validate_candidates.read_text())["candidates"]
+        with tempfile.TemporaryDirectory() as td:
+            copy_db = Path(td) / "snapshot.db"
+            shutil.copy2(args.db, copy_db)
+            queries = validate_candidates(MemoryStore(db_path=copy_db), cands, args.max)
+        args.out.write_text(json.dumps({"source_db": args.db, "queries": queries}, indent=2))
+        print(f"wrote {len(queries)} validated to {args.out}")
+        return 0
 
     build_corpus(args.out, max_queries=args.max, seed=args.seed, db_src=Path(args.db))
     return 0

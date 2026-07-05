@@ -7,6 +7,10 @@ from typing import Any, Literal
 import mlx.core as mx
 import mlx.nn as nn
 
+# Attention-mask fill for masked positions.  Must stay finite in float16 (the
+# quantized compute dtype) — see _update_attention_mask.
+_MASK_NEG = -1e4
+
 # --- Base classes (inlined from mlx_embeddings.models.base) ---
 
 
@@ -336,7 +340,11 @@ class ModernBertModel(nn.Module):
         dtype = attention_mask.dtype
         batch_size, seq_len = attention_mask.shape
 
-        additive_mask = mx.where(attention_mask == 1, 0.0, -1e9)
+        # -1e4, not -1e9: the model computes attention in float16, where -1e9
+        # overflows to -inf.  A fully-masked (all-pad) query row then softmaxes
+        # to NaN and 0*NaN poisons real tokens.  -1e4 is finite in fp16 and
+        # exp(-1e4)≈0 so masking stays exact for both fp16 (gte) and fp32 (nomic).
+        additive_mask = mx.where(attention_mask == 1, 0.0, _MASK_NEG)
         additive_mask = additive_mask[:, None, None, :]
 
         # Create the causal mask for global attention
@@ -364,7 +372,7 @@ class ModernBertModel(nn.Module):
 
         # Creating sliding window attention mask
         # Replacing non-window positions with large negative value
-        sliding_window_mask = mx.where(window_mask, global_attention_mask, -1e9)
+        sliding_window_mask = mx.where(window_mask, global_attention_mask, _MASK_NEG)
 
         return global_attention_mask.astype(dtype), sliding_window_mask.astype(dtype)
 

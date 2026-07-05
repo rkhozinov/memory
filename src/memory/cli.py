@@ -601,12 +601,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rerank-top-n", type=int, default=None, help="Truncate after rerank (default: --limit)")
     p.add_argument(
         "--score-fusion",
-        choices=["weighted", "rrf", "rrsb"],
-        default="weighted",
+        choices=["weighted", "rrf", "rrsb", "weighted_id", "weighted_csls", "weighted_best"],
+        default="weighted_best",
         help=(
-            "Hybrid score fusion: weighted (default; additive — preserves BM25's "
-            "strong signal on exact matches), rrf (rank-only, robust to scale "
-            "heterogeneity), or rrsb (rank + score-boost hybrid, k=10/alpha=0.5)."
+            "Hybrid score fusion: weighted_best (default; CSLS hubness correction "
+            "+ exact-ID promotion), weighted (additive baseline), rrf (rank-only), "
+            "rrsb (rank + score-boost), weighted_id (id only), weighted_csls (csls only)."
         ),
     )
     p.add_argument(

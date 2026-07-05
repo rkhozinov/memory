@@ -243,6 +243,103 @@ def _parse_time_expr(expr: str) -> datetime:
     raise ValueError(f"Cannot parse time expression: {expr!r}")
 
 
+_IDENTIFIER_RE = re.compile(r"#\d+|\b\w+[-_]\w*\d")
+
+
+def _looks_like_identifier(query: str | None) -> bool:
+    """True if the query contains an identifier-like token — a PR/issue ref
+    (#123) or a word joined to a digit by hyphen/underscore (TICKET-194, east-2,
+    ERR_CONN_RESET_4XX).  Dense vectors can't tell adjacent ids apart (TICKET-64
+    vs TICKET-194); when this fires we boost the exact-match FTS ranker."""
+    if not query:
+        return False
+    return _IDENTIFIER_RE.search(query) is not None
+
+
+def _extract_identifier_tokens(query: str | None) -> list[str]:
+    """Return the identifier-like substrings in the query (TICKET-194, #502, east-2)."""
+    if not query:
+        return []
+    return _IDENTIFIER_RE.findall(query)
+
+
+def _promote_exact_matches(results: list[dict], tokens: list[str]) -> list[dict]:
+    """Stable-reorder results so any whose content contains an identifier token
+    verbatim (case-insensitive) come first, preserving fusion order within each
+    group.  A memory literally containing 'TICKET-194' must outrank one that only
+    shares the tokenizer-split fragments 'nem'/'194'."""
+    if not tokens:
+        return results
+    lowered = [t.lower() for t in tokens]
+
+    def is_exact(r: dict) -> bool:
+        c = (r.get("content") or "").lower()
+        return any(t in c for t in lowered)
+
+    exact = [r for r in results if is_exact(r)]
+    rest = [r for r in results if not is_exact(r)]
+    return exact + rest
+
+
+# ponytail: 3.0 tuned by hand against the identifier bench category; raise if
+# exact-match recall still lags, lower if it starts demoting good semantic hits.
+_ID_FTS_BOOST = 3.0
+
+
+def _weighted_fuse(
+    sem_results: list[dict], fts_results: list[dict], *, limit: int, fts_weight: float = 1.0
+) -> list[dict]:
+    """Legacy additive fusion: score = sem_score + fts_weight * fts_score, keyed
+    by content_hash.  fts_weight=1.0 reproduces the original weighted path; >1
+    upweights exact BM25 matches (used for identifier queries)."""
+    by_hash: dict[str, dict] = {}
+    for r in sem_results:
+        by_hash[r["content_hash"]] = dict(r)
+    for r in fts_results:
+        h = r["content_hash"]
+        contrib = (r.get("score", 0) or 0) * fts_weight
+        if h in by_hash:
+            existing = by_hash[h]
+            existing["similarity"] = max(existing.get("similarity", 0) or 0, r.get("similarity", 0) or 0)
+            existing["score"] = (existing.get("score", 0) or 0) + contrib
+        else:
+            nr = dict(r)
+            nr["score"] = contrib
+            by_hash[h] = nr
+    merged = sorted(by_hash.values(), key=lambda m: m["score"], reverse=True)
+    return merged[:limit]
+
+
+def _csls_rescore(results: list[dict], r_q: float, hubness: dict[str, float]) -> list[dict]:
+    """Reorder results by CSLS = 2*similarity - r_q - r_d, demoting hub docs
+    (high mean-neighbor similarity r_d) that sit near many query neighborhoods.
+    Anti-hubs (specific memories) get a fair shot at the top."""
+    for r in results:
+        sim = r.get("similarity", 0.0) or 0.0
+        r_d = hubness.get(r["content_hash"], 0.0)
+        r["csls_score"] = 2.0 * sim - r_q - r_d
+    return sorted(results, key=lambda m: m["csls_score"], reverse=True)
+
+
+def compute_hubness(vecs: dict[str, object], k: int = 10) -> dict[str, float]:
+    """Per-doc mean cosine similarity to its k nearest neighbors (excluding
+    self).  High = hub (close to everything) → penalised by CSLS.  Computed once
+    over the full corpus (O(n^2) matmul; fine for a single-user store)."""
+    import numpy as np
+
+    hashes = list(vecs.keys())
+    if len(hashes) < 2:
+        return {h: 0.0 for h in hashes}
+    mat = np.stack([np.asarray(vecs[h], dtype=np.float32) for h in hashes])
+    mat = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-9)
+    sims = mat @ mat.T
+    np.fill_diagonal(sims, -np.inf)  # exclude self
+    kk = min(k, len(hashes) - 1)
+    topk = np.sort(sims, axis=1)[:, -kk:]
+    means = topk.mean(axis=1)
+    return {h: float(means[i]) for i, h in enumerate(hashes)}
+
+
 def _rrf_fuse(*result_lists: list[dict], limit: int, k: int = 60) -> list[dict]:
     """Reciprocal Rank Fusion over arbitrary ranked result lists.
 
@@ -1706,7 +1803,7 @@ class MemoryStore:
         track_recall: bool = True,
         rerank: bool = False,
         rerank_top_n: int | None = None,
-        score_fusion: str = "weighted",
+        score_fusion: str = "weighted_best",
         as_of: float | str | None = None,
     ) -> list[dict]:
         """Search memories. Modes: hybrid (default), semantic, exact, fts, graph.
@@ -2253,6 +2350,31 @@ class MemoryStore:
         memories.sort(key=lambda m: m["score"], reverse=True)
         return memories[:limit]
 
+    def _get_hubness(self, conn: sqlite3.Connection) -> dict[str, float]:
+        """Lazy, cached per-doc hubness (mean top-k neighbor cosine).  Computed
+        once per store instance over the full corpus; used by CSLS rescoring.
+
+        ponytail: O(n^2) recompute per process (~130ms at 3k docs, in-process
+        cached). CLI spawns cold each call so it pays this once per invocation —
+        fine to ~10k docs. Past that, persist per-doc hubness in a column and
+        refresh on write/dream instead of recomputing."""
+        cache = getattr(self, "_hubness_cache", None)
+        if cache is None:
+            import numpy as np
+
+            rows = conn.execute(
+                "SELECT m.content_hash, e.content_embedding "
+                "FROM memories m JOIN memory_embeddings e ON e.rowid = m.id "
+                "WHERE m.deleted_at IS NULL"
+            ).fetchall()
+            vecs = {
+                r["content_hash"]: np.frombuffer(r["content_embedding"], dtype=np.float32)
+                for r in rows
+            }
+            cache = compute_hubness(vecs, k=10)
+            self._hubness_cache = cache
+        return cache
+
     def _search_hybrid(
         self,
         conn: sqlite3.Connection,
@@ -2306,25 +2428,42 @@ class MemoryStore:
         if score_fusion == "rrsb":
             return _rrsb_fuse(sem_results, fts_results, limit=limit, k=10, alpha=0.5)
 
-        # Legacy weighted-sum fusion
-        results_by_hash: dict[str, dict] = {}
-        for r in sem_results:
-            results_by_hash[r["content_hash"]] = r
-        for r in fts_results:
-            h = r["content_hash"]
-            if h in results_by_hash:
-                existing = results_by_hash[h]
-                existing["similarity"] = max(
-                    existing.get("similarity", 0),
-                    r.get("similarity", 0),
-                )
-                existing["score"] = existing.get("score", 0) + r.get("score", 0)
-            else:
-                results_by_hash[h] = r
+        # "weighted_id": for identifier queries, upweight the exact-match FTS
+        # ranker (dense vectors can't tell TICKET-64 from TICKET-194) AND promote any
+        # result literally containing the id — the tokenizer splits TICKET-194 into
+        # ticket/194, so BM25 alone ranks the verbatim memory only 2nd-4th.
+        if score_fusion == "weighted_id" and _looks_like_identifier(query):
+            fused = _weighted_fuse(sem_results, fts_results, limit=limit * 2, fts_weight=_ID_FTS_BOOST)
+            promoted = _promote_exact_matches(fused, _extract_identifier_tokens(query))
+            return promoted[:limit]
 
-        merged = list(results_by_hash.values())
-        merged.sort(key=lambda m: m["score"], reverse=True)
-        return merged[:limit]
+        if score_fusion == "weighted_csls":
+            # CSLS hubness correction: demote centroid-hugging generic memories
+            # by subtracting each doc's mean-neighbor similarity (r_d) and the
+            # query's neighborhood density (r_q).
+            fused = _weighted_fuse(sem_results, fts_results, limit=limit * 2, fts_weight=1.0)
+            hub = self._get_hubness(conn)
+            sims = sorted((r.get("similarity", 0) or 0 for r in fused), reverse=True)[:10]
+            r_q = sum(sims) / len(sims) if sims else 0.0
+            return _csls_rescore(fused, r_q, hub)[:limit]
+
+        if score_fusion == "weighted_best":
+            # Compose both wins: CSLS hubness correction for the general majority,
+            # plus identifier boost + exact-match promotion for id queries.
+            is_id = _looks_like_identifier(query)
+            fused = _weighted_fuse(
+                sem_results, fts_results, limit=limit * 2, fts_weight=_ID_FTS_BOOST if is_id else 1.0
+            )
+            hub = self._get_hubness(conn)
+            sims = sorted((r.get("similarity", 0) or 0 for r in fused), reverse=True)[:10]
+            r_q = sum(sims) / len(sims) if sims else 0.0
+            rescored = _csls_rescore(fused, r_q, hub)
+            if is_id:
+                rescored = _promote_exact_matches(rescored, _extract_identifier_tokens(query))
+            return rescored[:limit]
+
+        # Legacy additive fusion (default path, unchanged).
+        return _weighted_fuse(sem_results, fts_results, limit=limit, fts_weight=1.0)
 
     def _search_graph(
         self,

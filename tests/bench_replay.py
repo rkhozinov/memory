@@ -49,6 +49,9 @@ CONFIGS: dict[str, dict] = {
     "+rerank": dict(score_fusion="weighted", rerank=True, use_activation=False),
     "+rrsb+rr": dict(score_fusion="rrsb", rerank=True, use_activation=False),
     "+all": dict(score_fusion="weighted", rerank=True, use_activation=True),
+    "+id": dict(score_fusion="weighted_id", rerank=False, use_activation=False),
+    "+csls": dict(score_fusion="weighted_csls", rerank=False, use_activation=False),
+    "+best": dict(score_fusion="weighted_best", rerank=False, use_activation=False),
 }
 
 

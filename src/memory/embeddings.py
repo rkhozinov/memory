@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import platform
 import sqlite3
 import time
@@ -14,9 +15,44 @@ import numpy as np
 
 MODEL_DIR = Path.home() / "repos" / "memory" / "data" / "models"
 DATA_DIR = Path.home() / "repos" / "memory" / "data"
-CACHE_DB_PATH = DATA_DIR / "embedding_cache.db"
-MODEL_NAME = "modernbert-embed-base"
-HF_REPO = f"nomic-ai/{MODEL_NAME}"
+# Embedding-model registry.  Each model differs in HF repo, sentence pooling,
+# and instruction prefix — nomic uses mean pooling + search_{query,document}:
+# prefixes, gte-modernbert uses CLS pooling + no prefix.
+_EMBED_MODELS = {
+    "modernbert-embed-base": {
+        "repo": "nomic-ai/modernbert-embed-base",
+        "query_prefix": "search_query: ",
+        "doc_prefix": "search_document: ",
+        "pooling": "mean",
+    },
+    "gte-modernbert-base": {
+        "repo": "Alibaba-NLP/gte-modernbert-base",
+        "query_prefix": "",
+        "doc_prefix": "",
+        "pooling": "cls",
+    },
+}
+
+
+def _resolve_embed_model(name: str | None = None) -> dict:
+    """Resolve embedding-model config by name (defaults to $MEMORY_EMBED_MODEL
+    or nomic modernbert).  Raises on unknown names."""
+    name = name or os.environ.get("MEMORY_EMBED_MODEL", "modernbert-embed-base")
+    if name not in _EMBED_MODELS:
+        raise ValueError(f"unknown embed model {name!r}; choices: {list(_EMBED_MODELS)}")
+    return {"name": name, **_EMBED_MODELS[name]}
+
+
+_ACTIVE_MODEL = _resolve_embed_model()
+MODEL_NAME = _ACTIVE_MODEL["name"]
+HF_REPO = _ACTIVE_MODEL["repo"]
+POOLING = _ACTIVE_MODEL["pooling"]
+
+# Non-default models get their own cache file so gte vectors never collide with
+# nomic's (keyed by text hash), and nomic's existing cache stays valid.
+CACHE_DB_PATH = DATA_DIR / (
+    "embedding_cache.db" if MODEL_NAME == "modernbert-embed-base" else f"embedding_cache_{MODEL_NAME}.db"
+)
 
 # ONNX fallback (Linux/Windows, or if MLX unavailable)
 ONNX_MODEL_FILE = "onnx/model_uint8.onnx"
@@ -25,8 +61,8 @@ TOKENIZER_URL = f"https://huggingface.co/{HF_REPO}/resolve/main/tokenizer.json"
 
 EMBEDDING_DIM = 768
 MAX_SEQ_LENGTH = 512
-PREFIX_QUERY = "search_query: "
-PREFIX_DOC = "search_document: "
+PREFIX_QUERY = _ACTIVE_MODEL["query_prefix"]
+PREFIX_DOC = _ACTIVE_MODEL["doc_prefix"]
 _L1_CACHE_MAX = 256
 
 _IS_MACOS = platform.system() == "Darwin"
@@ -103,7 +139,11 @@ class EmbeddingModel:
             tokenizer_path = snapshot_dir / "tokenizer.json"
 
         config = json.loads(config_path.read_text())
-        args = ModelArgs(**{k: v for k, v in config.items() if k in ModelArgs.__dataclass_fields__})
+        overrides = {k: v for k, v in config.items() if k in ModelArgs.__dataclass_fields__}
+        # config.json's classifier_pooling reflects the classification head, not
+        # the sentence-embedding pooling — force the registry's value (gte=cls).
+        overrides["classifier_pooling"] = POOLING
+        args = ModelArgs(**overrides)
         self._mlx_model = Model(args)
 
         if prefer_bf16 and bf16_path.exists():
@@ -325,11 +365,15 @@ class EmbeddingModel:
 
         encodings = self._tokenizer.encode_batch(texts)
         n = len(encodings)
-        ids = mx.zeros((n, MAX_SEQ_LENGTH), dtype=mx.int32)
-        mask = mx.zeros((n, MAX_SEQ_LENGTH), dtype=mx.int32)
+        # Trim to the longest *real* sequence in the batch.  Fixed 512-wide
+        # padding leaves fully-masked attention rows that make gte-modernbert's
+        # softmax NaN; mean/CLS pooling is unaffected by dropping the pad tail.
+        L = max((sum(e.attention_mask) for e in encodings), default=1)
+        ids = mx.zeros((n, L), dtype=mx.int32)
+        mask = mx.zeros((n, L), dtype=mx.int32)
         for i, e in enumerate(encodings):
-            ids[i, : len(e.ids)] = mx.array(e.ids, dtype=mx.int32)
-            mask[i, : len(e.attention_mask)] = mx.array(e.attention_mask, dtype=mx.int32)
+            ids[i] = mx.array(e.ids[:L], dtype=mx.int32)
+            mask[i] = mx.array(e.attention_mask[:L], dtype=mx.int32)
 
         outputs = self._mlx_model(ids, attention_mask=mask)
         # Model returns pooled + normalized text_embeds directly
