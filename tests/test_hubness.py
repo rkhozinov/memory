@@ -35,6 +35,22 @@ def test_csls_rescore_missing_hubness_defaults_zero():
     assert [r["content_hash"] for r in out] == ["X", "Y"]
 
 
+def test_compute_hubness_tolerates_degenerate_vectors():
+    """Production DBs contain occasional zero-norm or non-finite embeddings
+    (bad historical writes).  compute_hubness must never emit NaN/Inf — those
+    poison the CSLS rescore.  Regression for the matmul overflow on real data."""
+    vecs = {
+        "good1": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        "good2": np.array([0.9, 0.1, 0.0], dtype=np.float32),
+        "zero": np.zeros(3, dtype=np.float32),  # zero-norm
+        "naninf": np.array([np.nan, np.inf, 0.0], dtype=np.float32),
+    }
+    hub = compute_hubness(vecs, k=2)
+    assert set(hub) == set(vecs)
+    for h, v in hub.items():
+        assert np.isfinite(v), f"hubness for {h} is non-finite: {v}"
+
+
 def test_compute_hubness_scores_hub_higher_than_anti_hub():
     # 3 near-identical vectors (a cluster/hub) + 1 far outlier (anti-hub).
     # The clustered vectors must get higher mean-neighbor similarity than the outlier.

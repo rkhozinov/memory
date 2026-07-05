@@ -331,13 +331,18 @@ def compute_hubness(vecs: dict[str, object], k: int = 10) -> dict[str, float]:
     if len(hashes) < 2:
         return {h: 0.0 for h in hashes}
     mat = np.stack([np.asarray(vecs[h], dtype=np.float32) for h in hashes])
-    mat = mat / (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-9)
+    # Sanitize: prod DBs hold occasional zero-norm or NaN/Inf embeddings (bad
+    # historical writes).  Left unchecked they blow up the matmul into NaN and
+    # poison every CSLS score.  Zero the non-finite rows, then guard the norm.
+    mat = np.nan_to_num(mat, nan=0.0, posinf=0.0, neginf=0.0)
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    mat = np.divide(mat, norms, out=np.zeros_like(mat), where=norms > 1e-9)
     sims = mat @ mat.T
     np.fill_diagonal(sims, -np.inf)  # exclude self
     kk = min(k, len(hashes) - 1)
     topk = np.sort(sims, axis=1)[:, -kk:]
     means = topk.mean(axis=1)
-    return {h: float(means[i]) for i, h in enumerate(hashes)}
+    return {h: (float(means[i]) if np.isfinite(means[i]) else 0.0) for i, h in enumerate(hashes)}
 
 
 def _rrf_fuse(*result_lists: list[dict], limit: int, k: int = 60) -> list[dict]:
