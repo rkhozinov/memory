@@ -33,7 +33,7 @@ If `$ARGUMENTS` is empty or whitespace-only, **capture the whole session**:
    - SLO numbers, sizing decisions, validated metrics
    - Non-obvious gotchas future-you needs in a single search hit
    - Tool/API quirks with specific fixes
-4. Use `--dedup 0.90` on every call.
+4. Use `--dedup 0.90` on every `memory store` call. Do NOT pass `--dedup` to `memory doc store` — the doc store has no such flag and will reject it.
 5. Print BOTH the doc hash AND the list of atomic memory hashes stored.
 
 **Exclude from auto-capture:**
@@ -121,7 +121,7 @@ Standard taxonomy: `project:<name>`, `scope:global`, `cloud:<provider>`, `svc:<s
 
 ## Important
 
-- Always use `--dedup 0.90` (skips storage if near-duplicate exists with same type+tags)
+- Always use `--dedup 0.90` on `memory store` (skips storage if near-duplicate exists with same type+tags). `memory doc store` has no `--dedup` flag — never pass it there.
 - Importance is auto-inferred from keywords (CRITICAL→0.9, IMPORTANT→0.8) and type
 - For batch: use JSON array format for 2+ facts in one prompt (one round-trip, more efficient)
 
