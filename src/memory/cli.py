@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from .core import MemoryStore
+from .provenance import annotate as annotate_stale
 
 
 def _read_file(path: str) -> str:
@@ -146,6 +147,10 @@ def cmd_search(args, store: MemoryStore) -> None:
         score_fusion=args.score_fusion,
         as_of=args.as_of,
     )
+    # Flag hits citing repo paths that HEAD no longer has. Best-effort: outside a
+    # git repo, or on any git failure, results pass through untouched.
+    if not args.no_stale_check:
+        results = annotate_stale(results)
     _json_out(results)
 
 
@@ -588,6 +593,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-track-recall",
         action="store_true",
         help="Don't bump recall_count/last_recalled_at/confidence. Use for automated/hook searches.",
+    )
+    p.add_argument(
+        "--no-stale-check",
+        action="store_true",
+        help="Skip flagging hits whose cited repo paths are gone from git HEAD.",
     )
     rr = p.add_mutually_exclusive_group()
     rr.add_argument(

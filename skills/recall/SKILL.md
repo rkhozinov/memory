@@ -46,6 +46,30 @@ Output shows:
 
 Higher score = more relevant.
 
+### `stale_refs` — the memory cites a path that no longer exists
+
+A hit may carry a `stale_refs` list. Those paths were once tracked by git in the
+current repo and are **gone from HEAD** — deleted or renamed away since the memory
+was written. The field is absent when nothing is stale.
+
+```json
+{"content_hash": "37f114a7...", "content": "[Decision] PR #1171: runner stability fixes ...",
+ "stale_refs": ["terraform/aws/acme-main/us-west-2/common/github-runners/main.tf"]}
+```
+
+How to treat it:
+
+- **The location is unreliable — do not cite or edit that path.** Re-derive where the
+  thing lives now (`git log --all -- <path>` shows what happened to it).
+- **The insight may still be valid.** A file gets renamed and the reasoning survives
+  intact. Stale location ≠ false memory. Do not discard the memory on this basis.
+- **Do not delete on sight.** If the memory is genuinely obsolete, that is a judgement
+  call for the user via `/memory:forget`.
+
+Checked only for memories tagged with the *current* repo's project — paths belonging
+to other repos cannot be verified from here and are never flagged. Outside a git repo
+the check is skipped entirely. Suppress with `--no-stale-check`.
+
 ---
 
 ## Search Modes

@@ -56,6 +56,7 @@ ignore = [
 "src/memory/core.py" = ["S608"]  # parameterized SQL with ? placeholders is safe
 "src/memory/mlx_model.py" = ["A001", "E501", "RUF005"]  # vendored from mlx_embeddings
 "src/memory/embeddings.py" = ["S608", "S310"]  # parameterized SQL + known URL downloads
+"src/memory/provenance.py" = ["S603", "S607"]  # git from PATH, fixed argv, no shell
 
 [tool.ruff.format]
 quote-style = "double"
