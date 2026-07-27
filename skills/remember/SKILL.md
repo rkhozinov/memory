@@ -72,14 +72,27 @@ memory store "<YOUR_CONTENT_HERE>" --tags "project:$PROJECT,<inferred-topic>" --
 ```
 
 ### Batch memories (2+ facts from same prompt):
-If the message contains multiple distinct facts, use JSON batch format (single efficient call):
+If the message contains multiple distinct facts, use JSON batch format (single efficient call).
+
+**Pipe the JSON via stdin (`memory store -`), never inline.** Content worth remembering is full of
+backticks, quotes and `$`, and passing it inline hands all of that to the shell first — one mangled
+escape turns the whole array into a parse failure. A quoted heredoc (`<<'EOF'`) is read verbatim.
+
 ```bash
 PROJECT=$(basename "$(pwd)")
-memory store '[
-  {"content":"<fact 1>","type":"<type1>","tags":["project:'$PROJECT'"]},
-  {"content":"<fact 2>","type":"<type2>","tags":["project:'$PROJECT'"]}
-]' --dedup 0.90
+memory store - --dedup 0.90 <<EOF
+[
+  {"content":"<fact 1>","type":"<type1>","tags":["project:$PROJECT"]},
+  {"content":"<fact 2>","type":"<type2>","tags":["project:$PROJECT"]}
+]
+EOF
 ```
+
+Use an unquoted `EOF` (as above) so `$PROJECT` expands; if any fact body itself contains `$` or
+backticks, quote it (`<<'EOF'`) and hardcode the project tag instead.
+
+JSON has no `\x` escape — write `'` literally, never `\x27`. A malformed array is rejected with
+`status: rejected` rather than stored, so if you see that, fix the quoting and re-run.
 
 ### Long-form document (>800 chars):
 ```bash

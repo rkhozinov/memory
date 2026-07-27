@@ -98,7 +98,23 @@ def cmd_store(args, store: MemoryStore) -> None:
 
     try:
         parsed = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError) as exc:
+        # Falling back to plain text is right for genuine prose, but a malformed
+        # batch/object stored verbatim becomes one untagged `note` and silently
+        # loses every item in it. Fail loud instead — only when the content really
+        # was JSON-shaped: `{...}` or `[{...}]`. A bare leading bracket is NOT
+        # enough, since the house memory format itself starts that way
+        # ("[pattern] always validate at boundaries").
+        head = content.lstrip()
+        if head[:1] == "{" or (head[:1] == "[" and head[1:].lstrip()[:1] == "{"):
+            _json_out(
+                {
+                    "status": "rejected",
+                    "error": f"content looks like JSON but failed to parse: {exc}",
+                    "hint": "shell quoting mangles inline JSON — pipe it via `memory store -` instead",
+                }
+            )
+            sys.exit(1)
         parsed = None
 
     if isinstance(parsed, list):

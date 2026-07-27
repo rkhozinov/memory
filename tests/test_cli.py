@@ -86,6 +86,26 @@ def test_store_json_array(cli_env):
     assert all(r["status"] == "stored" for r in data)
 
 
+def test_store_malformed_json_rejected(cli_env):
+    # `\x27` is a shell-ism, not a JSON escape — this is exactly what a mangled
+    # inline batch looks like. It must fail, not land as one untagged note.
+    bad = '[{"content":"a \\x27quoted\\x27 thing","type":"note"}]'
+    buf = io.StringIO()
+    with patch("sys.stdout", buf), pytest.raises(SystemExit) as exc:
+        main(["store", bad])
+    assert exc.value.code == 1
+    data = json.loads(buf.getvalue())
+    assert data["status"] == "rejected"
+    # and nothing was written
+    assert _invoke(cli_env, ["search", "quoted thing"]) == []
+
+
+def test_store_plain_text_starting_with_bracket_still_works(cli_env):
+    # Prose that merely opens with a bracket is not JSON-shaped enough to reject.
+    data = _invoke(cli_env, ["store", "[pattern] always validate at boundaries"])
+    assert data["status"] == "stored"
+
+
 def test_store_stdin(cli_env):
     obj = json.dumps({"content": "stdin test"})
     buf = io.StringIO()
