@@ -20,8 +20,9 @@ if TYPE_CHECKING:
     pass
 
 from .models import Document, Memory
+from .paths import db_path
 
-DB_PATH = Path.home() / "repos" / "memory" / "data" / "sqlite_vec.db"
+DB_PATH = db_path()
 
 # --- Confidence decay rates (per day) ---
 # Higher = slower decay.  decision/pattern/reference are near-permanent.
@@ -811,6 +812,7 @@ class MemoryStore:
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path) if db_path else DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
 
     @staticmethod

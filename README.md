@@ -11,8 +11,8 @@ output only.
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 
 ```bash
-git clone <this-repo> ~/repos/memory
-cd ~/repos/memory
+git clone https://github.com/rkhozinov/memory
+cd memory
 make install     # uv sync + symlink skills/hooks into ~/.claude/ + lint/test
 make reinstall    # uv tool install --force --editable . — puts `memory` on PATH
 ```
@@ -32,13 +32,15 @@ error.
 
 ### First run
 
-- The `data/` directory (SQLite DB, downloaded models) is gitignored and
-  won't exist on a fresh clone. Create it before the first `memory` command:
-  `mkdir -p data`.
+- The data directory (SQLite DB + downloaded models) is created on first
+  use — no manual `mkdir` needed. Default location is
+  `~/.local/share/memory/` (or `$XDG_DATA_HOME/memory`). If a DB already
+  exists at the legacy `~/repos/memory/data/`, that path is kept. Override
+  either with `MEMORY_DATA_DIR` (dir) or `MEMORY_DB` (DB file).
 - The first `store`/`search` call downloads the embedding model
   (`nomic-ai/modernbert-embed-base`, ONNX + MLX weights, ~100MB) from
   HuggingFace Hub — a one-time cost (roughly a minute), cached afterward
-  under `data/models/`. No `HF_TOKEN` needed; that's only for HF's rate
+  under `<data-dir>/models/`. No `HF_TOKEN` needed; that's only for HF's rate
   limits on heavy anonymous usage, irrelevant for a single cached pull.
 - Everything runs locally — the embedding model is not an LLM and makes no
   API calls. `memory health` confirms the DB is reachable once set up.

@@ -120,17 +120,17 @@ graph_search(
 ## Memory Storage
 
 Memory data is stored by the memory service at:
-- Default: `~/repos/memory/data/memory.db`
+- Default: `~/.local/share/memory/sqlite_vec.db` (or `$XDG_DATA_HOME/memory/`); override with `MEMORY_DB`/`MEMORY_DATA_DIR`. Legacy installs keep `~/repos/memory/data/sqlite_vec.db` if a DB exists there.
 
 ## Skills
 
 The memory service includes skills that work with Claude Code:
-- `~/repos/memory/skills/recall/` - `/recall` command for retrieval
-- `~/repos/memory/skills/remember/` - `/remember` command for storage
-- `~/repos/memory/skills/forget/` - `/forget` command for deletion
-- `~/repos/memory/skills/status/` - `/memory:status` command
+- `/recall` command for retrieval
+- `/remember` command for storage
+- `/forget` command for deletion
+- `/memory:status` command
 
-These skills provide an alternative interface to the same functionality and can be symlinked into your project's `.claude/skills/` directory.
+These skills provide an alternative interface to the same functionality. `make install` symlinks them into `~/.claude/skills/`; from there they can be symlinked into a project's `.claude/skills/` directory.
 
 ## Architecture
 
@@ -156,7 +156,7 @@ These skills provide an alternative interface to the same functionality and can 
                       ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Memory Store (SQLite + Embeddings)              │
-│  - ~/repos/memory/data/memory.db                    │
+│  - sqlite_vec.db (MEMORY_DB / MEMORY_DATA_DIR)        │
 │  - MLX-based local embeddings                               │
 │  - Full-text search                                          │
 └─────────────────────────────────────────────────────────────┘
@@ -187,7 +187,7 @@ The memory service also provides an MCP server (`memory-mcp-server`) that can be
 
 - Run `/memory:status` to diagnose
 - Check if memory daemon is running: `memory health`
-- Verify database permissions: `ls -la ~/repos/memory/data/`
+- Verify database permissions: `ls -la "$(dirname "${MEMORY_DB:-$HOME/.local/share/memory/sqlite_vec.db}")"`
 
 ## Future Enhancements
 

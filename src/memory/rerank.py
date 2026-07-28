@@ -23,7 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
-DATA_DIR = Path.home() / "repos" / "memory" / "data"
+from .paths import data_dir
+
+DATA_DIR = data_dir()
 MODEL_DIR = DATA_DIR / "models" / "rerank"
 CACHE_DB_PATH = DATA_DIR / "rerank_cache.db"
 

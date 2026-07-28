@@ -131,7 +131,8 @@ CORPUS = [
     "access, text for human-readable terminal output, and hook format for Claude Code's hook "
     "system which expects a specific JSON structure with type and content fields.",
     "Model download happens lazily on first inference call. Files are stored under "
-    "~/repos/memory/data/models/<model-name>/. The download uses urllib.request for "
+    "<data-dir>/models/<model-name>/ (MEMORY_DATA_DIR, default ~/.local/share/memory, "
+    "legacy ~/repos/memory/data). The download uses urllib.request for "
     "simplicity and prints progress to stdout. Once cached, subsequent loads skip the download "
     "and only initialize the ONNX session and tokenizer.",
     "The memory graph feature stores directed edges between related memories, identified by their "

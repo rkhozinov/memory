@@ -13,8 +13,10 @@ from pathlib import Path
 
 import numpy as np
 
-MODEL_DIR = Path.home() / "repos" / "memory" / "data" / "models"
-DATA_DIR = Path.home() / "repos" / "memory" / "data"
+from .paths import data_dir
+
+DATA_DIR = data_dir()
+MODEL_DIR = DATA_DIR / "models"
 # Embedding-model registry.  Each model differs in HF repo, sentence pooling,
 # and instruction prefix — nomic uses mean pooling + search_{query,document}:
 # prefixes, gte-modernbert uses CLS pooling + no prefix.

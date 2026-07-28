@@ -119,7 +119,7 @@ Useful for "what did we decide about X *before* Y was deprecated?"
 Dream supersession + consolidation now write provenance edges (`supersedes`,
 `merged_into`) into `memory_graph` before soft-deleting older rows. Inspect:
 ```bash
-sqlite3 ~/repos/memory/data/sqlite_vec.db \
+sqlite3 "${MEMORY_DB:-$HOME/.local/share/memory/sqlite_vec.db}" \
   "SELECT source_hash, target_hash, relationship_type, valid_from FROM memory_graph;"
 ```
 
