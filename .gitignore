@@ -5,3 +5,6 @@ data/
 __pycache__/
 *.egg-info/
 .claude/
+.worktrees/
+.infinity_cache/
+.DS_Store
