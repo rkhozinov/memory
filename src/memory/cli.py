@@ -20,6 +20,15 @@ def _json_out(data: dict | list) -> None:
     print(json.dumps(data, indent=2, default=str))
 
 
+def _positive_int(raw: str) -> int:
+    """argparse ``type=`` for ``--limit``: reject values < 1. A negative limit
+    reaches SQLite as ``LIMIT -1`` (unlimited), silently dumping the whole store."""
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
+
+
 def _compact_out(results: list[dict]) -> None:
     """One line per hit: <hash16> [<type>] score=<n.nn> <content preview>."""
     for r in results:
@@ -628,7 +637,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("query", nargs="?", default=None)
     p.add_argument("--mode", default="hybrid", choices=["semantic", "exact", "hybrid", "fts", "graph"])
-    p.add_argument("--limit", "-n", default=10, type=int)
+    p.add_argument("--limit", "-n", default=10, type=_positive_int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
     p.add_argument("--types", default="", help="Comma-separated memory types")
     p.add_argument("--hops", type=int, default=2, help="Graph mode hops")
@@ -726,7 +735,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = doc_sub.add_parser("search")
     p.add_argument("query")
     p.add_argument("--mode", default="auto", choices=["semantic", "fts", "auto"])
-    p.add_argument("--limit", "-n", default=5, type=int)
+    p.add_argument("--limit", "-n", default=5, type=_positive_int)
     p.add_argument("--tags", "-t", default="")
     p.add_argument("--type", dest="doc_type", default=None)
     p.add_argument(
@@ -826,7 +835,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--threshold-age-hours", default=24, type=int)
 
     p = admin_sub.add_parser("demoted", help="List memories most penalised by demotion ranker")
-    p.add_argument("--limit", "-n", default=50, type=int)
+    p.add_argument("--limit", "-n", default=50, type=_positive_int)
 
     p = admin_sub.add_parser("export", help="Export to JSON")
     p.add_argument("--output", "-o", default=None)
@@ -906,14 +915,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p = graph_sub.add_parser("entities")
     p.add_argument("--type", dest="entity_type", default=None)
-    p.add_argument("--limit", "-n", default=50, type=int)
+    p.add_argument("--limit", "-n", default=50, type=_positive_int)
     p = graph_sub.add_parser("context")
     p.add_argument("entity")
-    p.add_argument("--limit", "-n", default=20, type=int)
+    p.add_argument("--limit", "-n", default=20, type=_positive_int)
     p = graph_sub.add_parser("search")
     p.add_argument("query")
     p.add_argument("--hops", default=2, type=int)
-    p.add_argument("--limit", "-n", default=10, type=int)
+    p.add_argument("--limit", "-n", default=10, type=_positive_int)
 
     return parser
 

@@ -145,6 +145,26 @@ def test_search_with_types(cli_env):
     assert not any("error" in c for c in contents)
 
 
+def test_search_negative_limit_rejected(cli_env):
+    # --limit -1 would reach SQLite as LIMIT -1 (unlimited) — must be rejected.
+    with pytest.raises(SystemExit) as exc:
+        _invoke(cli_env, ["search", "x", "--mode", "exact", "--limit", "-1"])
+    assert exc.value.code != 0
+
+
+def test_search_zero_limit_rejected(cli_env):
+    with pytest.raises(SystemExit) as exc:
+        _invoke(cli_env, ["search", "x", "--mode", "exact", "--limit", "0"])
+    assert exc.value.code != 0
+
+
+def test_search_positive_limit_ok(cli_env):
+    _invoke(cli_env, ["store", "limit ok content"])
+    data = _invoke(cli_env, ["search", "limit", "--mode", "exact", "--limit", "5"])
+    assert isinstance(data, list)
+    assert len(data) <= 5
+
+
 # --- get ---
 
 
