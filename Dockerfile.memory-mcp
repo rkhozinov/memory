@@ -39,5 +39,9 @@ VOLUME ["/data"]
 EXPOSE 8096
 
 # Bridge the stdio memory-mcp-server to streamable-HTTP/SSE on :8096.
-# Flags verified against installed mcp-proxy at build time via entrypoint check.
-CMD ["mcp-proxy", "--host", "0.0.0.0", "--port", "8096", "--", "memory-mcp-server"]
+# --pass-environment is REQUIRED: mcp-proxy defaults to --no-pass-environment and
+# spawns the child with a stripped env, so MEMORY_DB/MEMORY_DATA_DIR would be lost.
+# The server would then silently fall back to $HOME/.local/share/memory — a DB
+# inside the image layer (lost on restart, invisible to the CLI) — and re-download
+# the baked embedding model on every boot.
+CMD ["mcp-proxy", "--pass-environment", "--host", "0.0.0.0", "--port", "8096", "--", "memory-mcp-server"]
