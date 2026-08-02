@@ -11,6 +11,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from . import __version__
 from .core import MemoryStore
 
 logger = logging.getLogger("memory")
@@ -875,7 +876,9 @@ _HANDLERS = {
 
 
 def create_server() -> tuple[Server, MemoryStore]:
-    server = Server("memory")
+    # Declare our version explicitly: the SDK otherwise reports *its own*
+    # package version in serverInfo, which reads as a memory version to clients.
+    server = Server("memory", version=__version__)
     store = MemoryStore()
 
     @server.list_tools()
