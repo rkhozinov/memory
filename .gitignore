@@ -8,3 +8,6 @@ __pycache__/
 .worktrees/
 .infinity_cache/
 .DS_Store
+
+# Local-only Claude Code rules (publish-hygiene, names employer identifiers) — never push
+CLAUDE.local.md
