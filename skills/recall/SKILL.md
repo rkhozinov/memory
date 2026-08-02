@@ -83,8 +83,11 @@ memory search "query" --mode graph      # Entity-based traversal
 
 Add to search command:
 ```bash
---tags "project:X,tool:Y"   # Filter by tags
+--tags "project:X,tool:Y"    # Filter by tags
+--exclude-tags "project:Z"   # Drop hits carrying any of these tags
 --types decision,error       # Filter by memory type
+--min-score 0.5              # Drop hits below this score
+--limit N                    # Must be >= 1
 --rerank                     # Re-score with cross-encoder (slower, +45ms)
 --rerank-top-n N             # Truncate after rerank (default: --limit)
 ```

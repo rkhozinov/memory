@@ -165,6 +165,24 @@ def test_search_positive_limit_ok(cli_env):
     assert len(data) <= 5
 
 
+def test_search_with_exclude_tags(cli_env):
+    _invoke(cli_env, ["store", "keep this content", "--tags", "keep"])
+    _invoke(cli_env, ["store", "drop this content", "--tags", "drop"])
+    data = _invoke(cli_env, ["search", "content", "--mode", "exact", "--exclude-tags", "drop"])
+    contents = [r["content"] for r in data]
+    assert any("keep" in c for c in contents)
+    assert not any("drop this" in c for c in contents)
+
+
+def test_search_tag_in_both_tags_and_exclude_tags(cli_env):
+    _invoke(cli_env, ["store", "shared tag content", "--tags", "shared"])
+    _invoke(cli_env, ["store", "other tag content", "--tags", "other"])
+    data = _invoke(cli_env, ["search", "content", "--mode", "exact", "--tags", "shared", "--exclude-tags", "shared"])
+    # A tag can't be both required and excluded — the exclude filter removes anything
+    # the include filter matched, so no memory can satisfy both.
+    assert data == []
+
+
 # --- get ---
 
 

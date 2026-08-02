@@ -182,6 +182,7 @@ def cmd_search(args, store: MemoryStore) -> None:
         mode=args.mode,
         limit=args.limit,
         tags=_parse_tags(args.tags),
+        exclude_tags=_parse_tags(args.exclude_tags),
         memory_types=_parse_tags(args.types),
         max_hops=args.hops,
         track_recall=not args.no_track_recall,
@@ -639,6 +640,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", default="hybrid", choices=["semantic", "exact", "hybrid", "fts", "graph"])
     p.add_argument("--limit", "-n", default=10, type=_positive_int)
     p.add_argument("--tags", "-t", default="", help="Comma-separated tags")
+    p.add_argument("--exclude-tags", default="", help="Comma-separated tags to exclude (any match)")
     p.add_argument("--types", default="", help="Comma-separated memory types")
     p.add_argument("--hops", type=int, default=2, help="Graph mode hops")
     p.add_argument(
