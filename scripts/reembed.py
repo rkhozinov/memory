@@ -9,7 +9,7 @@ Linux/ONNX container, run this once so stored document vectors and future query
 vectors share one engine.
 
 Idempotent: recomputes embed_doc() for every live row and overwrites the vec0
-tables. Run inside the container (MEMORY_DB_PATH already points at /data).
+tables. Run inside the container (MEMORY_DB already points at /data).
 
     python scripts/reembed.py [--batch 64] [--dry-run]
 """

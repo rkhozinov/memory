@@ -2,8 +2,12 @@
 # Build context = ~/repos/memory (the memory package source).
 FROM python:3.12-slim
 
+# MEMORY_DATA_DIR holds the baked model (image layer, must NOT be under the
+# /data volume or the mount would mask it). MEMORY_DB puts only the SQLite file
+# on the volume — see paths.py, which resolves the two independently.
 ENV HOME=/opt/memstack \
-    MEMORY_DB_PATH=/data/sqlite_vec.db \
+    MEMORY_DATA_DIR=/opt/memstack/data \
+    MEMORY_DB=/data/sqlite_vec.db \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
@@ -20,14 +24,15 @@ COPY . /opt/memstack/app
 RUN pip install . && pip install mcp-proxy
 
 # Bake the ONNX embedding model + tokenizer so first boot needs no network.
-# MODEL_DIR resolves to $HOME/repos/memory/data/models (see embeddings.py).
-RUN mkdir -p "$HOME/repos/memory/data/models/modernbert-embed-base/onnx" \
+# MODEL_DIR is <MEMORY_DATA_DIR>/models (see embeddings.py, which calls data_dir()).
+RUN mkdir -p /opt/memstack/data/models/modernbert-embed-base/onnx \
  && curl -fSL https://huggingface.co/nomic-ai/modernbert-embed-base/resolve/main/onnx/model_uint8.onnx \
-      -o "$HOME/repos/memory/data/models/modernbert-embed-base/onnx/model_uint8.onnx" \
+      -o /opt/memstack/data/models/modernbert-embed-base/onnx/model_uint8.onnx \
  && curl -fSL https://huggingface.co/nomic-ai/modernbert-embed-base/resolve/main/tokenizer.json \
-      -o "$HOME/repos/memory/data/models/modernbert-embed-base/tokenizer.json"
+      -o /opt/memstack/data/models/modernbert-embed-base/tokenizer.json
 
-# /data holds the shared SQLite DB (mounted volume). rerank cache lives here too.
+# /data holds only the shared SQLite DB (mounted volume). The rerank cache lives
+# in MEMORY_DATA_DIR and is therefore ephemeral — it rebuilds on demand.
 RUN mkdir -p /data
 VOLUME ["/data"]
 
