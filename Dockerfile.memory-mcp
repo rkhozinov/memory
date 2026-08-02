@@ -39,6 +39,9 @@ VOLUME ["/data"]
 EXPOSE 8096
 
 # Bridge the stdio memory-mcp-server to streamable-HTTP/SSE on :8096.
+# Note: clients connecting through this bridge see mcp-proxy's own serverInfo
+# (name/version), not ours — the proxy terminates the MCP session rather than
+# forwarding initialize. Direct stdio clients get {"memory", <package version>}.
 # --pass-environment is REQUIRED: mcp-proxy defaults to --no-pass-environment and
 # spawns the child with a stripped env, so MEMORY_DB/MEMORY_DATA_DIR would be lost.
 # The server would then silently fall back to $HOME/.local/share/memory — a DB
