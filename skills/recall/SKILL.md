@@ -17,17 +17,11 @@ Run this command immediately with `$ARGUMENTS` as your search query:
 
 ```bash
 PROJECT=$(basename "$(pwd)")
-memory search "$ARGUMENTS" --limit 10 | python3 -c "
-import sys,json
-for r in json.load(sys.stdin):
-    h=r['content_hash'][:16]; t=r.get('memory_type','?'); s=r.get('score',0)
-    print(f'{h} [{t}] score={s:.2f} {r[\"content\"][:200]}')
-" && memory doc search "$ARGUMENTS" --limit 5 | python3 -c "
-import sys,json
-for r in json.load(sys.stdin):
-    h=r['content_hash'][:16]; print(f'{h} [doc] {r.get(\"title\",\"\")}')
-"
+memory search "$ARGUMENTS" --limit 10 --depth summary \
+  && memory doc search "$ARGUMENTS" --limit 5 --depth summary
 ```
+
+`--depth summary` prints one plain-text line per hit. Without it the CLI returns JSON.
 
 ### Without query (bare `/recall`):
 
@@ -44,7 +38,9 @@ Output shows:
 - `<hash> [<type>] score=<relevance> <preview...>` — memories (top 10 by relevance)
 - `<hash> [doc] <title>` — documents (top 5 by relevance)
 
-Higher score = more relevant.
+Higher score = more relevant. A trailing `[stale:N]` means the memory cites N repo paths
+that are gone from git HEAD — see below. Use `--depth full` (or drop `--depth`) for the
+full JSON record, including the actual stale paths.
 
 ### `stale_refs` — the memory cites a path that no longer exists
 
@@ -189,9 +185,13 @@ as user-initiated recalls.
 The topic-recall hook that fires automatically on session start applies a minimum score threshold before
 surfacing results. The default minimum score is **0.5**. Results below this threshold are silently dropped.
 
-Override via environment variable:
+Override the hook's threshold via environment variable (read at runtime, no restart needed):
 ```bash
-MEMORY_RECALL_MIN_SCORE=0.3 memory search "query"   # lower threshold, more results
-MEMORY_RECALL_MIN_SCORE=0.7 memory search "query"   # higher threshold, stricter
+MEMORY_RECALL_MIN_SCORE=0.3   # lower threshold, more results
+MEMORY_RECALL_MIN_SCORE=0.7   # higher threshold, stricter
 ```
-The env var is read at runtime — no restart needed.
+The env var is consumed by `hooks/memory-topic-recall.sh`, not by `memory search` itself.
+To filter a manual search, pass the flag:
+```bash
+memory search "query" --min-score 0.5
+```

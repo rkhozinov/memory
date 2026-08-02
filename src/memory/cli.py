@@ -1,4 +1,4 @@
-"""CLI tool for memory operations. JSON-only output."""
+"""CLI tool for memory operations. JSON by default; `search` also has `--depth summary`."""
 
 from __future__ import annotations
 
@@ -18,6 +18,24 @@ def _read_file(path: str) -> str:
 
 def _json_out(data: dict | list) -> None:
     print(json.dumps(data, indent=2, default=str))
+
+
+def _compact_out(results: list[dict]) -> None:
+    """One line per hit: <hash16> [<type>] score=<n.nn> <content preview>."""
+    for r in results:
+        content = (r.get("content") or "")[:200].replace("\n", " ").replace("\r", " ")
+        stale = r.get("stale_refs") or []
+        mark = f" [stale:{len(stale)}]" if stale else ""
+        print(
+            f"{r.get('content_hash', '')[:16]} [{r.get('memory_type', 'note')}] "
+            f"score={r.get('score', 0):.2f} {content}{mark}"
+        )
+
+
+def _compact_docs_out(results: list[dict]) -> None:
+    """One line per doc hit: <hash16> [doc] <title>."""
+    for r in results:
+        print(f"{r.get('content_hash', '')[:16]} [doc] {r.get('title', '')}")
 
 
 def _parse_tags(raw: str | None) -> list[str] | None:
@@ -151,7 +169,13 @@ def cmd_search(args, store: MemoryStore) -> None:
     # git repo, or on any git failure, results pass through untouched.
     if not args.no_stale_check:
         results = annotate_stale(results)
-    _json_out(results)
+    if args.min_score is not None:
+        # `exact` mode carries no `score` at all — those hits pass through unfiltered.
+        results = [r for r in results if r.get("score") is None or r["score"] >= args.min_score]
+    if args.depth == "summary":
+        _compact_out(results)
+    else:
+        _json_out(results)
 
 
 def cmd_get(args, store: MemoryStore) -> None:
@@ -252,7 +276,10 @@ def cmd_doc_search(args, store: MemoryStore) -> None:
         tags=_parse_tags(args.tags),
         doc_type=args.doc_type,
     )
-    _json_out(results)
+    if args.depth == "summary":
+        _compact_docs_out(results)
+    else:
+        _json_out(results)
 
 
 def cmd_doc_list(args, store: MemoryStore) -> None:
@@ -624,6 +651,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="ISO date or Unix timestamp; graph traversal restricts to edges valid then.",
     )
+    p.add_argument(
+        "--depth",
+        choices=["summary", "full"],
+        default="full",
+        help="summary = one plain-text line per hit; full = JSON (default).",
+    )
+    p.add_argument(
+        "--min-score",
+        type=float,
+        default=None,
+        help="Drop hits scoring below this. Applies to both depths; unscored modes pass through.",
+    )
 
     # get
     p = sub.add_parser(
@@ -674,6 +713,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", "-n", default=5, type=int)
     p.add_argument("--tags", "-t", default="")
     p.add_argument("--type", dest="doc_type", default=None)
+    p.add_argument(
+        "--depth",
+        choices=["summary", "full"],
+        default="full",
+        help="summary = one plain-text line per hit; full = JSON (default).",
+    )
 
     p = doc_sub.add_parser("list")
     p.add_argument("--page", default=1, type=int)

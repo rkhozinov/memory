@@ -314,3 +314,63 @@ def test_cli_admin_index_stdout_is_markdown(cli_env):
     assert "## Learnings / Patterns / Errors" in raw
     # Must NOT be JSON-wrapped
     assert raw.strip()[0] == "#"
+
+
+# --- search --depth / --min-score ---
+
+
+def test_search_default_depth_is_json(cli_env):
+    """No --depth keeps the JSON contract other hooks parse."""
+    _invoke(cli_env, ["store", "depth default content"])
+    raw = _invoke_raw(cli_env, ["search", "depth default", "--mode", "exact"])
+    assert raw.lstrip().startswith("[")
+    assert isinstance(json.loads(raw), list)
+
+
+def test_search_depth_summary_one_line_per_hit(cli_env):
+    """--depth summary emits `<hash16> [<type>] score=<n.nn> <preview>`, not JSON."""
+    _invoke(cli_env, ["store", "summary line alpha", "--type", "decision"])
+    _invoke(cli_env, ["store", "summary line beta", "--type", "decision"])
+    raw = _invoke_raw(cli_env, ["search", "summary line", "--mode", "exact", "--depth", "summary"])
+    lines = [ln for ln in raw.strip().splitlines() if ln.strip()]
+    assert len(lines) == 2
+    for ln in lines:
+        assert not ln.lstrip().startswith(("{", "["))
+        hash_field, type_field, score_field = ln.split(" ", 3)[:3]
+        assert len(hash_field) == 16
+        assert type_field == "[decision]"
+        assert score_field.startswith("score=")
+        float(score_field.split("=", 1)[1])  # parses
+
+
+def test_search_min_score_filters(cli_env):
+    """--min-score drops scored hits below the threshold; unscored modes pass through."""
+    _invoke(cli_env, ["store", "min score subject matter"])
+    # hybrid fusion scores are not capped at 1.0 — derive the cutoff from the real hit
+    hits = _invoke(cli_env, ["search", "min score subject"])
+    assert len(hits) == 1
+    above = hits[0]["score"] + 0.01
+    assert _invoke(cli_env, ["search", "min score subject", "--min-score", str(above)]) == []
+    # exact mode has no `score` key, so nothing is filtered out
+    kept = _invoke(cli_env, ["search", "min score subject", "--mode", "exact", "--min-score", str(above)])
+    assert len(kept) == 1
+
+
+def test_doc_search_depth_summary(store):
+    """`doc search --depth summary` emits `<hash16> [doc] <title>`."""
+    from memory import cli as memory_cli
+
+    store.store_doc(title="Runbook Alpha", body="alpha body text", summary="alpha summary")
+    buf = io.StringIO()
+    with (
+        patch("memory.core.DB_PATH", store.db_path),
+        patch("memory.cli.MemoryStore", lambda: store),
+        patch("sys.stdout", buf),
+    ):
+        memory_cli.main(["doc", "search", "alpha", "--depth", "summary"])
+    lines = [ln for ln in buf.getvalue().strip().splitlines() if ln.strip()]
+    assert len(lines) == 1
+    hash_field, marker, title = lines[0].split(" ", 2)
+    assert len(hash_field) == 16
+    assert marker == "[doc]"
+    assert title == "Runbook Alpha"
