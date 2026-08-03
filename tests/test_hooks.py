@@ -217,29 +217,31 @@ def _end_hook_calls(env, calls, dream_throttled: bool):
     # stub's log appears slightly after the hook returns.
     deadline = time.time() + 10
     while time.time() < deadline:
-        if calls.exists() and any("auto-archive-pending" in ln for ln in calls.read_text().splitlines()):
+        if calls.exists() and any("extract-pending" in ln for ln in calls.read_text().splitlines()):
             break
         time.sleep(0.05)
     return [json.loads(x) for x in calls.read_text().splitlines() if x] if calls.exists() else []
 
 
-def test_session_end_archives_the_current_session_immediately(env, fake_memory):
-    """SessionStart only sweeps transcripts older than 5 minutes, so without this
-    the session you just finished is not saved until you next open Claude Code in
-    the same directory — and never, if you don't come back."""
+def test_no_hook_archives_whole_transcripts(env, fake_memory):
+    """Raw archiving was dropped in 1.11.2: it captured every session verbatim,
+    which is automatic and free but undistilled. Distillation is the only
+    automatic capture path now."""
     _, calls = fake_memory
-    argv = _end_hook_calls(env, calls, dream_throttled=False)
-    archive = next(a for a in argv if a[:2] == ["admin", "auto-archive-pending"])
-    assert "--min-age-minutes" in archive
-    assert archive[archive.index("--min-age-minutes") + 1] == "0"
+    env = {**env, "MEMORY_EXTRACT": "1"}
+    run_hook(START_HOOK, env)
+    _end_hook_calls(env, calls, dream_throttled=False)
+    argv = [json.loads(x) for x in calls.read_text().splitlines() if x] if calls.exists() else []
+    assert not any("auto-archive-pending" in a for a in argv)
 
 
-def test_session_end_archives_even_when_dream_is_throttled(env, fake_memory):
+def test_extraction_runs_even_when_dream_is_throttled(env, fake_memory):
     """The dream throttle exits 0. Anything that must run every session has to sit
-    above it — archiving did not, and would have run only once every 6 hours."""
+    above it — extraction did not, and would have run only once every 6 hours."""
     _, calls = fake_memory
+    env = {**env, "MEMORY_EXTRACT": "1"}
     argv = _end_hook_calls(env, calls, dream_throttled=True)
-    assert any(a[:2] == ["admin", "auto-archive-pending"] for a in argv)
+    assert any(a[:2] == ["admin", "extract-pending"] for a in argv)
     assert not any(a[:2] == ["admin", "dream"] for a in argv), "dream should be throttled here"
 
 

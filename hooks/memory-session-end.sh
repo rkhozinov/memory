@@ -62,20 +62,14 @@ else
   fi
 fi
 
-# Archive the session that just ended, right now.
+# NOTE: whole-transcript archiving is deliberately NOT run from any hook.
 #
-# SessionStart also runs this, but only as a sweeper: it skips transcripts
-# younger than five minutes, so the session you are leaving is not archived until
-# the next time you open Claude Code *in this same directory*. Finish a piece of
-# work, never return to that project, and it was never saved. `--min-age-minutes
-# 0` closes that: the current transcript is archived at the moment it ends.
-#
-# The SessionStart sweep stays, and is still load-bearing — SessionEnd does not
-# fire on a crash, a `kill -9`, or a closed terminal pane. Markers make the two
-# idempotent, so whichever gets there first wins.
+# It stored every session verbatim as a `session-archive` document — automatic
+# and free, but undistilled: a searchable pile of raw conversation rather than
+# facts. `memory admin auto-archive-pending` still exists for manual use, and
+# previously archived documents are untouched.
 #
 # Everything below this point must stay ABOVE the dream throttle, which exits 0.
-(memory admin auto-archive-pending --cwd "$PWD" --min-age-minutes 0 >/dev/null 2>&1 &) >/dev/null 2>&1
 
 # Distil the session that just ended into atomic memories. Opt-in: does nothing
 # unless MEMORY_EXTRACT=1.

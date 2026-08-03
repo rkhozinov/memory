@@ -84,6 +84,11 @@ tells you which is currently live.
 
 ### Automatic capture (opt-in)
 
+Whole-transcript archiving is **not** run from any hook. It captured every
+session verbatim — automatic and free, but a pile of raw conversation rather
+than facts. `memory admin auto-archive-pending` remains for manual use.
+
+
 `memory admin extract-pending` distils *finished* sessions into atomic
 memories. It only looks at transcripts idle for six hours or more, so it never
 runs while you are working, and a free non-LLM gate rejects low-signal sessions

@@ -78,9 +78,9 @@ else
   mem_rebuild_index &
 fi
 
-# 4. Archive abandoned session transcripts as searchable docs.
-#    Pure local — no LLM, no API key.
-(memory admin auto-archive-pending --cwd "$PWD" >/dev/null 2>&1 &) >/dev/null 2>&1
+# 4. (Removed in 1.11.2) Whole-transcript archiving no longer runs from a hook.
+#    It captured every session verbatim as a document — automatic and free, but
+#    undistilled. `memory admin auto-archive-pending` remains for manual use.
 
 # 5. Housekeeping: expire per-session hook state, and sweep the pre-1.11 markers.
 (find "$STATE_DIR/sessions" -mindepth 1 -maxdepth 1 -type d -mtime +7 \
