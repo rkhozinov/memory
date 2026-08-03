@@ -50,8 +50,34 @@ else
   fi
 fi
 
+# Archive the session that just ended, right now.
+#
+# SessionStart also runs this, but only as a sweeper: it skips transcripts
+# younger than five minutes, so the session you are leaving is not archived until
+# the next time you open Claude Code *in this same directory*. Finish a piece of
+# work, never return to that project, and it was never saved. `--min-age-minutes
+# 0` closes that: the current transcript is archived at the moment it ends.
+#
+# The SessionStart sweep stays, and is still load-bearing — SessionEnd does not
+# fire on a crash, a `kill -9`, or a closed terminal pane. Markers make the two
+# idempotent, so whichever gets there first wins.
+#
+# Everything below this point must stay ABOVE the dream throttle, which exits 0.
+(memory admin auto-archive-pending --cwd "$PWD" --min-age-minutes 0 >/dev/null 2>&1 &) >/dev/null 2>&1
+
+# Distil finished sessions into atomic memories. Opt-in: does nothing unless
+# MEMORY_EXTRACT=1. Only touches transcripts idle for hours, so it never
+# processes the session that just ended — it drains the backlog behind it.
+if [[ "${MEMORY_EXTRACT:-0}" == "1" ]]; then
+  EXTRACT_DIR="$HOME/.claude/memory/extract"
+  mkdir -p "$EXTRACT_DIR" 2>/dev/null
+  (memory admin extract-pending --cwd "$PWD" >"$EXTRACT_DIR/last_run.log" 2>&1 &) >/dev/null 2>&1
+fi
+
 # Throttle check: skip if marker exists and is younger than INTERVAL_HOURS.
 # INTERVAL_HOURS=0 means "always run" (useful for manual testing).
+# NOTE: this exits 0 when throttled, so nothing that must run every session may
+# be placed after it.
 if [[ "$INTERVAL_HOURS" != "0" && -f "$MARKER_FILE" ]]; then
   NOW=$(date +%s)
   LAST=$(cat "$MARKER_FILE" 2>/dev/null || echo 0)
@@ -64,15 +90,6 @@ if [[ "$INTERVAL_HOURS" != "0" && -f "$MARKER_FILE" ]]; then
   if (( AGE < INTERVAL_SECONDS )); then
     exit 0
   fi
-fi
-
-# Distil finished sessions into atomic memories. Opt-in: does nothing unless
-# MEMORY_EXTRACT=1. Only touches transcripts that have been idle for hours, so it
-# never processes the session that just ended — it drains the backlog behind it.
-if [[ "${MEMORY_EXTRACT:-0}" == "1" ]]; then
-  EXTRACT_DIR="$HOME/.claude/memory/extract"
-  mkdir -p "$EXTRACT_DIR" 2>/dev/null
-  (memory admin extract-pending --cwd "$PWD" >"$EXTRACT_DIR/last_run.log" 2>&1 &) >/dev/null 2>&1
 fi
 
 # Run dream in background. Record marker on success.
