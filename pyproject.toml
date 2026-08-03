@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memory"
-version = "1.11.5"
+version = "1.11.6"
 description = "Lean memory service for Claude Code — MCP server + CLI"
 requires-python = ">=3.11"
 dependencies = [

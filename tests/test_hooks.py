@@ -221,6 +221,58 @@ def test_session_start_injects_the_project_scoped_index(env, tmp_path):
     assert "GLOBAL-CATALOG-ENTRY" not in res.stdout
 
 
+def _scope(cwd, home):
+    """(tag, catalog basename) as hooklib resolves them from `cwd`."""
+    script = f'. {HOOKS}/lib/hooklib.sh; printf "%s\\n%s\\n" "$(mem_project_tag)" "$(basename "$(mem_index_file)")"'
+    out = subprocess.run(
+        ["bash", "-c", script],
+        cwd=str(cwd),
+        env={"PATH": "/usr/bin:/bin", "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout.splitlines()
+    return out[0], out[1]
+
+
+@pytest.mark.parametrize(
+    ("dirname", "expected_file"),
+    [
+        ("plain-repo", "INDEX-plain-repo.md"),
+        # The tag must stay verbatim for these; only the filename is sanitised.
+        ("repo with space", "INDEX-repo-with-space.md"),
+        ("repo-ünïcode", "INDEX-repo---n--code.md"),
+        (".hidden-repo", "INDEX-hidden-repo.md"),
+    ],
+)
+def test_scope_slug_is_sanitised_but_the_tag_is_not(tmp_path, dirname, expected_file):
+    """The tag queries the store; the slug names a file. One filter cannot do both.
+
+    Until 1.11.5 a single charset filter did both jobs, so any project whose
+    directory name held a space or non-ASCII character was rejected and fell
+    back to the shared global catalog — every such project clobbering the
+    others' rebuilds. Sanitising the tag instead would be just as wrong: it
+    would query `project:my-repo` for memories tagged `project:my repo` and
+    silently match nothing.
+    """
+    d = tmp_path / dirname
+    d.mkdir()
+    tag, catalog = _scope(d, tmp_path)
+    assert tag == f"project:{dirname}"
+    assert catalog == expected_file
+
+
+def test_scope_slug_cannot_escape_the_catalog_directory(tmp_path):
+    """A name that sanitises to nothing falls back, it does not become a path."""
+    for dirname in ("..", "."):
+        d = tmp_path / "nest" / dirname
+        target = d.resolve()
+        target.mkdir(parents=True, exist_ok=True)
+        _, catalog = _scope(target, tmp_path)
+        assert "/" not in catalog
+        assert catalog.startswith("INDEX")
+
+
 def test_no_hook_hardcodes_the_index_path():
     """Index paths must come from mem_index_file(), never be rebuilt inline."""
     for name, src in _hook_sources().items():

@@ -42,6 +42,10 @@ mem_state_dir() {
 # The tag the catalog is scoped to. Defaults to `project:<basename-of-cwd>`,
 # which is the convention `/remember` and the extractor already tag with.
 # Set MEMORY_INDEX_SCOPE="" to build an unscoped, global catalog.
+# The tag is passed to `memory admin index --tags`, so it must match what is
+# actually stored — verbatim, spaces and all. It is NOT a filename; sanitising
+# it here would mean querying `project:my-repo` for memories tagged
+# `project:my repo` and quietly matching nothing.
 mem_project_tag() {
   if [ -n "${MEMORY_INDEX_SCOPE+x}" ]; then
     printf '%s' "$MEMORY_INDEX_SCOPE"
@@ -49,10 +53,30 @@ mem_project_tag() {
   fi
   local base
   base=$(basename "$PWD")
-  # Same charset discipline as session ids: this ends up in a filename.
-  case "$base" in
-    ""|*[!A-Za-z0-9._-]*) printf '' ;;
-    *) printf 'project:%s' "$base" ;;
+  [ -z "$base" ] && return
+  printf 'project:%s' "$base"
+}
+
+# A filesystem-safe slug for the tag. Separate from the tag itself: this one
+# does end up in a path, so it takes the charset discipline.
+#
+# Until 1.11.5 a single filter did both jobs, so any project whose directory
+# name held a space or a non-ASCII character was rejected outright and fell back
+# to the shared global catalog — every such project clobbering the others'
+# rebuilds, which is the exact failure per-scope files exist to prevent.
+mem_scope_slug() {
+  local tag slug
+  tag="$(mem_project_tag)"
+  [ -z "$tag" ] && return
+  # Leading dots and dashes are stripped rather than rejected: "." and ".." would
+  # resolve against the catalog directory itself or its parent, and a dotfile-
+  # style project name is otherwise perfectly usable once they are gone.
+  slug=$(printf '%s' "${tag#project:}" \
+    | LC_ALL=C tr -c 'A-Za-z0-9._-' '-' \
+    | sed 's/^[^A-Za-z0-9]*//')
+  case "$slug" in
+    "") printf '' ;;
+    *) printf '%.64s' "$slug" ;;
   esac
 }
 
@@ -63,10 +87,10 @@ mem_index_file() {
     printf '%s' "$MEMORY_INDEX_FILE"
     return
   fi
-  local tag
-  tag="$(mem_project_tag)"
-  if [ -n "$tag" ]; then
-    printf '%s/.claude/memory/INDEX-%s.md' "$HOME" "${tag#project:}"
+  local slug
+  slug="$(mem_scope_slug)"
+  if [ -n "$slug" ]; then
+    printf '%s/.claude/memory/INDEX-%s.md' "$HOME" "$slug"
   else
     printf '%s/.claude/memory/INDEX.md' "$HOME"
   fi
@@ -74,10 +98,10 @@ mem_index_file() {
 
 # Freshness marker, per scope for the same reason as the catalog itself.
 mem_index_marker() {
-  local tag
-  tag="$(mem_project_tag)"
-  if [ -n "$tag" ]; then
-    printf '%s/last-index-build-%s' "$(mem_state_dir)" "${tag#project:}"
+  local slug
+  slug="$(mem_scope_slug)"
+  if [ -n "$slug" ]; then
+    printf '%s/last-index-build-%s' "$(mem_state_dir)" "$slug"
   else
     printf '%s/last-index-build' "$(mem_state_dir)"
   fi
