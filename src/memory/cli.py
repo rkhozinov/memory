@@ -432,6 +432,29 @@ def cmd_admin_auto_archive_pending(args, store: MemoryStore) -> None:
     )
 
 
+def cmd_admin_extract_pending(args, store: MemoryStore) -> None:
+    """Distil finished sessions into atomic memories (uses an LLM; opt-in)."""
+    from .extract import enabled, extract_pending
+
+    if not (enabled() or args.dry_run or args.force):
+        _json_out(
+            {
+                "status": "disabled",
+                "message": "set MEMORY_EXTRACT=1 to enable, or pass --dry-run/--force",
+            }
+        )
+        return
+    _json_out(
+        extract_pending(
+            store,
+            cwd=args.cwd,
+            idle_hours=args.idle_hours,
+            max_sessions=args.max_sessions,
+            dry_run=args.dry_run,
+        )
+    )
+
+
 def cmd_admin_demoted(args, store: MemoryStore) -> None:
     _json_out(store.demoted(limit=args.limit))
 
@@ -530,7 +553,8 @@ def cmd_admin(args, store: MemoryStore) -> None:
     admin_cmd = getattr(args, "admin_command", None)
     if not admin_cmd:
         print(
-            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|undelete|export|import|tags|stats|briefing|graph|auto-archive-pending|index}",
+            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|undelete|"
+            "export|import|tags|stats|briefing|graph|auto-archive-pending|extract-pending|index}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -591,6 +615,7 @@ _ADMIN_DISPATCH = {
     "stats": cmd_admin_stats,
     "briefing": cmd_admin_briefing,
     "auto-archive-pending": cmd_admin_auto_archive_pending,
+    "extract-pending": cmd_admin_extract_pending,
     "index": cmd_admin_index,
 }
 
@@ -804,7 +829,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-size", type=int, default=2)
     p.add_argument("--max-size", type=int, default=10)
     p.add_argument("--no-project-scope", action="store_true")
-    p.add_argument("--query", default=None, help="Restrict to memories whose content contains the substring (case-insensitive)")
+    p.add_argument(
+        "--query", default=None, help="Restrict to memories whose content contains the substring (case-insensitive)"
+    )
     p.add_argument("--tag", default=None, help="Restrict to memories carrying this exact tag")
     p.add_argument(
         "--depth",
@@ -856,6 +883,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = admin_sub.add_parser("briefing", help="Session briefing")
     p.add_argument("--budget", default=150, type=int)
+
+    p = admin_sub.add_parser(
+        "extract-pending",
+        help=("Distil finished sessions into atomic memories (LLM; opt-in via MEMORY_EXTRACT=1)"),
+    )
+    p.add_argument("--cwd", default=None, help="Project directory (default: cwd)")
+    p.add_argument(
+        "--idle-hours",
+        default=None,
+        type=float,
+        help="Only process transcripts idle this long (default: 6)",
+    )
+    p.add_argument("--max-sessions", default=None, type=int, help="Max sessions per run (default: 5)")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the proposed batch instead of storing it",
+    )
+    p.add_argument("--force", action="store_true", help="Run even when MEMORY_EXTRACT is unset")
 
     p = admin_sub.add_parser(
         "auto-archive-pending",

@@ -66,6 +66,15 @@ if [[ "$INTERVAL_HOURS" != "0" && -f "$MARKER_FILE" ]]; then
   fi
 fi
 
+# Distil finished sessions into atomic memories. Opt-in: does nothing unless
+# MEMORY_EXTRACT=1. Only touches transcripts that have been idle for hours, so it
+# never processes the session that just ended — it drains the backlog behind it.
+if [[ "${MEMORY_EXTRACT:-0}" == "1" ]]; then
+  EXTRACT_DIR="$HOME/.claude/memory/extract"
+  mkdir -p "$EXTRACT_DIR" 2>/dev/null
+  (memory admin extract-pending --cwd "$PWD" >"$EXTRACT_DIR/last_run.log" 2>&1 &) >/dev/null 2>&1
+fi
+
 # Run dream in background. Record marker on success.
 # We deliberately decouple from the parent shell so session teardown isn't blocked.
 (
