@@ -12,7 +12,10 @@ set -uo pipefail   # deliberately NOT -e: a hook must never abort half-written
 
 PROJECT_NAME=$(basename "$(pwd)")
 STATE_DIR="$(mem_state_dir)"
-INDEX_FILE="${MEMORY_INDEX_FILE:-$HOME/.claude/memory/INDEX.md}"
+# Must go through the helper: it resolves the per-project catalog. Computing
+# this path inline is how 1.11.3 shipped a hook that injected the old global
+# INDEX.md while the rebuild wrote INDEX-<project>.md next to it.
+INDEX_FILE="$(mem_index_file)"
 CLEANUP_MARKER="$STATE_DIR/last-cleanup"
 
 # The `memory` CLI missing is the ONLY legitimate reason to bail early. In 1.10.0

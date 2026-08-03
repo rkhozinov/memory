@@ -188,6 +188,47 @@ def test_session_start_injects_a_stale_index_rather_than_nothing(env, tmp_path):
     assert "<memory_index" in res.stdout
 
 
+def test_session_start_injects_the_project_scoped_index(env, tmp_path):
+    """The catalog injected must be the one for THIS project.
+
+    Regression: `mem_index_file()` learned about per-project catalogs but
+    `memory-session-start.sh` still built the path inline, so the rebuild wrote
+    INDEX-<project>.md while the hook went on injecting the old global
+    INDEX.md sitting next to it. Every other index test sets MEMORY_INDEX_FILE,
+    which overrides scoping — which is exactly why none of them caught it.
+    """
+    scoped_env = {k: v for k, v in env.items() if k != "MEMORY_INDEX_FILE"}
+    home = Path(scoped_env["HOME"])
+    (home / ".claude" / "memory").mkdir(parents=True)
+    (home / ".claude" / "memory" / "INDEX.md").write_text(
+        "# Memory Index\n- `deadbeef0000` decision GLOBAL-CATALOG-ENTRY\n"
+    )
+    project = tmp_path / "someproject"
+    project.mkdir()
+    (home / ".claude" / "memory" / "INDEX-someproject.md").write_text(
+        "# Memory Index\n- `feedface0000` decision SCOPED-CATALOG-ENTRY\n"
+    )
+
+    res = subprocess.run(
+        [str(START_HOOK)],
+        env=scoped_env,
+        cwd=str(project),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert "SCOPED-CATALOG-ENTRY" in res.stdout
+    assert "GLOBAL-CATALOG-ENTRY" not in res.stdout
+
+
+def test_no_hook_hardcodes_the_index_path():
+    """Index paths must come from mem_index_file(), never be rebuilt inline."""
+    for name, src in _hook_sources().items():
+        if Path(name).name == "hooklib.sh":
+            continue  # the helper is where the path is allowed to be spelled out
+        assert "memory/INDEX" not in src, f"{name} builds an index path inline; call mem_index_file() instead"
+
+
 def test_session_start_reports_plainly_when_the_cli_is_missing(tmp_path):
     home = tmp_path / "h"
     home.mkdir()
