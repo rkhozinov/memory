@@ -948,7 +948,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--out",
         default=None,
         metavar="PATH",
-        help="Write to file (default: print to stdout). Use ~/.claude/memory/INDEX.md for hook injection.",
+        help=(
+            "Write to file (default: print to stdout). The SessionStart hook reads "
+            "~/.claude/memory/INDEX-<project>.md, one catalog per project scope."
+        ),
     )
     p.add_argument("--max-lines", default=200, type=int, help="Hard line cap (default 200)")
     p.add_argument("--max-tokens", default=4000, type=int, help="Hard token cap (default 4000)")

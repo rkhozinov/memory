@@ -14,7 +14,7 @@ import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     pass
@@ -61,10 +61,7 @@ MIN_SIMILARITY_THRESHOLD = 0.45  # filter out semantically irrelevant results
 # injection screen so flagged content never leaks to downstream LLMs/MCP
 # clients. Direct hash retrieval via get() is unaffected — caller has the
 # hash, so recovery use cases stay open.
-_NOT_INJECTED_SQL = (
-    "(m.metadata IS NULL "
-    "OR json_extract(m.metadata, '$.injection_suspicious') IS NOT 1)"
-)
+_NOT_INJECTED_SQL = "(m.metadata IS NULL OR json_extract(m.metadata, '$.injection_suspicious') IS NOT 1)"
 
 # --- Demotion weight ---
 # Penalises over-recalled memories so they don't crowd out genuine matches.
@@ -1708,7 +1705,7 @@ class MemoryStore:
             # Trim transcript
             try:
                 text = trim_transcript(jsonl_file)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 print(
                     f"auto_archive_pending: failed to read {jsonl_file.name}: {exc}",
                     file=sys.stderr,
@@ -1751,9 +1748,11 @@ class MemoryStore:
                         if cwd_val:
                             cwd_basename = Path(cwd_val).name or "unknown"
                             break
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: S110 - see below
                 # A malformed transcript line just means we fall back to the
                 # default cwd basename; it is not worth failing the archive over.
+                # Deliberately not logged: this runs per transcript line, so a
+                # single bad file would emit thousands of identical warnings.
                 pass  # nosec B110
 
             created_date = datetime.fromtimestamp(file_mtime, tz=UTC).strftime("%Y-%m-%d")
@@ -1976,11 +1975,7 @@ class MemoryStore:
             # MEMORY_SESSION_ID still wins when set, for tests and manual runs.
             if track_recall:
                 now = time.time()
-                session_id = (
-                    os.environ.get("MEMORY_SESSION_ID")
-                    or os.environ.get("CLAUDE_CODE_SESSION_ID")
-                    or None
-                )
+                session_id = os.environ.get("MEMORY_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID") or None
                 for m in results:
                     if session_id:
                         self._bump_recall_session(conn, m["content_hash"], session_id, now)
@@ -2399,10 +2394,7 @@ class MemoryStore:
                 "FROM memories m JOIN memory_embeddings e ON e.rowid = m.id "
                 "WHERE m.deleted_at IS NULL"
             ).fetchall()
-            vecs = {
-                r["content_hash"]: np.frombuffer(r["content_embedding"], dtype=np.float32)
-                for r in rows
-            }
+            vecs = {r["content_hash"]: np.frombuffer(r["content_embedding"], dtype=np.float32) for r in rows}
             cache = compute_hubness(vecs, k=10)
             self._hubness_cache = cache
         return cache
@@ -3127,14 +3119,12 @@ class MemoryStore:
             # Look up the row WITHOUT filtering by deleted_at — we need to
             # see soft-deleted rows.
             row = conn.execute(
-                "SELECT id, content_hash, content, deleted_at "
-                "FROM memories WHERE content_hash = ?",
+                "SELECT id, content_hash, content, deleted_at FROM memories WHERE content_hash = ?",
                 (content_hash,),
             ).fetchone()
             if not row and len(content_hash) < 64:
                 rows = conn.execute(
-                    "SELECT id, content_hash, content, deleted_at "
-                    "FROM memories WHERE content_hash LIKE ?",
+                    "SELECT id, content_hash, content, deleted_at FROM memories WHERE content_hash LIKE ?",
                     (content_hash + "%",),
                 ).fetchall()
                 if len(rows) == 1:
@@ -3742,10 +3732,7 @@ class MemoryStore:
             sql += " AND lower(m.content) LIKE ?"
             params.append(f"%{query.lower()}%")
         if tag:
-            sql += (
-                " AND EXISTS (SELECT 1 FROM json_each(m.tags) je "
-                "WHERE json_valid(m.tags) AND je.value = ?)"
-            )
+            sql += " AND EXISTS (SELECT 1 FROM json_each(m.tags) je WHERE json_valid(m.tags) AND je.value = ?)"
             params.append(tag)
         rows = conn.execute(sql, params).fetchall()
         if len(rows) < 2:
@@ -4237,7 +4224,7 @@ class MemoryStore:
 
     # Keywords that indicate the newer memory supersedes an older one
     _DREAM_CONTRADICTION_RE = re.compile(r"\b(now|actually|updated|fixed|replaced|instead)\b", re.IGNORECASE)
-    _DREAM_SUPERSEDING_TYPES = {"decision", "error"}
+    _DREAM_SUPERSEDING_TYPES: ClassVar[set[str]] = {"decision", "error"}
 
     def _dream_rewrite_dates(self, conn: sqlite3.Connection, dry_run: bool) -> int:
         """Pass 1: rewrite relative date phrases to absolute ISO dates.
@@ -4282,22 +4269,28 @@ class MemoryStore:
                 d = anchor.strftime("%Y-%m-%d")
                 text = self._DREAM_THIS_MORNING_RE.sub(d, text)
 
+            # `anchor` is bound as a default argument rather than captured. Each
+            # of these is consumed by the .sub() call directly below it, so late
+            # binding never actually bites today — but that is a property of the
+            # call site, not of the closure, and it would break silently the
+            # moment one of them is hoisted or deferred.
+
             # "N days ago"
-            def _replace_days(m: re.Match) -> str:
+            def _replace_days(m: re.Match, anchor: datetime = anchor) -> str:
                 n = int(m.group(1))
                 return (anchor - timedelta(days=n)).strftime("%Y-%m-%d")
 
             text = self._DREAM_N_DAYS_AGO_RE.sub(_replace_days, text)
 
             # "N weeks ago"
-            def _replace_weeks(m: re.Match) -> str:
+            def _replace_weeks(m: re.Match, anchor: datetime = anchor) -> str:
                 n = int(m.group(1))
                 return (anchor - timedelta(weeks=n)).strftime("%Y-%m-%d")
 
             text = self._DREAM_N_WEEKS_AGO_RE.sub(_replace_weeks, text)
 
             # weekday names within last 7 days of anchor
-            def _replace_weekday(m: re.Match) -> str:
+            def _replace_weekday(m: re.Match, anchor: datetime = anchor) -> str:
                 name = m.group(1).lower()
                 target_dow = _weekdays[name]
                 anchor_dow = anchor.weekday()
@@ -4428,9 +4421,7 @@ class MemoryStore:
                 if newer_is_auto and not older_is_auto:
                     is_superseding = contradicts
                 else:
-                    is_superseding = (
-                        contradicts or newer["memory_type"] in self._DREAM_SUPERSEDING_TYPES
-                    )
+                    is_superseding = contradicts or newer["memory_type"] in self._DREAM_SUPERSEDING_TYPES
                 if not is_superseding:
                     continue
 
@@ -4478,7 +4469,6 @@ class MemoryStore:
         Detects: case-only differences, trailing punctuation, singular/plural.
         Returns suggestions only — no auto-merge.
         """
-        import re as _re
 
         rows = conn.execute(
             "SELECT DISTINCT value as tag FROM ("
@@ -4616,7 +4606,7 @@ class MemoryStore:
 
         # Bounded budget: never delete more than max_fraction of active corpus.
         total_active = conn.execute("SELECT COUNT(*) AS n FROM memories WHERE deleted_at IS NULL").fetchone()["n"]
-        budget = max(1, int(math.ceil(max_fraction * total_active)))
+        budget = max(1, math.ceil(max_fraction * total_active))
         # Forget lowest-activation first.
         candidates.sort(key=lambda c: c["activation"])
         candidates = candidates[:budget]
@@ -5838,13 +5828,10 @@ class MemoryStore:
             "",
         ]
         if scope:
-            in_scope_shown = sum(
-                1 for tier in (tier1, tier2, tier3) for e in tier if e["in_scope"]
-            )
+            in_scope_shown = sum(1 for tier in (tier1, tier2, tier3) for e in tier if e["in_scope"])
             lines.insert(
                 3,
-                f"**Scoped to:** {', '.join(sorted(scope))} "
-                f"({in_scope_shown} matching, rest fill remaining budget)",
+                f"**Scoped to:** {', '.join(sorted(scope))} ({in_scope_shown} matching, rest fill remaining budget)",
             )
 
         section_order = [

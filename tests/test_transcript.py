@@ -8,10 +8,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from memory.transcript import trim_transcript
-
 
 # ---------------------------------------------------------------------------
 # JSONL fixture builder
@@ -285,13 +282,15 @@ def test_auto_archive_pending_stores_doc(store, tmp_path):
         stored_docs_info.append(kwargs)
         return original_store_doc(**kwargs)
 
-    with patch("pathlib.Path.home", return_value=tmp_path):
-        with patch.object(store, "store_doc", side_effect=capturing_store_doc):
-            result = store.auto_archive_pending(
-                cwd="/Users/myproject",
-                min_age_minutes=5,
-                marker_dir=marker_dir,
-            )
+    with (
+        patch("pathlib.Path.home", return_value=tmp_path),
+        patch.object(store, "store_doc", side_effect=capturing_store_doc),
+    ):
+        result = store.auto_archive_pending(
+            cwd="/Users/myproject",
+            min_age_minutes=5,
+            marker_dir=marker_dir,
+        )
 
     assert result["stored_docs"] == 1
     assert result["processed"] == 1

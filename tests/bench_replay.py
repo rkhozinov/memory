@@ -239,6 +239,7 @@ def main() -> int:
         elif args.use_prod_db and args.real_corpus:
             # Snapshot the live DB to avoid mutating it during replay.
             import shutil
+
             from memory.core import DB_PATH as _DB
 
             snap = Path(td) / "snapshot.db"

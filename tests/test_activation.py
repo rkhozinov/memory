@@ -11,6 +11,14 @@ from memory.core import (
     compute_activation,
 )
 
+# Every session-tracking assertion needs the same handful of columns; spelling
+# the query out at each call site produced six over-length duplicates.
+_RECALL_COLS = (
+    "SELECT recall_count, last_recall_session, recall_sessions, "
+    "json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count "
+    "FROM memories WHERE content_hash = ?"
+)
+
 # --- compute_activation unit tests ---
 
 
@@ -87,7 +95,7 @@ def test_search_bumps_distinct_session_count_on_first_hit(store, monkeypatch):
     monkeypatch.setenv("MEMORY_SESSION_ID", "sess-A")
     store.search(query="kubernetes pod", mode="hybrid", limit=5)
     row = conn.execute(
-        "SELECT recall_count, json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count, last_recall_session FROM memories WHERE content_hash = ?",
+        _RECALL_COLS,
         (a["content_hash"],),
     ).fetchone()
     if row is None or row["recall_count"] == 0:
@@ -100,7 +108,7 @@ def test_search_bumps_distinct_session_count_on_first_hit(store, monkeypatch):
     # Second search in same session → distinct stays the same
     store.search(query="kubernetes pod", mode="hybrid", limit=5)
     row = conn.execute(
-        "SELECT recall_count, json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count FROM memories WHERE content_hash = ?",
+        _RECALL_COLS,
         (a["content_hash"],),
     ).fetchone()
     assert row["distinct_session_count"] == initial_dsc
@@ -109,7 +117,7 @@ def test_search_bumps_distinct_session_count_on_first_hit(store, monkeypatch):
     monkeypatch.setenv("MEMORY_SESSION_ID", "sess-B")
     store.search(query="kubernetes pod", mode="hybrid", limit=5)
     row = conn.execute(
-        "SELECT json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count, last_recall_session FROM memories WHERE content_hash = ?",
+        _RECALL_COLS,
         (a["content_hash"],),
     ).fetchone()
     assert row["distinct_session_count"] == initial_dsc + 1
@@ -130,8 +138,7 @@ def test_search_distinct_session_count_is_set_not_alternation(store, monkeypatch
         store.search(query="alpha service connection", mode="hybrid", limit=5)
 
     row = conn.execute(
-        "SELECT json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count, recall_sessions, recall_count "
-        "FROM memories WHERE content_hash = ?",
+        _RECALL_COLS,
         (a["content_hash"],),
     ).fetchone()
     if row is None or row["recall_count"] == 0:
@@ -159,7 +166,7 @@ def test_recall_sessions_capped(store, monkeypatch):
         store.search(query="capacity cap", mode="hybrid", limit=5)
 
     row = conn.execute(
-        "SELECT recall_sessions, json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count, recall_count FROM memories WHERE content_hash = ?",
+        _RECALL_COLS,
         (a["content_hash"],),
     ).fetchone()
     if row is None or row["recall_count"] == 0:
@@ -188,22 +195,15 @@ def test_search_no_session_env_keeps_legacy_behaviour(store, monkeypatch):
 
     conn = store._get_conn()
     row = conn.execute(
-        "SELECT json_array_length(COALESCE(recall_sessions,'[]')) AS distinct_session_count FROM memories WHERE content_hash = ?",
+        _RECALL_COLS,
         (a["content_hash"],),
     ).fetchone()
     assert (row["distinct_session_count"] or 0) == 0
 
 
 def _dsc(store, content_hash):
-    row = (
-        store._get_conn()
-        .execute(
-            "SELECT json_array_length(COALESCE(recall_sessions,'[]')) AS n FROM memories WHERE content_hash = ?",
-            (content_hash,),
-        )
-        .fetchone()
-    )
-    return row["n"] or 0
+    row = store._get_conn().execute(_RECALL_COLS, (content_hash,)).fetchone()
+    return row["distinct_session_count"] or 0
 
 
 def test_search_falls_back_to_claude_code_session_id(store, monkeypatch):
@@ -241,7 +241,7 @@ def test_memory_session_id_takes_precedence(store, monkeypatch):
     sessions = (
         store._get_conn()
         .execute(
-            "SELECT recall_sessions FROM memories WHERE content_hash = ?",
+            _RECALL_COLS,
             (a["content_hash"],),
         )
         .fetchone()["recall_sessions"]

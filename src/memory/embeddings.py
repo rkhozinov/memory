@@ -370,12 +370,12 @@ class EmbeddingModel:
         # Trim to the longest *real* sequence in the batch.  Fixed 512-wide
         # padding leaves fully-masked attention rows that make gte-modernbert's
         # softmax NaN; mean/CLS pooling is unaffected by dropping the pad tail.
-        L = max((sum(e.attention_mask) for e in encodings), default=1)
-        ids = mx.zeros((n, L), dtype=mx.int32)
-        mask = mx.zeros((n, L), dtype=mx.int32)
+        seq_len = max((sum(e.attention_mask) for e in encodings), default=1)
+        ids = mx.zeros((n, seq_len), dtype=mx.int32)
+        mask = mx.zeros((n, seq_len), dtype=mx.int32)
         for i, e in enumerate(encodings):
-            ids[i] = mx.array(e.ids[:L], dtype=mx.int32)
-            mask[i] = mx.array(e.attention_mask[:L], dtype=mx.int32)
+            ids[i] = mx.array(e.ids[:seq_len], dtype=mx.int32)
+            mask[i] = mx.array(e.attention_mask[:seq_len], dtype=mx.int32)
 
         outputs = self._mlx_model(ids, attention_mask=mask)
         # Model returns pooled + normalized text_embeds directly

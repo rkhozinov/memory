@@ -192,7 +192,9 @@ TOOLS = [
                     "type": "string",
                     "enum": ["weighted", "rrf", "rrsb"],
                     "default": "weighted",
-                    "description": "Hybrid score fusion: weighted (default), rrf (rank-only), rrsb (rank + score-boost).",
+                    "description": (
+                        "Hybrid score fusion: weighted (default), rrf (rank-only), rrsb (rank + score-boost)."
+                    ),
                 },
                 "as_of": {
                     "type": "string",

@@ -1530,8 +1530,7 @@ def test_dream_idempotent(store):
 
 def test_dream_date_rewrite_yesterday(store):
     """'yesterday' in memory body is rewritten to an absolute date."""
-    result = store.store("The deployment failed yesterday due to a config error.", tags=["ops"])
-    mem_hash = result["content_hash"]
+    store.store("The deployment failed yesterday due to a config error.", tags=["ops"])
 
     dream_result = store.dream(dry_run=False)
     assert dream_result["dates_rewritten"] >= 1
@@ -1712,7 +1711,7 @@ def test_dream_demote_skips_tagged_memories(store):
         (h, content, '["project:myproject"]', old_ts, old_ts),
     )
 
-    result = store.dream(dry_run=False)
+    store.dream(dry_run=False)
     # This memory must NOT be demoted
     row = conn.execute("SELECT metadata FROM memories WHERE content_hash = ?", (h,)).fetchone()
     meta = json.loads(row["metadata"])
@@ -1777,7 +1776,6 @@ def test_demotion_factor_is_one_for_cold_memory(tmp_path):
 
 def test_demotion_disabled_by_weight_zero(tmp_path, monkeypatch):
     """MEMORY_DEMOTION_WEIGHT=0 means demotion factor is 1.0 for all memories."""
-    import importlib
 
     import memory.core as core_mod
 

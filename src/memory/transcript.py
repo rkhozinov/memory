@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from pathlib import Path
 
 # Noise entry types to skip entirely
@@ -167,11 +166,7 @@ def trim_transcript(jsonl_path: str | Path, max_chars: int = 100_000) -> str:
 
         if len(line) > remaining:
             # Count lines we're about to drop
-            remaining_lines = sum(
-                1
-                for e in _iter_jsonl(jsonl_path)
-                if e.get("type") in ("user", "assistant")
-            )
+            remaining_lines = sum(1 for e in _iter_jsonl(jsonl_path) if e.get("type") in ("user", "assistant"))
             lines.append(line[:remaining])
             lines.append(f"\n…[transcript continues {remaining_lines} lines]")
             total_chars = max_chars

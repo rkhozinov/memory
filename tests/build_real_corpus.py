@@ -214,7 +214,7 @@ def _validate_query(store: MemoryStore, query: str, expected_hash: str, top_k: i
             rerank=False,
             track_recall=False,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     for i, r in enumerate(results):
         if r.get("content_hash") == expected_hash:
@@ -241,7 +241,7 @@ def generate_candidates(store: MemoryStore, max_queries: int, rng: random.Random
     for r in hot_rows:
         try:
             tags = json.loads(r["tags"] or "[]")
-        except Exception:  # noqa: BLE001
+        except Exception:
             tags = []
         if not isinstance(tags, list):
             continue
@@ -264,7 +264,7 @@ def generate_candidates(store: MemoryStore, max_queries: int, rng: random.Random
         if len(cands) >= max_queries * 3:  # over-generate; validation prunes
             break
 
-    for tag, mems in hot_by_tag.items():
+    for _tag, mems in hot_by_tag.items():
         if len(mems) < 2:
             continue
         mems_sorted = sorted(mems, key=lambda m: m["recall_count"], reverse=True)
@@ -297,7 +297,7 @@ def validate_candidates(store: MemoryStore, candidates: list[dict], max_queries:
 
 
 def build_corpus(out_path: Path, max_queries: int, seed: int, db_src: Path) -> dict:
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # noqa: S311 - corpus sampling, reproducibility beats unpredictability
     with tempfile.TemporaryDirectory() as td:
         copy_db = Path(td) / "snapshot.db"
         shutil.copy2(db_src, copy_db)
@@ -313,7 +313,8 @@ def build_corpus(out_path: Path, max_queries: int, seed: int, db_src: Path) -> d
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--out", default="/tmp/real_corpus.json", type=Path)
+    # Default lands in the system temp dir rather than a hardcoded /tmp path.
+    parser.add_argument("--out", default=Path(tempfile.gettempdir()) / "real_corpus.json", type=Path)
     parser.add_argument("--max", default=120, type=int, help="cap on number of validated queries")
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument("--db", default=str(DB_PATH), help="source SQLite DB path")
@@ -334,7 +335,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.emit_candidates:
-        rng = random.Random(args.seed)
+        rng = random.Random(args.seed)  # noqa: S311 - corpus sampling, not crypto
         with tempfile.TemporaryDirectory() as td:
             copy_db = Path(td) / "snapshot.db"
             shutil.copy2(args.db, copy_db)

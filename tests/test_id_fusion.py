@@ -16,7 +16,6 @@ from memory.core import (
     _weighted_fuse,
 )
 
-
 # --- _looks_like_identifier unit tests ---
 
 

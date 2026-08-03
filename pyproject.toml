@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memory"
-version = "1.11.4"
+version = "1.11.5"
 description = "Lean memory service for Claude Code — MCP server + CLI"
 requires-python = ">=3.11"
 dependencies = [
@@ -50,6 +50,10 @@ ignore = [
     "S101",   # assert in tests is fine
     "T201",   # print() is used in CLI
 ]
+# `×` is deliberate: the scoring formulas are documented as
+# `confidence × importance × recency`, where an ASCII `x` would read as a
+# variable name rather than as multiplication.
+allowed-confusables = ["×"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S603", "S607", "S310"]  # asserts + subprocess + URL downloads in tests OK
