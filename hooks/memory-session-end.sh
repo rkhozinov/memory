@@ -47,7 +47,7 @@ command -v memory >/dev/null 2>&1 || exit 0
 # every assistant turn, which cost a `memory health` subprocess per turn and
 # printed a coloured report nobody asked for. Session end is the right moment.
 # Placed BEFORE the dream throttle, which exits early.
-INDEX_MARKER="$(mem_state_dir)/last-index-build"
+INDEX_MARKER="$(mem_index_marker)"
 INDEX_THRESHOLD="${MEMORY_INDEX_REFRESH_THRESHOLD:-25}"
 if [[ ! -f "$INDEX_MARKER" ]]; then
   (mem_rebuild_index >/dev/null 2>&1 &)

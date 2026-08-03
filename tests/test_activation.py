@@ -178,8 +178,11 @@ def test_recall_sessions_capped(store, monkeypatch):
 
 
 def test_search_no_session_env_keeps_legacy_behaviour(store, monkeypatch):
-    """When MEMORY_SESSION_ID is absent, distinct_session_count must remain 0."""
+    """With no session id in the environment, distinct_session_count stays 0."""
     monkeypatch.delenv("MEMORY_SESSION_ID", raising=False)
+    # Must be cleared too: pytest itself runs as a Claude Code tool subprocess,
+    # so this is set for real during the suite.
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     a = store.store("k8s autoscaler aggressive", memory_type="learning")
     store.search(query="autoscaler", mode="hybrid", limit=5)
 
@@ -189,6 +192,62 @@ def test_search_no_session_env_keeps_legacy_behaviour(store, monkeypatch):
         (a["content_hash"],),
     ).fetchone()
     assert (row["distinct_session_count"] or 0) == 0
+
+
+def _dsc(store, content_hash):
+    row = (
+        store._get_conn()
+        .execute(
+            "SELECT json_array_length(COALESCE(recall_sessions,'[]')) AS n FROM memories WHERE content_hash = ?",
+            (content_hash,),
+        )
+        .fetchone()
+    )
+    return row["n"] or 0
+
+
+def test_search_falls_back_to_claude_code_session_id(store, monkeypatch):
+    """CLAUDE_CODE_SESSION_ID drives session tracking when MEMORY_SESSION_ID is unset.
+
+    Regression: the SessionStart hook `export`ed MEMORY_SESSION_ID into its own
+    process and exited, so nothing ever saw it and distinct_session_count was
+    permanently 0 — the hot-cluster correction was dead code in practice.
+    Claude Code exports CLAUDE_CODE_SESSION_ID into every tool subprocess, which
+    is where the CLI actually runs.
+    """
+    monkeypatch.delenv("MEMORY_SESSION_ID", raising=False)
+    a = store.store("etcd compaction backlog", memory_type="learning")
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "cc-sess-1")
+    store.search(query="etcd compaction", mode="hybrid", limit=5)
+    assert _dsc(store, a["content_hash"]) == 1
+
+    # Same session again must not double-count.
+    store.search(query="etcd compaction", mode="hybrid", limit=5)
+    assert _dsc(store, a["content_hash"]) == 1
+
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "cc-sess-2")
+    store.search(query="etcd compaction", mode="hybrid", limit=5)
+    assert _dsc(store, a["content_hash"]) == 2
+
+
+def test_memory_session_id_takes_precedence(store, monkeypatch):
+    """An explicit MEMORY_SESSION_ID overrides the Claude Code one."""
+    a = store.store("cilium bpf map pressure", memory_type="learning")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "cc-ignored")
+    monkeypatch.setenv("MEMORY_SESSION_ID", "explicit-1")
+    store.search(query="cilium bpf", mode="hybrid", limit=5)
+
+    sessions = (
+        store._get_conn()
+        .execute(
+            "SELECT recall_sessions FROM memories WHERE content_hash = ?",
+            (a["content_hash"],),
+        )
+        .fetchone()["recall_sessions"]
+    )
+    assert "explicit-1" in sessions
+    assert "cc-ignored" not in sessions
 
 
 # --- enrich_with_activation attaches the field ---

@@ -181,6 +181,36 @@ def test_stats_basic(store):
     assert "never_recalled" in result
 
 
+def test_stats_by_provenance_separates_extracted_from_manual(store):
+    """Machine-written and hand-written memories are counted as separate cohorts.
+
+    This is the readout for "is auto-extraction earning its keep" — a healthy
+    manual recall rate next to a near-zero extract rate means the extractor is
+    producing noise, and the answer is a tighter prompt, not a wider gate.
+    """
+    store.store("Auto fact one", memory_type="learning", tags=["project:x", "source:extract"])
+    store.store("Auto fact two", memory_type="learning", tags=["project:x", "source:extract"])
+    manual = store.store("Hand written fact", memory_type="decision", tags=["project:x"])
+
+    store._get_conn().execute("UPDATE memories SET recall_count = 4 WHERE content_hash = ?", (manual["content_hash"],))
+
+    cohorts = store.stats()["by_provenance"]
+    assert cohorts["extract"]["count"] == 2
+    assert cohorts["extract"]["recalled_at_least_once"] == 0
+    assert cohorts["extract"]["recall_rate"] == 0.0
+    assert cohorts["manual"]["count"] == 1
+    assert cohorts["manual"]["recall_rate"] == 1.0
+    assert cohorts["manual"]["total_recalls"] == 4
+
+
+def test_stats_by_provenance_handles_an_empty_cohort(store):
+    """recall_rate is None, not a ZeroDivisionError, when a cohort is empty."""
+    store.store("Only manual here", memory_type="note", tags=["project:x"])
+    cohorts = store.stats()["by_provenance"]
+    assert cohorts["extract"]["count"] == 0
+    assert cohorts["extract"]["recall_rate"] is None
+
+
 def test_stats_top_recalled(store):
     """top_recalled parameter returns ranked list."""
     store.store("frequently recalled")
@@ -1987,6 +2017,41 @@ def test_build_index_excludes_injection_suspicious(store):
     idx = store.build_index()
     assert "Suspicious payload content here" not in idx
     assert "Clean reference entry" in idx
+
+
+def test_build_index_tags_scope_wins_the_cap(store):
+    """Under a tight cap, in-scope entries survive and out-of-scope ones don't.
+
+    Regression: the unscoped catalog for this repo was 2 relevant lines out of
+    33 — the cap filled with whichever project happened to have the most
+    memories, so a session got a table of contents about somewhere else.
+    """
+    for i in range(20):
+        store.store(
+            f"Unrelated decision number {i} about another codebase",
+            memory_type="decision",
+            tags=["project:elsewhere"],
+        )
+    store.store("Scoped decision about the thing at hand", memory_type="decision", tags=["project:mine"])
+
+    # A cap of one line: whatever survives is what the ordering put first.
+    idx = store.build_index(max_lines=1, max_tokens=400, tags=["project:mine"])
+    assert "Scoped decision about the thing at hand" in idx
+    assert "Unrelated decision number" not in idx
+    assert "**Scoped to:** project:mine" in idx
+
+    # Without the scope, the same cap is won by whichever project is largest.
+    unscoped = store.build_index(max_lines=1, max_tokens=400)
+    assert "Scoped decision about the thing at hand" not in unscoped
+
+
+def test_build_index_tags_prioritise_rather_than_filter(store):
+    """Leftover budget still carries out-of-scope entries — an unknown project
+    must get a useful global catalog, not an empty one."""
+    store.store("Globally useful CLI gotcha", memory_type="decision", tags=["tool:cli"])
+
+    scoped = store.build_index(tags=["project:nothing-matches-this"])
+    assert "Globally useful CLI gotcha" in scoped
 
 
 def test_build_index_respects_max_lines_cap_with_demoted_footer(store):

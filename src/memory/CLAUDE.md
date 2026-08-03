@@ -57,7 +57,9 @@ The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 - `consolidate()` — deterministic merge of near-duplicate memories (cosine > threshold)
 - `apply_decay()` — recompute confidence decay and optionally prune low-confidence memories
 - `briefing()` — generates a compact markdown briefing ranked by `confidence * importance * recency`, grouped into sections with line budget allocation
-- `stats()` — aggregated analytics from `operation_events` table
+- `stats()` — aggregated analytics from `operation_events` table, plus
+  `by_provenance`: recall rates for machine-written (`source:extract`) vs
+  hand-written memories, the readout for whether auto-extraction earns its keep
 - Document operations: `store_doc()`, `get_doc()`, `list_docs()`, `search_docs()`, `update_doc()`, `delete_doc()` — long-form content (plans, specs, runbooks) with summary-based hybrid retrieval (semantic on summary embedding + FTS5 on body)
 - Knowledge graph: `extract_entities()` (regex-based), `_link_entities()` (auto on store), `list_entities()`, `entity_context()`, `build_graph()`, `_search_graph()` — lightweight entity extraction + co-occurrence graph for relationship traversal
 - Uses IMMEDIATE transactions to prevent TOCTOU races in multi-agent scenarios
@@ -116,8 +118,8 @@ hook symlinks implied the hooks were live when they were not.
 `/memory:status`, `/memory:codebase`. All shell out to the `memory` CLI.
 
 **`hooks/`** (registered in `hooks/hooks.json`; `timeout` is in **seconds**):
-- **`memory-session-start.sh`** — banner, daily cleanup, transcript archiving,
-  and injection of the curated index (`--max-lines 60 --max-tokens 1200`)
+- **`memory-session-start.sh`** — banner, daily cleanup, and injection of the
+  curated index (`--max-lines 60 --max-tokens 1200`)
 - **`memory-topic-recall.sh`** — UserPromptSubmit: one recall per session
 - **`memory-session-end.sh`** — throttled `dream`, index refresh, and the
   opt-in extractor
@@ -128,6 +130,20 @@ Hook state lives under `$MEMORY_HOOK_STATE_DIR` (default
 `~/.claude/memory/state/`), never in the store's data dir and never in a
 hardcoded `~/repos/memory` path — the plugin has to work for users who cloned
 somewhere else, or not at all.
+
+The injected catalog is **scoped per project**: `mem_project_tag()` derives
+`project:<basename-of-cwd>` and passes it as `memory admin index --tags`, and
+both the catalog (`INDEX-<project>.md`) and its freshness marker are per-scope —
+a single shared file would let the last project to rebuild decide what every
+other project's session gets injected. Set `MEMORY_INDEX_SCOPE=""` for a global
+catalog. Scoping *prioritises* rather than filters, so an unfamiliar project
+still gets a useful catalog instead of an empty one.
+
+Session identity comes from `CLAUDE_CODE_SESSION_ID`, which Claude Code exports
+into every tool subprocess. Do not reintroduce a hook-side `export
+MEMORY_SESSION_ID` — the export dies with the hook process, which is why
+`distinct_session_count` sat at 0 until 1.11.3 and the hot-cluster correction in
+`compute_activation()` never engaged.
 
 `tests/test_hooks.py` exercises the scripts with the CLI stubbed out, including
 a SessionStart run on a PATH with no coreutils, plus static drift tests that

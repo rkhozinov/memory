@@ -533,9 +533,11 @@ def cmd_admin_graph_search(args, store: MemoryStore) -> None:
 
 def cmd_admin_index(args, store: MemoryStore) -> None:
     """Build and write (or print) a curated memory index."""
+    raw_tags = getattr(args, "tags", None)
     markdown = store.build_index(
         max_lines=args.max_lines,
         max_tokens=args.max_tokens,
+        tags=[t.strip() for t in raw_tags.split(",") if t.strip()] if raw_tags else None,
     )
 
     out_path = getattr(args, "out", None)
@@ -950,6 +952,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--max-lines", default=200, type=int, help="Hard line cap (default 200)")
     p.add_argument("--max-tokens", default=4000, type=int, help="Hard token cap (default 4000)")
+    p.add_argument(
+        "--tags",
+        "-t",
+        default=None,
+        metavar="TAGS",
+        help="Comma-separated tags to scope the catalog to (e.g. project:memory). "
+        "Prioritises rather than filters: matching entries sort first, "
+        "leftover budget still carries globally useful entries.",
+    )
 
     # admin tags
     tags_parser = admin_sub.add_parser("tags", help="Tag management")

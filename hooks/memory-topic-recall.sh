@@ -50,6 +50,15 @@ mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
 #
 # The internal timeout must stay strictly below the hooks.json timeout (4s), so
 # we exit cleanly with no injection rather than being killed mid-write.
+#
+# On 0.5: searching the whole prompt rather than just its first line was
+# expected to dilute scores and push hits under the threshold. Measured over 50
+# real multi-line first-prompts against a ~4k-memory store, it does the
+# opposite — mean top score 0.543 -> 0.593, p10 0.404 -> 0.522, and exactly 1
+# prompt in 50 cleared 0.5 on line one but not on the full text. Hybrid fusion
+# gains more from the extra BM25 term matches than it loses to dilution. The
+# threshold is left alone; note it is close to inert at this value, since ~96%
+# of prompts clear it. Raise it only with relevance-labelled data.
 MIN_SCORE="${MEMORY_RECALL_MIN_SCORE:-0.5}"
 OUTPUT=$(mem_run "${MEMORY_RECALL_TIMEOUT:-3}" \
   memory search \

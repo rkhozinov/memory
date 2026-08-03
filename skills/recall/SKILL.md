@@ -127,8 +127,9 @@ sqlite3 "${MEMORY_DB:-$HOME/.local/share/memory/sqlite_vec.db}" \
 Every search result now carries an `activation` score in [0, 1] computed from:
 similarity + type-weight + temporal-decay + distinct-session-score − staleness.
 
-`distinct_session_count` is bumped only on the first hit per `MEMORY_SESSION_ID`,
-which the SessionStart hook exports automatically. Penalises hot-cluster bias.
+`distinct_session_count` is bumped only on the first hit per session id, read
+from `MEMORY_SESSION_ID` or, failing that, the `CLAUDE_CODE_SESSION_ID` that
+Claude Code exports into every tool subprocess. Penalises hot-cluster bias.
 
 Opt-in env vars (read once at import time):
 ```bash

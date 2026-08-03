@@ -1,6 +1,6 @@
 {
   "name": "memory",
-  "version": "1.11.2",
+  "version": "1.11.3",
   "description": "Lean memory service for Claude Code: SQLite + sqlite-vec embeddings, FTS, cross-encoder rerank, bi-temporal graph edges, ACT-R activation + active forgetting, cluster-based dedup with MMR extractive merge, untrusted-input filter on read, recall-time staleness flagging. Session hooks recall relevant memories on the first prompt and inject a curated memory index at session start; `memory admin extract-pending` distils finished sessions into atomic memories off the hot path (opt-in, evidence-grounded, secret-filtered).",
   "homepage": "https://github.com/rkhozinov/memory",
   "license": "MIT",

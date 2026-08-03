@@ -181,6 +181,20 @@ adding — and whether any of it is being recalled:
 memory search --tags source:extract --limit 20 --depth summary -- ""
 ```
 
+**Is it earning its keep?** `memory admin stats` reports `by_provenance`, which
+splits the store into machine-written (`source:extract`) and hand-written
+(`/remember`, no `source:` tag) cohorts:
+
+```bash
+memory admin stats | python3 -c 'import sys,json; print(json.dumps(json.load(sys.stdin)["by_provenance"], indent=2))'
+```
+
+Read `recall_rate` against the manual cohort as the control. Give it a couple of
+weeks — freshly extracted memories have had no chance to be recalled yet, so an
+early 0.0 means nothing. If it stays near zero while the manual rate sits far
+above it, the extractor is producing noise: tighten the extraction prompt.
+Widening the gate would only produce more of it.
+
 A persistently non-zero `dropped.ungrounded` count means the model is
 confabulating; tighten the prompt or change the model rather than relaxing the
 grounding check.

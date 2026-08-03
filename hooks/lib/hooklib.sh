@@ -39,8 +39,48 @@ mem_state_dir() {
   printf '%s' "${MEMORY_HOOK_STATE_DIR:-$HOME/.claude/memory/state}"
 }
 
+# The tag the catalog is scoped to. Defaults to `project:<basename-of-cwd>`,
+# which is the convention `/remember` and the extractor already tag with.
+# Set MEMORY_INDEX_SCOPE="" to build an unscoped, global catalog.
+mem_project_tag() {
+  if [ -n "${MEMORY_INDEX_SCOPE+x}" ]; then
+    printf '%s' "$MEMORY_INDEX_SCOPE"
+    return
+  fi
+  local base
+  base=$(basename "$PWD")
+  # Same charset discipline as session ids: this ends up in a filename.
+  case "$base" in
+    ""|*[!A-Za-z0-9._-]*) printf '' ;;
+    *) printf 'project:%s' "$base" ;;
+  esac
+}
+
+# One catalog file per scope. A single shared INDEX.md would mean the last
+# project to rebuild decides what every other project's session gets injected.
 mem_index_file() {
-  printf '%s' "${MEMORY_INDEX_FILE:-$HOME/.claude/memory/INDEX.md}"
+  if [ -n "${MEMORY_INDEX_FILE:-}" ]; then
+    printf '%s' "$MEMORY_INDEX_FILE"
+    return
+  fi
+  local tag
+  tag="$(mem_project_tag)"
+  if [ -n "$tag" ]; then
+    printf '%s/.claude/memory/INDEX-%s.md' "$HOME" "${tag#project:}"
+  else
+    printf '%s/.claude/memory/INDEX.md' "$HOME"
+  fi
+}
+
+# Freshness marker, per scope for the same reason as the catalog itself.
+mem_index_marker() {
+  local tag
+  tag="$(mem_project_tag)"
+  if [ -n "$tag" ]; then
+    printf '%s/last-index-build-%s' "$(mem_state_dir)" "${tag#project:}"
+  else
+    printf '%s/last-index-build' "$(mem_state_dir)"
+  fi
 }
 
 # Rebuild the curated memory catalog that SessionStart injects.
@@ -50,13 +90,17 @@ mem_index_file() {
 # projects. 60 lines / 1200 tokens keeps the hashes (and therefore the
 # `memory get <hash>` drill-down) at roughly a third of the cost.
 mem_rebuild_index() {
-  local out marker total
+  local out marker total tag
   out="$(mem_index_file)"
-  marker="$(mem_state_dir)/last-index-build"
+  marker="$(mem_index_marker)"
+  tag="$(mem_project_tag)"
   mkdir -p "$(dirname "$out")" "$(mem_state_dir)" 2>/dev/null || return 0
+  # --tags prioritises, it does not filter, so an unknown project still gets a
+  # useful global catalog rather than an empty one.
   memory admin index --out "$out" \
     --max-lines "${MEMORY_INDEX_MAX_LINES:-60}" \
-    --max-tokens "${MEMORY_INDEX_MAX_TOKENS:-1200}" >/dev/null 2>&1 || return 0
+    --max-tokens "${MEMORY_INDEX_MAX_TOKENS:-1200}" \
+    ${tag:+--tags "$tag"} >/dev/null 2>&1 || return 0
   touch "$marker" 2>/dev/null
   total=$(memory health 2>/dev/null \
     | python3 -c 'import sys,json; print(json.load(sys.stdin).get("total_memories",0))' 2>/dev/null)

@@ -26,18 +26,11 @@ fi
 
 mkdir -p "$STATE_DIR" "$(dirname "$INDEX_FILE")" 2>/dev/null
 
-# A stable per-session id for the background children spawned below. Note this
-# export does NOT reach the UserPromptSubmit hook — that is a separate exec — so
-# `distinct_session_count` is still not bumped on the recall path.
-if [[ -z "${MEMORY_SESSION_ID:-}" ]]; then
-  if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
-    export MEMORY_SESSION_ID="$CLAUDE_SESSION_ID"
-  elif [[ -n "${CLAUDECODE_SESSION_ID:-}" ]]; then
-    export MEMORY_SESSION_ID="$CLAUDECODE_SESSION_ID"
-  else
-    MEMORY_SESSION_ID="sess-$(date +%s)-$PPID"; export MEMORY_SESSION_ID
-  fi
-fi
+# (Removed in 1.11.3) This used to `export MEMORY_SESSION_ID`, which reached
+# nothing: the export died with this process, so `distinct_session_count` stayed
+# at 0 and the hot-cluster correction in compute_activation() never engaged.
+# core.py now reads CLAUDE_CODE_SESSION_ID, which Claude Code already exports
+# into every tool subprocess — including the ones the skills shell out from.
 
 # 1. Health — advisory only.
 MEMORY_COUNT="?"

@@ -1963,13 +1963,24 @@ class MemoryStore:
             # Skip when track_recall=False (automated hooks) so recall_count reflects
             # only user-initiated retrievals, preventing auto-recall echo chambers.
             #
-            # Session-aware: when a session id is available (MEMORY_SESSION_ID env
-            # var, set by the SessionStart hook), maintain a recall_sessions set
-            # per memory and bump distinct_session_count only on truly-new
-            # session ids.  Powers the hot-cluster fix in compute_activation().
+            # Session-aware: maintain a recall_sessions set per memory and bump
+            # distinct_session_count only on truly-new session ids. Powers the
+            # hot-cluster fix in compute_activation().
+            #
+            # CLAUDE_CODE_SESSION_ID is exported by Claude Code into every tool
+            # subprocess, so it is present for free wherever the CLI actually
+            # runs. Until 1.11.2 this read MEMORY_SESSION_ID only, which the
+            # SessionStart hook `export`ed — into its own process, which then
+            # exited. Nothing else ever saw it, so distinct_session_count was
+            # pinned at 0 and the hot-cluster correction never engaged.
+            # MEMORY_SESSION_ID still wins when set, for tests and manual runs.
             if track_recall:
                 now = time.time()
-                session_id = os.environ.get("MEMORY_SESSION_ID") or None
+                session_id = (
+                    os.environ.get("MEMORY_SESSION_ID")
+                    or os.environ.get("CLAUDE_CODE_SESSION_ID")
+                    or None
+                )
                 for m in results:
                     if session_id:
                         self._bump_recall_session(conn, m["content_hash"], session_id, now)
@@ -3421,6 +3432,34 @@ class MemoryStore:
             "total_memories": total,
             "recalled_at_least_once": recalled,
             "never_recalled": never,
+        }
+
+        # --- Provenance cohorts: is machine-written material actually used? ---
+        #
+        # The question this answers is whether auto-extraction earns its keep. If
+        # `extract` memories are stored steadily but almost never recalled, the
+        # extractor is producing noise and the prompt needs tightening — widening
+        # the gate would only produce more of it. Manual `/remember` entries are
+        # the control group, which is why both cohorts are reported together.
+        def _cohort(where: str) -> dict:
+            row = conn.execute(
+                # `where` is one of the two literals below, never user input.
+                f"SELECT COUNT(*) AS n, "
+                f"       COALESCE(SUM(recall_count > 0), 0) AS used, "
+                f"       COALESCE(SUM(recall_count), 0) AS recalls "
+                f"FROM memories WHERE deleted_at IS NULL AND {where}"
+            ).fetchone()
+            n, used = row["n"], row["used"]
+            return {
+                "count": n,
+                "recalled_at_least_once": used,
+                "recall_rate": round(used / n, 3) if n else None,
+                "total_recalls": row["recalls"],
+            }
+
+        result["by_provenance"] = {
+            "extract": _cohort("tags LIKE '%\"source:extract\"%'"),
+            "manual": _cohort("tags NOT LIKE '%\"source:%'"),
         }
 
         # --- Event aggregates ---
@@ -5605,7 +5644,13 @@ class MemoryStore:
     #  Index front door                                                    #
     # ------------------------------------------------------------------ #
 
-    def build_index(self, *, max_lines: int = 200, max_tokens: int = 4000) -> str:
+    def build_index(
+        self,
+        *,
+        max_lines: int = 200,
+        max_tokens: int = 4000,
+        tags: list[str] | None = None,
+    ) -> str:
         """Build a curated TOC of the memory store for SessionStart injection.
 
         Selection rules (priority order):
@@ -5621,8 +5666,16 @@ class MemoryStore:
         5. Hard cap: stop when adding next entry would exceed max_lines or
            max_tokens (approximated as len(text)//4).
 
+        `tags` scopes the catalog to a project. It *prioritises* rather than
+        filters: entries sharing a tag sort ahead of the rest inside each tier,
+        so the cap fills with relevant material first, and whatever budget is
+        left still carries globally useful entries. A hard filter would hand a
+        brand-new project an empty index and would discard the cross-project
+        learnings (tool quirks, CLI gotchas) that are worth injecting anywhere.
+
         Returns markdown string with a Demoted footer.
         """
+        scope = set(tags or ())
         conn = self._get_conn()
 
         # Fetch all active memories
@@ -5669,6 +5722,7 @@ class MemoryStore:
                 "memory_type": mtype,
                 "tags": tags,
                 "is_auto": is_auto,
+                "in_scope": bool(scope) and not scope.isdisjoint(tags),
             }
 
             if mtype in ("decision", "reference"):
@@ -5707,6 +5761,13 @@ class MemoryStore:
 
         # Sort tier2 by score descending
         tier2.sort(key=lambda e: e.get("score", 0.0), reverse=True)
+
+        # Float in-scope entries to the front of every tier. Python's sort is
+        # stable, so this reorders across the scope boundary and leaves the
+        # existing ordering (curation order, then score) untouched within it.
+        if scope:
+            for tier in (tier1, tier2, tier3):
+                tier.sort(key=lambda e: not e["in_scope"])
 
         # --- Build markdown sections ---
         iso_now = datetime.fromtimestamp(now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -5776,6 +5837,15 @@ class MemoryStore:
             "**Generated by:** memory admin index",
             "",
         ]
+        if scope:
+            in_scope_shown = sum(
+                1 for tier in (tier1, tier2, tier3) for e in tier if e["in_scope"]
+            )
+            lines.insert(
+                3,
+                f"**Scoped to:** {', '.join(sorted(scope))} "
+                f"({in_scope_shown} matching, rest fill remaining budget)",
+            )
 
         section_order = [
             ("## Decisions", "Decisions"),
