@@ -1,5 +1,5 @@
 {
-  "description": "Memory session start, session end (dream), idle cleanup, and topic recall hooks.",
+  "description": "Memory: SessionStart status + index injection, UserPromptSubmit topic recall, SessionEnd dream + index refresh.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,31 +8,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-session-start.sh",
-            "timeout": 5000
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-session-end.sh",
-            "timeout": 5000
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-cleanup.sh",
-            "timeout": 10000
+            "timeout": 8
           }
         ]
       }
@@ -44,7 +20,19 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-topic-recall.sh",
-            "timeout": 3000
+            "timeout": 4
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/memory-session-end.sh",
+            "timeout": 5
           }
         ]
       }

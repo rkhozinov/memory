@@ -1478,10 +1478,17 @@ class MemoryStore:
 
             # Similarity-based dedup (scoped to same memory_type)
             if dedup_threshold is not None:
+                # The candidate pool is deliberately wide. _search_semantic returns
+                # GLOBAL nearest neighbours, and the memory_type/tag filters below
+                # are applied afterwards — so a small pool silently defeats dedup on
+                # a lopsided corpus. With ~2/3 of memories sharing one project tag,
+                # a pool of 5 is routinely all the wrong type, the filters empty the
+                # list, and every near-duplicate stores as new. Manual /remember
+                # hides this at low volume; bulk extraction does not.
                 similar = self._search_semantic(
                     conn,
                     query=None,
-                    limit=5,
+                    limit=50,
                     tags=None,
                     time_expr=None,
                     after=None,
@@ -1745,7 +1752,9 @@ class MemoryStore:
                             cwd_basename = Path(cwd_val).name or "unknown"
                             break
             except Exception:  # noqa: BLE001
-                pass
+                # A malformed transcript line just means we fall back to the
+                # default cwd basename; it is not worth failing the archive over.
+                pass  # nosec B110
 
             created_date = datetime.fromtimestamp(file_mtime, tz=UTC).strftime("%Y-%m-%d")
             title = f"Session {session_id_short} {cwd_basename} {created_date}"
@@ -4365,11 +4374,24 @@ class MemoryStore:
                 else:
                     newer, older = valid[j], valid[i]
 
-                # Gate: newer must mention contradiction keyword OR be a superseding type
-                is_superseding = (
-                    self._DREAM_CONTRADICTION_RE.search(newer["content"]) is not None
-                    or newer["memory_type"] in self._DREAM_SUPERSEDING_TYPES
-                )
+                # Gate: newer must mention a contradiction keyword OR be a
+                # superseding type.
+                #
+                # Provenance beats recency: an auto-extracted memory may only
+                # supersede a hand-curated one if it actually reads like a
+                # contradiction. Without this, the type shortcut alone lets any
+                # newer machine-written `decision`/`error` soft-delete a curated
+                # memory at cosine >= 0.85 with two shared tags — which, at
+                # extraction volumes, quietly erodes the hand-written corpus.
+                newer_is_auto = "source:extract" in newer["tags"]
+                older_is_auto = "source:extract" in older["tags"]
+                contradicts = self._DREAM_CONTRADICTION_RE.search(newer["content"]) is not None
+                if newer_is_auto and not older_is_auto:
+                    is_superseding = contradicts
+                else:
+                    is_superseding = (
+                        contradicts or newer["memory_type"] in self._DREAM_SUPERSEDING_TYPES
+                    )
                 if not is_superseding:
                     continue
 
@@ -4455,11 +4477,18 @@ class MemoryStore:
         return suggestions
 
     def _dream_demote(self, conn: sqlite3.Connection, dry_run: bool) -> int:
-        """Pass 5: mark old never-recalled auto-tagged memories as demoted.
+        """Pass 5: mark old never-recalled machine-written memories as demoted.
 
-        Criteria: recall_count=0 AND created_at > 30 days ago AND
-        tags contains only 'source:auto' entries or is empty.
+        Criteria: recall_count=0 AND created_at > 30 days ago AND the memory
+        carries at least one `source:` tag (or no tags at all).
         Sets metadata.demoted=true. Does NOT soft-delete.
+
+        The predicate used to require the tag list to be *exactly* ['source:auto']
+        or empty, which meant anything also tagged `project:X` — i.e. every
+        machine-written memory that bothered to say what it was about — could
+        never be demoted and accumulated forever. Keying on the presence of a
+        `source:` tag instead gives the intended 30-day unrecalled prune while
+        still leaving hand-written /remember memories alone.
         """
         cutoff = time.time() - 30 * 86400
         rows = conn.execute(
@@ -4472,9 +4501,9 @@ class MemoryStore:
         now_iso = datetime.fromtimestamp(now, tz=UTC).isoformat()
         for r in rows:
             tags = _safe_tags(r["tags"])
-            # Only demote if tags are all 'source:auto' or empty
-            non_auto = [t for t in tags if t != "source:auto"]
-            if non_auto:
+            # Machine-written only: any `source:` tag marks provenance. Untagged
+            # memories are also fair game — they carry no curation signal either.
+            if tags and not any(t.startswith("source:") for t in tags):
                 continue
             meta = json.loads(r["metadata"] or "{}")
             if meta.get("demoted"):

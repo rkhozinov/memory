@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
+import subprocess  # nosec B404 — only ever invokes `git` with a fixed argv, no shell
 from functools import lru_cache
 
 # A path-ish token: two or more slash-separated segments. No extension list is
@@ -69,7 +69,9 @@ def extract_paths(content: str) -> set[str]:
 def _run_git(repo_root: str, *args: str) -> str | None:
     """Run a git command, returning stdout, or None on any failure."""
     try:
-        r = subprocess.run(
+        # nosec B603 B607 — argv list (never shell=True); the executable name is a
+        # literal and only `repo_root` and caller-supplied git args vary.
+        r = subprocess.run(  # nosec B603 B607
             ["git", "-C", repo_root, *args],
             capture_output=True,
             text=True,
