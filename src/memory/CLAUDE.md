@@ -9,7 +9,7 @@ memory — a lean memory service for Claude Code. Provides an MCP server and CLI
 ## Commands
 
 ```bash
-# Full install: sync deps, symlink skills/hooks, run all checks
+# Full install: sync deps, run all checks, put the CLI on PATH
 make install
 
 # Run ALL quality checks (lint + format + security + tests) — use this by default
@@ -17,8 +17,10 @@ make check
 
 # Individual targets
 make sync          # uv sync (deps only)
-make link          # symlink skills/hooks into ~/.claude/
-make lint          # ruff check src/ tests/
+make link-dev      # point the installed plugin's hooks/ at this checkout
+make unlink-dev    # restore the plugin's own hooks/
+make verify-runtime # confirm the running plugin matches this checkout
+make lint          # ruff check src/ tests/ + shellcheck hooks/
 make format        # ruff format (auto-fix)
 make format-check  # ruff format --check (dry-run)
 make security      # bandit -r src/
@@ -63,6 +65,8 @@ The codebase lives entirely in `src/memory/` (~2600 lines across 6 modules):
 
 **`cli.py`** — argparse-based CLI. **JSON output by default**; `search` and `doc search` also accept `--depth summary` for one plain-text line per hit (used by the `/recall` skill and the topic-recall hook so they don't reformat JSON in python). 8 top-level commands: `store` (accepts plain text, JSON object, or JSON array — unified single/batch), `search`, `get` (partial hash prefix supported), `delete` (partial hash prefix supported), `update`, `health`, `doc` (subgroup: store/get/search/list/update/delete), `admin` (subgroup: cleanup/consolidate/decay/purge/export/import/stats/briefing/tags/graph). Search supports `--mode`, `--tags`, `--types`, `--rerank`, `--rerank-weight`, `--hops`. Maintenance ops moved under `admin` to reduce top-level clutter.
 
+**`extract.py`** — Idle-gated distillation of finished sessions into atomic memories. A free signal gate (turns, length, mutating tool calls, signal tokens) decides whether to spend a model call at all; the transcript is clipped head+tail; the model runs headless (`--print --json-schema --tools "" --no-session-persistence`) and every proposed fact must quote a verbatim span of the transcript or it is dropped. ADD-only storage tagged `source:extract`; `dream()` handles supersession and pruning. Opt-in via `MEMORY_EXTRACT=1`; `--dry-run` proposes without storing. CLI: `memory admin extract-pending`.
+
 **`mcp_server.py`** — MCP stdio server exposing the same operations as tools. Handles type coercion (string→int/bool/JSON) since MCP clients send everything as strings. Input validation is intentionally disabled.
 
 ## Database Schema
@@ -97,20 +101,37 @@ Eleven tables in SQLite:
 
 ## Skills & Hooks
 
-Skills and hooks live in this repo and are symlinked into `~/.claude/` by ``make install``.
+Skills and hooks ship as part of the Claude Code **plugin**. The code that runs
+is the plugin cache (`~/.claude/plugins/cache/rkhozinov/memory/<version>/`),
+**not** this checkout — see `make link-dev` / `make verify-runtime`.
 
-**`skills/`** — Claude Code slash commands (symlinked to `~/.claude/skills/`):
-- **`recall/`** — `/recall [query]`: search memories and documents, or generate briefing
-- **`remember/`** — `/remember <content>`: store facts with tag taxonomy (includes `doc` subcommand reference)
-- **`forget/`** — `/forget <query>`: find and delete memories or documents with confirmation
-- **`status/`** — `/memory:status`: health check, stats, document listing
+There is deliberately no `make link` target any more. It used to symlink
+`skills/*` into `~/.claude/skills/` and `hooks/*.sh` into `~/.claude/hooks/`;
+both are wrong under plugin packaging. The skills copy shadows the plugin's
+namespaced `memory:*` skills with un-namespaced duplicates, and the plugin
+runtime reads `${CLAUDE_PLUGIN_ROOT}/hooks/` — never `~/.claude/hooks/` — so the
+hook symlinks implied the hooks were live when they were not.
 
-**`hooks/`** — Claude Code event hooks (symlinked to `~/.claude/hooks/`):
-- **`memory-session-start.sh`** — SessionStart: health check, daily cleanup, codebase map check
-- **`memory-topic-recall.sh`** — UserPromptSubmit: auto-recall on first prompt per session
-- **`memory-cleanup.sh`** — Cleanup report (manual): dedup, stats, recommendations
+**`skills/`** — `/memory:recall`, `/memory:remember`, `/memory:forget`,
+`/memory:status`, `/memory:codebase`. All shell out to the `memory` CLI.
 
-After editing any skill or hook in this repo, changes take effect immediately (symlinks).
+**`hooks/`** (registered in `hooks/hooks.json`; `timeout` is in **seconds**):
+- **`memory-session-start.sh`** — banner, daily cleanup, transcript archiving,
+  and injection of the curated index (`--max-lines 60 --max-tokens 1200`)
+- **`memory-topic-recall.sh`** — UserPromptSubmit: one recall per session
+- **`memory-session-end.sh`** — throttled `dream`, index refresh, and the
+  opt-in extractor
+- **`hooks/lib/hooklib.sh`** — shared helpers, including `mem_run` (there is no
+  `timeout(1)` on stock macOS) and the hook-input parser
+
+Hook state lives under `$MEMORY_HOOK_STATE_DIR` (default
+`~/.claude/memory/state/`), never in the store's data dir and never in a
+hardcoded `~/repos/memory` path — the plugin has to work for users who cloned
+somewhere else, or not at all.
+
+`tests/test_hooks.py` exercises the scripts with the CLI stubbed out, including
+a SessionStart run on a PATH with no coreutils, plus static drift tests that
+assert the hooks only call real subcommands and only read JSON keys that exist.
 
 ## Code Quality
 

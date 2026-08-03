@@ -154,3 +154,33 @@ The index provides a fast navigable overview of all stored topics and is updated
 ### Auto-archived sessions
 
 Auto-archived sessions live in the doc store with tag `session-archive`; search them via `memory doc search`.
+
+## Auto-extraction status
+
+Automatic capture (`memory admin extract-pending`) is opt-in via `MEMORY_EXTRACT=1`.
+
+```bash
+# What would be stored, without storing it
+memory admin extract-pending --dry-run
+
+# Per-session outcomes: extracted / skipped_gate / failed, plus drop counts
+ls ~/.claude/memory/extracted/*.extract.json | tail -5
+cat ~/.claude/memory/extracted/<session>.extract.json
+
+# Today's spend against MEMORY_EXTRACT_DAILY_BUDGET (default $1.00)
+cat ~/.claude/memory/extract/spend-$(date +%Y-%m-%d).json
+
+# Last background run from the SessionEnd hook
+cat ~/.claude/memory/extract/last_run.log
+```
+
+Auto-extracted memories carry `source:extract`. To review what it has been
+adding — and whether any of it is being recalled:
+
+```bash
+memory search --tags source:extract --limit 20 --depth summary -- ""
+```
+
+A persistently non-zero `dropped.ungrounded` count means the model is
+confabulating; tighten the prompt or change the model rather than relaxing the
+grounding check.

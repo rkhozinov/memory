@@ -13,13 +13,12 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 ```bash
 git clone https://github.com/rkhozinov/memory
 cd memory
-make install     # uv sync + symlink skills/hooks into ~/.claude/ + lint/test
+make install     # uv sync + lint/test + put the CLI on PATH
 make reinstall    # uv tool install --force --editable . — puts `memory` on PATH
 ```
 
-`make install` and `make reinstall` are separate steps: `install` sets up
-the dev environment and Claude Code integration (skills, hooks); `reinstall`
-is what actually builds the `memory` / `memory-mcp-server` / `memory-daemon`
+`make install` runs `sync`, `check` and `reinstall`. `reinstall` is the step
+that actually builds the `memory` / `memory-mcp-server` / `memory-daemon`
 binaries onto your PATH via `uv tool install`. Source edits don't take
 effect until you rerun `make reinstall` — the installed binaries live in a
 separate `uv tool` environment (`~/.local/share/uv/tools/memory/`), not the
@@ -61,11 +60,50 @@ Full command surface: `memory --help`, `memory doc --help`,
 
 ## Skills & hooks
 
-`make install` symlinks `skills/*` into `~/.claude/skills/` and `hooks/*.sh`
-into `~/.claude/hooks/`: `/recall`, `/remember`, `/forget`,
-`/memory:status`, plus SessionStart/UserPromptSubmit hooks for health
-checks and auto-recall. Edits to this repo take effect immediately (symlinks,
-no reinstall needed for skills/hooks — only for the compiled CLI).
+Skills and hooks ship as a Claude Code **plugin**, installed from the
+`rkhozinov` marketplace:
+
+```
+/plugin marketplace add rkhozinov/claude-marketplace
+/plugin install memory@rkhozinov
+```
+
+That gives you `/memory:recall`, `/memory:remember`, `/memory:forget`,
+`/memory:status` and `/memory:codebase`, plus three hooks: a SessionStart
+banner that injects a curated index of your memories, a UserPromptSubmit hook
+that recalls relevant memories once per session, and a SessionEnd hook that
+runs consolidation and refreshes the index.
+
+The CLI is a separate install (`make reinstall`, or `uv tool install`) — the
+plugin's hooks and skills all shell out to `memory` on your PATH.
+
+**The code that runs is the plugin cache**, not your checkout. To iterate on
+hooks without republishing, `make link-dev` points the installed plugin's
+`hooks/` at this repo and `make unlink-dev` puts it back; `make verify-runtime`
+tells you which is currently live.
+
+### Automatic capture (opt-in)
+
+`memory admin extract-pending` distils *finished* sessions into atomic
+memories. It only looks at transcripts idle for six hours or more, so it never
+runs while you are working, and a free non-LLM gate rejects low-signal sessions
+before any model call. Every stored fact must quote a verbatim span of the
+transcript; secrets and denylisted terms drop the fact entirely.
+
+It is disabled by default. Preview what it would store:
+
+```
+memory admin extract-pending --dry-run
+```
+
+Enable it (the SessionEnd hook then drains the backlog in the background):
+
+```
+export MEMORY_EXTRACT=1
+```
+
+Roughly $0.08 and ~100s per qualifying session on Haiku; `MEMORY_EXTRACT_DAILY_BUDGET`
+(default $1.00) is a hard stop.
 
 See `src/memory/CLAUDE.md` for architecture, database schema, and
 implementation details.
