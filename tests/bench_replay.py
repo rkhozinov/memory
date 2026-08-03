@@ -220,7 +220,11 @@ def main() -> int:
         match = "hash"
         print(f"Loaded {len(queries)} real-corpus queries from {args.real_corpus}")
     else:
-        queries = [(tc.query, tc.expected_top, getattr(tc, "category", "general")) for tc in corpus.ALL_TEST_CASES if tc.expected_top]
+        queries = [
+            (tc.query, tc.expected_top, getattr(tc, "category", "general"))
+            for tc in corpus.ALL_TEST_CASES
+            if tc.expected_top
+        ]
         match = "substring"
 
     if args.limit:
@@ -236,6 +240,7 @@ def main() -> int:
             # Snapshot the live DB to avoid mutating it during replay.
             import shutil
             from memory.core import DB_PATH as _DB
+
             snap = Path(td) / "snapshot.db"
             shutil.copy2(_DB, snap)
             store = MemoryStore(db_path=snap)

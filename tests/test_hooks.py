@@ -243,6 +243,22 @@ def test_session_end_archives_even_when_dream_is_throttled(env, fake_memory):
     assert not any(a[:2] == ["admin", "dream"] for a in argv), "dream should be throttled here"
 
 
+def test_session_end_extracts_exactly_the_session_that_ended(env, fake_memory):
+    """The hook is handed a session_id; it must target that session rather than
+    sweeping a backlog that is sorted oldest-first."""
+    _, calls = fake_memory
+    env = {**env, "MEMORY_EXTRACT": "1"}
+    run_hook(END_HOOK, env, json.dumps({"session_id": "abc-123", "cwd": "/repo"}))
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if calls.exists() and "extract-pending" in calls.read_text():
+            break
+        time.sleep(0.05)
+    argv = [json.loads(x) for x in calls.read_text().splitlines() if x]
+    ex = next(a for a in argv if a[:2] == ["admin", "extract-pending"])
+    assert ex[ex.index("--session") + 1] == "abc-123"
+
+
 def test_session_end_is_silent(env, fake_memory):
     """It runs as the session tears down; stdout would be noise."""
     res = run_hook(END_HOOK, env)

@@ -23,15 +23,15 @@ from memory.core import (
 @pytest.mark.parametrize(
     "query",
     [
-        "TICKET-194",       # ticket id
+        "TICKET-194",  # ticket id
         "TICKET-64",
-        "PR #502",       # PR ref
+        "PR #502",  # PR ref
         "#456",
-        "east-2",        # word-hyphen-digit
+        "east-2",  # word-hyphen-digit
         "nemotron-3",
         "acme-2",
         "ERR_CONN_RESET_4XX",  # underscore + digit
-        "fix TICKET-204 today",   # embedded in a sentence
+        "fix TICKET-204 today",  # embedded in a sentence
     ],
 )
 def test_looks_like_identifier_true(query):
@@ -46,9 +46,7 @@ def test_weighted_best_promotes_exact_id_and_rescores_general(populated_store):
     assert id_hits, "expected results for TICKET-64"
     assert "TICKET-64" in id_hits[0]["content"], f"exact id not promoted: {id_hits[0]['content'][:60]}"
 
-    gen = populated_store.search(
-        query="kubernetes pod crash", mode="hybrid", limit=5, score_fusion="weighted_best"
-    )
+    gen = populated_store.search(query="kubernetes pod crash", mode="hybrid", limit=5, score_fusion="weighted_best")
     if gen:
         assert "csls_score" in gen[0], "csls rescoring not applied on general query"
 

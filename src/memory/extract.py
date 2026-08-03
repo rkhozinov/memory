@@ -1,4 +1,4 @@
-"""Idle-gated distillation of finished Claude Code sessions into atomic memories.
+"""Distillation of finished Claude Code sessions into atomic memories.
 
 `auto_archive_pending` already stores whole trimmed transcripts as documents with
 no LLM involved. This module is the other half: it asks a small model to pull a
@@ -7,8 +7,10 @@ memories.
 
 Three properties are deliberate:
 
-* **Off the hot path.** A session is only eligible once its transcript has been
-  idle for hours, so nothing here ever runs while you are working.
+* **Off the hot path.** Driven by SessionEnd, which is the harness telling us a
+  session is finished — so the normal path passes an explicit session id and
+  needs no heuristic at all. The idle-hours gate only applies to a manual run
+  draining a backlog.
 * **Cheap by refusing to run.** A free, non-LLM signal gate rejects most
   sessions before any model is invoked.
 * **Grounded.** Every proposed fact must quote a verbatim span of the transcript
@@ -389,7 +391,7 @@ def _encode_cwd(path: str) -> str:
     return re.sub(r"[^a-zA-Z0-9-]", "-", path)
 
 
-def _pending(cwd: str, idle_hours: float, limit: int) -> list[Path]:
+def _pending(cwd: str, idle_hours: float, limit: int, session_id: str | None = None) -> list[Path]:
     """Session transcripts old enough to be finished and not yet extracted.
 
     Kept separate from `auto_archive_pending`'s own scan on purpose: that method
@@ -399,6 +401,17 @@ def _pending(cwd: str, idle_hours: float, limit: int) -> list[Path]:
     d = Path.home() / ".claude" / "projects" / _encode_cwd(cwd)
     if not d.is_dir():
         return []
+
+    # Explicit session: SessionEnd knows exactly which transcript just finished,
+    # so there is nothing to search for and no idle gate to apply. Without this
+    # the hook competes with the backlog — `_pending` returns oldest-first, so
+    # the session you just did is the last one a capped run would reach.
+    if session_id:
+        p = d / f"{session_id}.jsonl"
+        if not p.is_file() or (marker_dir() / f"{session_id}.extract.json").exists():
+            return []
+        return [p]
+
     cutoff = time.time() - idle_hours * 3600
     out = []
     for p in d.glob("*.jsonl"):
@@ -436,6 +449,7 @@ def extract_pending(
     cwd: str | None = None,
     idle_hours: float | None = None,
     max_sessions: int | None = None,
+    session_id: str | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Distil finished sessions under `cwd` into memories. Returns a summary."""
@@ -466,7 +480,7 @@ def extract_pending(
 
     try:
         marker_dir().mkdir(parents=True, exist_ok=True)
-        for path in _pending(cwd, idle_hours, max_sessions):
+        for path in _pending(cwd, idle_hours, max_sessions, session_id):
             summary["scanned"] += 1
             marker = marker_dir() / f"{path.stem}.extract.json"
 

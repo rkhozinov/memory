@@ -150,26 +150,20 @@ def test_consolidate_cluster_mmr_union_preserves_unique_facts(store):
     seed = _seed_similar_cluster(
         store,
         [
-            "OnCall API: SA token cannot resolve alert groups; returns 403. "
-            "Affects oncall provider in Terraform.",
+            "OnCall API: SA token cannot resolve alert groups; returns 403. Affects oncall provider in Terraform.",
             "Grafana SA token cannot silence OnCall alerts via API. "
             "Use admin role instead. Workaround: rotate token monthly.",
-            "Service account tokens lack permission for resolve. "
-            "Critical for SRE on-call rotation runbook.",
+            "Service account tokens lack permission for resolve. Critical for SRE on-call rotation runbook.",
         ],
     )
     conn = store._get_conn()
     conn.execute("UPDATE memories SET recall_count = 5 WHERE content_hash = ?", (seed[0],))
     conn.commit()
 
-    result = store.consolidate(
-        threshold=0.85, cluster=True, content_strategy="mmr_union", project_scoped=False
-    )
+    result = store.consolidate(threshold=0.85, cluster=True, content_strategy="mmr_union", project_scoped=False)
     assert result["consolidated"] == 2
 
-    survivor = conn.execute(
-        "SELECT content FROM memories WHERE content_hash = ?", (seed[0],)
-    ).fetchone()
+    survivor = conn.execute("SELECT content FROM memories WHERE content_hash = ?", (seed[0],)).fetchone()
     content = survivor["content"].lower()
     # Unique facts from each member must survive (matched by keyword).
     assert "403" in content or "resolve" in content  # member 1 fact

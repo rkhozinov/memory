@@ -28,6 +28,18 @@ INTERVAL_HOURS="${MEMORY_DREAM_INTERVAL_HOURS:-6}"
 # Defensive: ensure dream dir exists.
 mkdir -p "$DREAM_DIR" 2>/dev/null || exit 0
 
+# Claude Code hands SessionEnd the id of the session that just finished. That is
+# the whole point of this hook: no searching, no idle heuristic, no guessing
+# which transcript is "done" — the harness already told us.
+END_SESSION_ID=""
+if [ ! -t 0 ]; then
+  HOOK_INPUT=$(cat 2>/dev/null || true)
+  if [ -n "$HOOK_INPUT" ]; then
+    PARSED=$(mem_parse_hook_input "$HOOK_INPUT" 2>/dev/null || true)
+    [ -n "$PARSED" ] && END_SESSION_ID=$(mem_safe_session_id "$(mem_field "$PARSED" 1)")
+  fi
+fi
+
 # Bail if the memory CLI is not available — nothing to do.
 command -v memory >/dev/null 2>&1 || exit 0
 
@@ -65,13 +77,30 @@ fi
 # Everything below this point must stay ABOVE the dream throttle, which exits 0.
 (memory admin auto-archive-pending --cwd "$PWD" --min-age-minutes 0 >/dev/null 2>&1 &) >/dev/null 2>&1
 
-# Distil finished sessions into atomic memories. Opt-in: does nothing unless
-# MEMORY_EXTRACT=1. Only touches transcripts idle for hours, so it never
-# processes the session that just ended — it drains the backlog behind it.
+# Distil the session that just ended into atomic memories. Opt-in: does nothing
+# unless MEMORY_EXTRACT=1.
+#
+# `--idle-hours 0` is the point. SessionEnd IS the "this session is finished"
+# signal, so there is nothing to wait for: the transcript is complete and the
+# work is fresh. The six-hour idle default only makes sense for a manual run
+# draining a backlog, and it meant the session you just did was the one session
+# never distilled.
+#
+# Markers make this idempotent, so a session already handled here is skipped.
 if [[ "${MEMORY_EXTRACT:-0}" == "1" ]]; then
   EXTRACT_DIR="$HOME/.claude/memory/extract"
   mkdir -p "$EXTRACT_DIR" 2>/dev/null
-  (memory admin extract-pending --cwd "$PWD" >"$EXTRACT_DIR/last_run.log" 2>&1 &) >/dev/null 2>&1
+  if [[ -n "$END_SESSION_ID" ]]; then
+    # Exactly the session that just ended. `_pending` returns oldest-first, so
+    # without this a capped run distils the backlog and reaches the session you
+    # actually just did last, or not at all.
+    (memory admin extract-pending --cwd "$PWD" --session "$END_SESSION_ID" \
+       >"$EXTRACT_DIR/last_run.log" 2>&1 &) >/dev/null 2>&1
+  else
+    # No session id in the payload — fall back to the backlog sweep.
+    (memory admin extract-pending --cwd "$PWD" --idle-hours 0 \
+       >"$EXTRACT_DIR/last_run.log" 2>&1 &) >/dev/null 2>&1
+  fi
 fi
 
 # Throttle check: skip if marker exists and is younger than INTERVAL_HOURS.

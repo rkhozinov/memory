@@ -17,6 +17,7 @@ from memory.transcript import trim_transcript
 # JSONL fixture builder
 # ---------------------------------------------------------------------------
 
+
 def _write_jsonl(path: Path, entries: list[dict]) -> None:
     """Write a list of dicts as JSONL to path."""
     with open(path, "w", encoding="utf-8") as fh:
@@ -96,6 +97,7 @@ def _make_fixture(tmp_path: Path) -> Path:
 # Test 1 — basic trim: noise dropped, content kept
 # ---------------------------------------------------------------------------
 
+
 def test_trim_drops_noise_keeps_content(tmp_path):
     fixture = _make_fixture(tmp_path)
     result = trim_transcript(fixture)
@@ -124,21 +126,26 @@ def test_trim_drops_noise_keeps_content(tmp_path):
 # Test 2 — trim_transcript caps at max_chars and appends continuation marker
 # ---------------------------------------------------------------------------
 
+
 def test_trim_caps_at_max_chars(tmp_path):
     # Make a fixture with enough content to exceed small cap
     entries = []
     for i in range(50):
-        entries.append({
-            "type": "user",
-            "message": {"role": "user", "content": f"User message number {i}: " + "x" * 100},
-        })
-        entries.append({
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": f"Assistant reply {i}: " + "y" * 200}],
-            },
-        })
+        entries.append(
+            {
+                "type": "user",
+                "message": {"role": "user", "content": f"User message number {i}: " + "x" * 100},
+            }
+        )
+        entries.append(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": f"Assistant reply {i}: " + "y" * 200}],
+                },
+            }
+        )
 
     path = tmp_path / "long_session.jsonl"
     _write_jsonl(path, entries)
@@ -151,6 +158,7 @@ def test_trim_caps_at_max_chars(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 3 — exact duplicate user messages are deduped
 # ---------------------------------------------------------------------------
+
 
 def test_trim_deduplicates_user_messages(tmp_path):
     entries = [
@@ -172,6 +180,7 @@ def test_trim_deduplicates_user_messages(tmp_path):
 # Test 4 — empty/blank user turns are skipped
 # ---------------------------------------------------------------------------
 
+
 def test_trim_skips_empty_user_turns(tmp_path):
     entries = [
         {"type": "user", "message": {"role": "user", "content": "   "}},
@@ -189,13 +198,12 @@ def test_trim_skips_empty_user_turns(tmp_path):
 # Test 5 — auto_archive_pending skips sessions younger than min_age_minutes
 # ---------------------------------------------------------------------------
 
+
 def test_auto_archive_pending_skips_too_recent(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
     session_file = projects_dir / "session-abc.jsonl"
-    _write_jsonl(session_file, [
-        {"type": "user", "message": {"role": "user", "content": "hello"}}
-    ])
+    _write_jsonl(session_file, [{"type": "user", "message": {"role": "user", "content": "hello"}}])
     # Touch it to ensure it's "now"
     session_file.touch()
 
@@ -216,13 +224,12 @@ def test_auto_archive_pending_skips_too_recent(store, tmp_path):
 # Test 6 — auto_archive_pending skips sessions with existing marker
 # ---------------------------------------------------------------------------
 
+
 def test_auto_archive_pending_skips_existing_marker(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
     session_file = projects_dir / "session-xyz.jsonl"
-    _write_jsonl(session_file, [
-        {"type": "user", "message": {"role": "user", "content": "hello"}}
-    ])
+    _write_jsonl(session_file, [{"type": "user", "message": {"role": "user", "content": "hello"}}])
 
     # Make it old enough
     old_time = time.time() - 7200  # 2 hours ago
@@ -247,6 +254,7 @@ def test_auto_archive_pending_skips_existing_marker(store, tmp_path):
 # ---------------------------------------------------------------------------
 # Test 7 — auto_archive_pending stores doc with expected title/tags/doc_type
 # ---------------------------------------------------------------------------
+
 
 def test_auto_archive_pending_stores_doc(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-myproject"
@@ -308,6 +316,7 @@ def test_auto_archive_pending_stores_doc(store, tmp_path):
 # Test 8 — auto_archive_pending writes marker with content hash on success
 # ---------------------------------------------------------------------------
 
+
 def test_auto_archive_pending_writes_marker_with_hash(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
@@ -351,6 +360,7 @@ def test_auto_archive_pending_writes_marker_with_hash(store, tmp_path):
 # Test 9 — empty/unreadable JSONL → skipped_empty++, marker still written
 # ---------------------------------------------------------------------------
 
+
 def test_auto_archive_pending_empty_jsonl_writes_marker(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
@@ -385,6 +395,7 @@ def test_auto_archive_pending_empty_jsonl_writes_marker(store, tmp_path):
 # Test 10 — auto_archive_pending respects max_sessions cap (oldest-first)
 # ---------------------------------------------------------------------------
 
+
 def test_auto_archive_pending_respects_max_sessions(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
     projects_dir.mkdir(parents=True)
@@ -392,9 +403,7 @@ def test_auto_archive_pending_respects_max_sessions(store, tmp_path):
     # Create 5 old sessions with distinct ages
     for i in range(5):
         session_file = projects_dir / f"session-{i:03d}.jsonl"
-        _write_jsonl(session_file, [
-            {"type": "user", "message": {"role": "user", "content": f"message {i}"}}
-        ])
+        _write_jsonl(session_file, [{"type": "user", "message": {"role": "user", "content": f"message {i}"}}])
         old_time = time.time() - 3600 - i * 10  # Different ages; smallest i = newest
         os.utime(session_file, (old_time, old_time))
 
@@ -414,6 +423,7 @@ def test_auto_archive_pending_respects_max_sessions(store, tmp_path):
 # ---------------------------------------------------------------------------
 # Test 11 — dry_run returns counts without storing or writing markers
 # ---------------------------------------------------------------------------
+
 
 def test_auto_archive_pending_dry_run(store, tmp_path):
     projects_dir = tmp_path / ".claude" / "projects" / "-Users-test-project"
@@ -460,6 +470,7 @@ def test_auto_archive_pending_dry_run(store, tmp_path):
 # Test 12 — CLI auto-archive-pending --dry-run returns JSON without LLM calls
 # ---------------------------------------------------------------------------
 
+
 def test_cli_auto_archive_pending_dry_run(tmp_path, capsys):
     """CLI dry-run returns JSON with no API calls made."""
     from memory.cli import main
@@ -485,12 +496,17 @@ def test_cli_auto_archive_pending_dry_run(tmp_path, capsys):
     marker_dir = tmp_path / "markers"
 
     with patch("pathlib.Path.home", return_value=tmp_path):
-        main([
-            "admin", "auto-archive-pending",
-            "--cwd", "/Users/test/project",
-            "--min-age-minutes", "5",
-            "--dry-run",
-        ])
+        main(
+            [
+                "admin",
+                "auto-archive-pending",
+                "--cwd",
+                "/Users/test/project",
+                "--min-age-minutes",
+                "5",
+                "--dry-run",
+            ]
+        )
 
     captured = capsys.readouterr()
     output = json.loads(captured.out)

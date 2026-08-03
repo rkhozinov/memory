@@ -450,6 +450,7 @@ def cmd_admin_extract_pending(args, store: MemoryStore) -> None:
             cwd=args.cwd,
             idle_hours=args.idle_hours,
             max_sessions=args.max_sessions,
+            session_id=args.session,
             dry_run=args.dry_run,
         )
     )
@@ -896,6 +897,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only process transcripts idle this long (default: 6)",
     )
     p.add_argument("--max-sessions", default=None, type=int, help="Max sessions per run (default: 5)")
+    p.add_argument(
+        "--session",
+        default=None,
+        help="Extract exactly this session id, ignoring the idle gate (used by the SessionEnd hook)",
+    )
     p.add_argument(
         "--dry-run",
         action="store_true",

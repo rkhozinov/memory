@@ -235,3 +235,27 @@ def test_daily_budget_stops_the_scan(sandbox, store, monkeypatch):
     out = extract.extract_pending(store, cwd=str(tmp_path / "demo"))
     assert "daily budget" in out.get("error", "")
     assert out["extracted"] == 0
+
+
+def test_explicit_session_ignores_the_idle_gate(sandbox, monkeypatch):
+    """SessionEnd knows which transcript just finished; there is nothing to wait
+    for and no oldest-first backlog to lose it behind."""
+    import os
+    import time
+
+    tmp_path, session = sandbox
+    os.utime(session, (time.time(), time.time()))  # brand new — would fail an idle gate
+    assert extract._pending(str(tmp_path / "demo"), 6.0, 5) == []
+    assert extract._pending(str(tmp_path / "demo"), 6.0, 5, session.stem) == [session]
+
+
+def test_explicit_session_still_respects_its_marker(sandbox):
+    tmp_path, session = sandbox
+    extract.marker_dir().mkdir(parents=True, exist_ok=True)
+    (extract.marker_dir() / f"{session.stem}.extract.json").write_text("{}")
+    assert extract._pending(str(tmp_path / "demo"), 0.0, 5, session.stem) == []
+
+
+def test_unknown_session_id_is_not_an_error(sandbox):
+    tmp_path, _ = sandbox
+    assert extract._pending(str(tmp_path / "demo"), 0.0, 5, "no-such-session") == []

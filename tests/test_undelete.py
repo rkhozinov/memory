@@ -31,19 +31,13 @@ def test_undelete_revives_soft_deleted_memory(store):
 
     # Memory is live again and indexed.
     conn = store._get_conn()
-    live = conn.execute(
-        "SELECT deleted_at FROM memories WHERE content_hash = ?", (h,)
-    ).fetchone()
+    live = conn.execute("SELECT deleted_at FROM memories WHERE content_hash = ?", (h,)).fetchone()
     assert live["deleted_at"] is None
 
-    emb = conn.execute(
-        "SELECT rowid FROM memory_embeddings WHERE rowid = ?", (mem_id,)
-    ).fetchone()
+    emb = conn.execute("SELECT rowid FROM memory_embeddings WHERE rowid = ?", (mem_id,)).fetchone()
     assert emb is not None
 
-    fts = conn.execute(
-        "SELECT rowid FROM memory_fts WHERE rowid = ?", (mem_id,)
-    ).fetchone()
+    fts = conn.execute("SELECT rowid FROM memory_fts WHERE rowid = ?", (mem_id,)).fetchone()
     assert fts is not None
 
     # And get() now returns it.
@@ -90,9 +84,7 @@ def test_undelete_reindexes_when_embedding_row_missing(store):
     assert result["had_embedding"] is False
     assert result["reindexed"] is True
 
-    emb = conn.execute(
-        "SELECT rowid FROM memory_embeddings WHERE rowid = ?", (mem_id,)
-    ).fetchone()
+    emb = conn.execute("SELECT rowid FROM memory_embeddings WHERE rowid = ?", (mem_id,)).fetchone()
     assert emb is not None
 
 
@@ -134,9 +126,7 @@ def test_undelete_dry_run_does_not_mutate(store):
     assert result["hash"] == h
 
     conn = store._get_conn()
-    deleted_at = conn.execute(
-        "SELECT deleted_at FROM memories WHERE id = ?", (mem_id,)
-    ).fetchone()["deleted_at"]
+    deleted_at = conn.execute("SELECT deleted_at FROM memories WHERE id = ?", (mem_id,)).fetchone()["deleted_at"]
     assert deleted_at is not None  # still soft-deleted
 
 

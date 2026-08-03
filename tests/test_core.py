@@ -1508,9 +1508,7 @@ def test_dream_date_rewrite_yesterday(store):
 
     # The original hash is no longer in the DB (content changed → new hash)
     conn = store._get_conn()
-    row = conn.execute(
-        "SELECT content FROM memories WHERE deleted_at IS NULL"
-    ).fetchone()
+    row = conn.execute("SELECT content FROM memories WHERE deleted_at IS NULL").fetchone()
     assert "yesterday" not in row["content"]
     # Should contain an ISO date fragment
     assert "-" in row["content"]  # YYYY-MM-DD format
@@ -1524,9 +1522,7 @@ def test_dream_date_rewrite_n_days_ago(store):
     assert result["dates_rewritten"] >= 1
 
     conn = store._get_conn()
-    row = conn.execute(
-        "SELECT content FROM memories WHERE deleted_at IS NULL"
-    ).fetchone()
+    row = conn.execute("SELECT content FROM memories WHERE deleted_at IS NULL").fetchone()
     assert "days ago" not in row["content"]
 
 
@@ -1625,9 +1621,7 @@ def test_dream_supersession_dry_run(store):
     assert result["dry_run"] is True
     # No actual soft-delete
     conn = store._get_conn()
-    active = conn.execute(
-        "SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL"
-    ).fetchone()["cnt"]
+    active = conn.execute("SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL").fetchone()["cnt"]
     assert active == 2  # neither deleted
 
 
@@ -1866,9 +1860,7 @@ def test_store_injection_reject_mode(store):
     assert "injection pattern" in result["error"]
     # Verify nothing was persisted
     conn = store._get_conn()
-    rows = conn.execute(
-        "SELECT id FROM memories WHERE content LIKE '%ignore previous%'"
-    ).fetchall()
+    rows = conn.execute("SELECT id FROM memories WHERE content LIKE '%ignore previous%'").fetchall()
     assert len(rows) == 0
 
 
@@ -2015,6 +2007,7 @@ def test_build_index_respects_max_lines_cap_with_demoted_footer(store):
     assert "## Demoted (search-only; not auto-loaded)" in idx
     # Footer line must reference a positive count
     import re as _re
+
     match = _re.search(r"\*(\d+)\* entries available", idx)
     assert match, "Demoted footer should show count"
     demoted_count = int(match.group(1))
