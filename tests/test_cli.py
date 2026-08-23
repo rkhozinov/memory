@@ -1,5 +1,6 @@
 """CLI integration tests. All output is JSON."""
 
+import argparse
 import io
 import json
 from unittest.mock import patch
@@ -431,3 +432,51 @@ def test_doc_search_depth_summary(store):
     assert len(hash_field) == 16
     assert marker == "[doc]"
     assert title == "Runbook Alpha"
+
+
+# --- command aliases ---
+
+
+def test_add_find_rm_aliases(cli_env):
+    """`add`/`find`/`rm` are `store`/`search`/`delete`."""
+    stored = _invoke(cli_env, ["add", "alias smoke test"])
+    assert stored["status"] == "stored"
+    hits = _invoke(cli_env, ["find", "alias smoke test"])
+    assert [h["content_hash"] for h in hits] == [stored["content_hash"]]
+    assert _invoke(cli_env, ["rm", stored["content_hash"][:10]])["deleted"] == 1
+
+
+def test_forget_alias_deletes(cli_env):
+    stored = _invoke(cli_env, ["add", "forget alias test"])
+    assert _invoke(cli_env, ["forget", stored["content_hash"]])["deleted"] == 1
+
+
+def test_doc_ls_alias(store):
+    """`doc ls` is `doc list`."""
+    from memory import cli as memory_cli
+
+    store.store_doc(title="Runbook Beta", body="beta body text", summary="beta summary")
+    buf = io.StringIO()
+    with (
+        patch("memory.core.DB_PATH", store.db_path),
+        patch("memory.cli.MemoryStore", lambda: store),
+        patch("sys.stdout", buf),
+    ):
+        memory_cli.main(["doc", "ls"])
+    assert "Runbook Beta" in buf.getvalue()
+
+
+def test_every_parser_choice_has_a_dispatch_entry():
+    """Drift guard: argparse reports the alias *as typed* in `args.command`, so an
+    alias without its own dispatch key is a KeyError at runtime, not a parse error.
+    `admin` is excluded — its choices deliberately exceed _ADMIN_DISPATCH (`tags`
+    and `graph` are handled inline in cmd_admin)."""
+    from memory.cli import _DISPATCH, _DOC_DISPATCH, _build_parser
+
+    def choices(parser):
+        action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        return action.choices
+
+    top = choices(_build_parser())
+    assert set(top) == set(_DISPATCH)
+    assert set(choices(top["doc"])) == set(_DOC_DISPATCH)
