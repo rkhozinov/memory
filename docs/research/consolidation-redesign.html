@@ -69,16 +69,14 @@ li { margin: .25rem 0; }
 <p><code>benchmarks/session_analytics.py</code> now prints this split automatically, with the headline explicitly labelled as not a defect rate, so it cannot be misread the same way twice.</p>
 <p><strong>What survives</strong>: one small fix — 48 slash-command queries reached <code>search</code> since May. <code>hooks/memory-topic-recall.sh</code> skips slash commands, so another caller does not. Find it and skip there too.</p>
 <p><strong>What this cost</strong>: a top-priority item that turned out to be noise. The lesson is cheap and worth writing down — a rate computed over a column nobody had read is not a measurement, it is a hypothesis. Read the rows.</p>
-<h3>1.3 Stop trusting <code>recall_count</code> before 2026-07</h3>
-<p><strong>Measured</strong>: 2 152 memories share one of three <code>last_recalled_at</code> days — 1 874 on 2026-06-23 alone. Of 2 458 memories older than 90 days, exactly <strong>one</strong> has <code>recall_count = 0</code>. That is a sweep with tracking on, not reading.</p>
-<p><code>recall_count</code> feeds the ranking demotion factor, dream&#x27;s demotion pass, the index tier-2 score, and active-forget eligibility. All four are reading contaminated data for the pre-July corpus. Options, in order of preference:</p>
-<ol>
-<li>Add a <code>recall_count_since</code> epoch and score on recalls after it.</li>
-<li>Reset <code>recall_count</code> for memories whose only recall falls on a detected bulk day. Destructive and irreversible; needs explicit sign-off.</li>
-<li>Do nothing but document it. Cheapest, and honest, if lifecycle work is not imminent.</li>
-</ol>
-<p><code>benchmarks/session_analytics.py</code> now detects and prints bulk-recall days, so at minimum the contamination will not be silently rediscovered.</p>
-<hr>
+<h3>1.3 ~~Stop trusting <code>recall_count</code>~~ — measured, and it is inert</h3>
+<p><strong>The contamination is real.</strong> Three days each bumped ≥100 memories at once — 2026-06-23 (1 874), 2026-08-30 (147), 2026-08-25 (131). Of 2 458 memories older than 90 days, exactly one has <code>recall_count = 0</code>. That is a sweep with tracking on, not reading.</p>
+<p><strong>The 2 152 figure over-counts, though.</strong> Most of those memories have other recalls too, so their count is not purely an artifact. Only <strong>477</strong> have a single recall that lands on a sweep day.</p>
+<p><strong>And zeroing those 477 changes nothing measurable.</strong> Cloning the production DB, zeroing them, and comparing every consumer:</p>
+<table><thead><tr><th>consumer</th><th>contaminated</th><th>cleaned</th><th>difference</th></tr></thead><tbody><tr><td>index selection</td><td>32 entries</td><td>32 entries</td><td><strong>byte-identical</strong></td></tr><tr><td>retrieval MRR (<code>+best</code>, 200 queries)</td><td>0.970</td><td>0.970</td><td>none</td></tr><tr><td><code>dream</code> demote pass</td><td>0</td><td>35</td><td>35 of 5 869 (0.6%)</td></tr></tbody></table>
+<p>The demote pass is the only consumer that moves, and demotion&#x27;s effect is exclusion from the index — which is identical between the two. So the difference produces no observable change.</p>
+<p><strong>Closed. A <code>recall_count_since</code> epoch column was scoped and would have been built for nothing.</strong> <code>benchmarks/session_analytics.py</code> detects and prints bulk-recall days, which is the right amount of effort to spend here.</p>
+<p><strong>Revisit if active forgetting is ever enabled</strong> (<code>MEMORY_ACTIVE_FORGET=1</code>). That path soft-deletes on an activation score that reads <code>recall_count</code> and <code>distinct_session_count</code>, and unlike demotion it is destructive. Re-run this comparison before turning it on.</p>
 <h2>Tier 2 — measured gap, needs design</h2>
 <h3>2.1 Chunk and embed document bodies — selectively</h3>
 <p><strong>Measured</strong> (P4, <code>benchmarks/results/probe-p4-brevity.json</code>):</p>
@@ -172,7 +170,10 @@ li { margin: .25rem 0; }
 <h2>Explicitly not proposed</h2>
 <table><thead><tr><th></th><th>Why</th></tr></thead><tbody><tr><td>Postgres / Neo4j migration</td><td>Forfeits local-first — the property no hosted competitor matches — to solve nothing currently measured.</td></tr><tr><td>Mem0 / Zep as a backend</td><td>Same, plus a network round trip inside a hook with a 4 s timeout.</td></tr><tr><td><code>weighted_best</code> → RRF</td><td>RRF measures <strong>16.1pp worse MRR</strong> here (0.765 vs 0.970, n=200).</td></tr><tr><td>Cross-encoder rerank on by default</td><td>+1.3pp for 714 ms p50 cold, against +4.4pp at 6 ms from <code>weighted_best</code>. Retiring it is the more defensible change.</td></tr><tr><td><strong>LLM-assisted cluster merge</strong></td><td>The stated gate was &quot;only if extractive merge loses facts.&quot; Measured: <code>mmr_union</code> retains 100%. The gate did not open. Revisit only if 1.1&#x27;s coherence check fails.</td></tr><tr><td>Porting LoCoMo / LongMemEval</td><td>Conversational shape, and increasingly measures context length rather than memory quality.</td></tr></tbody></table>
 <h2>Suggested order</h2>
-<p>~~<code>1.2</code>~~ (closed, see above) → <code>1.1 (default strategy)</code> → <code>1.3 (recall_count)</code> → <code>2.1 (chunking)</code> → <code>2.2 (update path)</code> → <code>3.3 (bound CSLS)</code> → <code>2.3 (injection mix, after a second measurement window)</code> → <code>3.2 (decide the graph&amp;#x27;s fate)</code>.</p>
-<p>1.2 ran first precisely because it could have reordered the rest. It did — by removing itself. 1.1 is now the highest-value item, and unlike 1.2 its evidence comes from a harness that reads the actual merged text rather than a count.</p>
+<p>All of Tier 1 is now closed. What survived it:</p>
+<table><thead><tr><th>item</th><th>outcome</th></tr></thead><tbody><tr><td>1.1 default strategy</td><td>changed to <code>mmr_union</code> — but consolidation is inert at 0.92, so it is latent safety</td></tr><tr><td>~~1.2 zero-result rate~~</td><td>not a defect rate. One small fix survives (slash commands reaching search).</td></tr><tr><td>~~1.3 recall_count~~</td><td>contaminated, and inert. Zeroing it changes no output.</td></tr></tbody></table>
+<p>Three items entered Tier 1 as measured problems. One turned out to be a mislabelled statistic, one turned out to have no consumer that cares, and the third fires on nothing today. <strong>That is the tier working as intended</strong> — it cost a few hours of measurement to avoid building three things, one of which (a <code>recall_count_since</code> epoch column) was fully scoped before the check.</p>
+<p>Remaining order: <code>2.1 (chunk the ~398 non-conversation docs)</code> → <code>2.2 (update path)</code> → <code>3.3 (bound CSLS)</code> → <code>2.3 (injection mix, after a second measurement window)</code> → <code>3.2 (decide the graph&amp;#x27;s fate)</code>.</p>
+<p>2.1 leads because P4 measured it as the one Tier-2 item with an unambiguous, currently-active cost: 0.65% of document text is embedded, and a fact stated verbatim in a body ranks 5th of 5.</p>
 </body>
 </html>

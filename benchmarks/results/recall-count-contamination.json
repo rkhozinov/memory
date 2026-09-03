@@ -1,0 +1,36 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "task": "recall_count contamination \u2014 does it change any output?",
+    "verdict": "No. Do not build a fix. Document and move on."
+  },
+  "contamination_extent": {
+    "memories_whose_last_recall_falls_on_a_bulk_day": 2152,
+    "memories_PURELY_contaminated_recall_count_1_on_a_bulk_day": 477,
+    "note": "The 2152 figure over-counts. Most of those memories have other recalls too, so their recall_count is not solely an artifact. Only 477 have a single recall that lands on a sweep day.",
+    "bulk_days": {
+      "2026-06-23": 1874,
+      "2026-08-30": 147,
+      "2026-08-25": 131
+    }
+  },
+  "measured_impact": {
+    "method": "clone the prod DB, zero recall_count for the 477 purely-contaminated rows, compare every consumer against the untouched clone",
+    "index_selection": {
+      "real": 32,
+      "clean": 32,
+      "entries_changed": 0
+    },
+    "retrieval_mrr_at_best_200_queries": {
+      "real": 0.97,
+      "clean": 0.97
+    },
+    "dream_demote_pass": {
+      "real": 0,
+      "clean": 35,
+      "note": "The only difference anywhere. 35 of 5869 memories (0.6%) are not being demoted that should be. Demotion excludes a memory from the index \u2014 and the index is byte-identical between the two, so even this difference produces no observable change."
+    }
+  },
+  "conclusion": "The contamination is real and worth knowing about, but it is inert. A recall_count_since epoch column was scoped and would have been built for no measurable gain. session_analytics already detects and prints bulk-recall days, which is the right amount of effort to spend on this.",
+  "revisit_if": "Active forgetting is ever enabled (MEMORY_ACTIVE_FORGET=1). That path soft-deletes on an activation score which reads recall_count and distinct_session_count, and unlike demotion it is destructive. Re-run this comparison before turning it on."
+}

@@ -109,26 +109,39 @@ caller does not. Find it and skip there too.
 is cheap and worth writing down — a rate computed over a column nobody had read
 is not a measurement, it is a hypothesis. Read the rows.
 
-### 1.3 Stop trusting `recall_count` before 2026-07
+### 1.3 ~~Stop trusting `recall_count`~~ — measured, and it is inert
 
-**Measured**: 2 152 memories share one of three `last_recalled_at` days — 1 874 on
-2026-06-23 alone. Of 2 458 memories older than 90 days, exactly **one** has
-`recall_count = 0`. That is a sweep with tracking on, not reading.
+**The contamination is real.** Three days each bumped ≥100 memories at once —
+2026-06-23 (1 874), 2026-08-30 (147), 2026-08-25 (131). Of 2 458 memories older
+than 90 days, exactly one has `recall_count = 0`. That is a sweep with tracking
+on, not reading.
 
-`recall_count` feeds the ranking demotion factor, dream's demotion pass, the index
-tier-2 score, and active-forget eligibility. All four are reading contaminated
-data for the pre-July corpus. Options, in order of preference:
+**The 2 152 figure over-counts, though.** Most of those memories have other
+recalls too, so their count is not purely an artifact. Only **477** have a
+single recall that lands on a sweep day.
 
-1. Add a `recall_count_since` epoch and score on recalls after it.
-2. Reset `recall_count` for memories whose only recall falls on a detected bulk
-   day. Destructive and irreversible; needs explicit sign-off.
-3. Do nothing but document it. Cheapest, and honest, if lifecycle work is not
-   imminent.
+**And zeroing those 477 changes nothing measurable.** Cloning the production DB,
+zeroing them, and comparing every consumer:
 
-`benchmarks/session_analytics.py` now detects and prints bulk-recall days, so at
-minimum the contamination will not be silently rediscovered.
+| consumer | contaminated | cleaned | difference |
+|---|---|---|---|
+| index selection | 32 entries | 32 entries | **byte-identical** |
+| retrieval MRR (`+best`, 200 queries) | 0.970 | 0.970 | none |
+| `dream` demote pass | 0 | 35 | 35 of 5 869 (0.6%) |
 
----
+The demote pass is the only consumer that moves, and demotion's effect is
+exclusion from the index — which is identical between the two. So the
+difference produces no observable change.
+
+**Closed. A `recall_count_since` epoch column was scoped and would have been
+built for nothing.** `benchmarks/session_analytics.py` detects and prints
+bulk-recall days, which is the right amount of effort to spend here.
+
+**Revisit if active forgetting is ever enabled** (`MEMORY_ACTIVE_FORGET=1`).
+That path soft-deletes on an activation score that reads `recall_count` and
+`distinct_session_count`, and unlike demotion it is destructive. Re-run this
+comparison before turning it on.
+
 
 ## Tier 2 — measured gap, needs design
 
@@ -435,10 +448,24 @@ existing baselines, so the decision and the evidence stay together.
 
 ## Suggested order
 
-~~`1.2`~~ (closed, see above) → `1.1 (default strategy)` → `1.3 (recall_count)`
-→ `2.1 (chunking)` → `2.2 (update path)` → `3.3 (bound CSLS)` → `2.3 (injection
-mix, after a second measurement window)` → `3.2 (decide the graph's fate)`.
+All of Tier 1 is now closed. What survived it:
 
-1.2 ran first precisely because it could have reordered the rest. It did — by
-removing itself. 1.1 is now the highest-value item, and unlike 1.2 its evidence
-comes from a harness that reads the actual merged text rather than a count.
+| item | outcome |
+|---|---|
+| 1.1 default strategy | changed to `mmr_union` — but consolidation is inert at 0.92, so it is latent safety |
+| ~~1.2 zero-result rate~~ | not a defect rate. One small fix survives (slash commands reaching search). |
+| ~~1.3 recall_count~~ | contaminated, and inert. Zeroing it changes no output. |
+
+Three items entered Tier 1 as measured problems. One turned out to be a
+mislabelled statistic, one turned out to have no consumer that cares, and the
+third fires on nothing today. **That is the tier working as intended** — it cost
+a few hours of measurement to avoid building three things, one of which
+(a `recall_count_since` epoch column) was fully scoped before the check.
+
+Remaining order: `2.1 (chunk the ~398 non-conversation docs)` →
+`2.2 (update path)` → `3.3 (bound CSLS)` → `2.3 (injection mix, after a second
+measurement window)` → `3.2 (decide the graph's fate)`.
+
+2.1 leads because P4 measured it as the one Tier-2 item with an unambiguous,
+currently-active cost: 0.65% of document text is embedded, and a fact stated
+verbatim in a body ranks 5th of 5.
