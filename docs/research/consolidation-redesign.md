@@ -357,6 +357,45 @@ ignore it.
 **Cheap because**: the ≥0.90 comparison already runs on every store for dedup
 (`core.py:1477`), and `valid_from`/`valid_to` already exist unused.
 
+**RUN, 2026-09-03** (`benchmarks/results/probe-p1-temporal-conflict.json`,
+`tests/bench_probe_p1.py`). Three results:
+
+1. **`as_of` accuracy 33%** against the 90% threshold. `as_of` only reaches
+   graph traversal; the semantic and FTS rankers ignore it, so a past-tense
+   query returns the present. The one apparent pass is not evidence — it is the
+   case where the current-tense control also missed, so the old fact won by
+   accident.
+2. **Conflicts detected: 0%**, and worse than silence. One case returned status
+   `duplicate` — the replacement fact was **rejected and lost**. `store()` has
+   two outcomes, `duplicate` and `stored`; an update that resembles what it
+   replaces takes the first one. That is a live bug, filed separately, and it
+   blocks the update path: building one is pointless while updates are being
+   discarded.
+3. **False-positive sweep** over 179 700 real pairs, on the candidate rule
+   (cosine ≥ t, same type, ≥1 shared tag):
+
+   | threshold | flags per 100 memories |
+   |---|---|
+   | 0.90 | 0.2 |
+   | 0.85 | 1.5 |
+   | **0.80** | **2.0** |
+   | 0.75 | 3.7 |
+   | 0.70 | 8.3 |
+
+   At 0.90 the rule fires on essentially nothing — the same saturation that makes
+   consolidation inert at 0.92. **0.80 is the operating point**: ~2 flags per 100
+   memories, about 24 prompts a month at the current write rate, tolerable when
+   the action is *surface this* rather than *merge these*.
+
+   Honest limit: this bounds **noise, not precision**. The corpus has no labelled
+   conflicts, so 2 flags per 100 could be 2 real conflicts or 2 false alarms. It
+   says a detector would not drown the user. It does not say it would find
+   anything.
+
+**Adoption**: build both — `as_of` as wiring against a 33% baseline, conflict
+detection as an advisory signal at 0.80 that never auto-merges. Fix the
+silent-rejection bug first.
+
 ### P2 — Does write-time linking pay? A multi-hop probe
 
 *Tests: A-MEM's memory-evolves-on-write, HippoRAG's graph traversal argument.*

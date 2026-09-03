@@ -141,6 +141,16 @@ li { margin: .25rem 0; }
 </ul>
 <p><strong>Adoption threshold</strong>: <code>as_of</code> accuracy 0.9+ on the fixture, and conflict detection with a false-positive rate under 5% measured against the <em>existing</em> near-duplicate clusters in the production DB — a conflict detector that fires on ordinary duplicates is worse than none, because it will train the operator to ignore it.</p>
 <p><strong>Cheap because</strong>: the ≥0.90 comparison already runs on every store for dedup (<code>core.py:1477</code>), and <code>valid_from</code>/<code>valid_to</code> already exist unused.</p>
+<p><strong>RUN, 2026-09-03</strong> (<code>benchmarks/results/probe-p1-temporal-conflict.json</code>, <code>tests/bench_probe_p1.py</code>). Three results:</p>
+<ol>
+<li><strong><code>as_of</code> accuracy 33%</strong> against the 90% threshold. <code>as_of</code> only reaches graph traversal; the semantic and FTS rankers ignore it, so a past-tense query returns the present. The one apparent pass is not evidence — it is the case where the current-tense control also missed, so the old fact won by accident.</li>
+<li><strong>Conflicts detected: 0%</strong>, and worse than silence. One case returned status <code>duplicate</code> — the replacement fact was <strong>rejected and lost</strong>. <code>store()</code> has two outcomes, <code>duplicate</code> and <code>stored</code>; an update that resembles what it replaces takes the first one. That is a live bug, filed separately, and it blocks the update path: building one is pointless while updates are being discarded.</li>
+<li><strong>False-positive sweep</strong> over 179 700 real pairs, on the candidate rule (cosine ≥ t, same type, ≥1 shared tag):</li>
+</ol>
+<table><thead><tr><th>threshold</th><th>flags per 100 memories</th></tr></thead><tbody><tr><td>0.90</td><td>0.2</td></tr><tr><td>0.85</td><td>1.5</td></tr><tr><td><strong>0.80</strong></td><td><strong>2.0</strong></td></tr><tr><td>0.75</td><td>3.7</td></tr><tr><td>0.70</td><td>8.3</td></tr></tbody></table>
+<p>At 0.90 the rule fires on essentially nothing — the same saturation that makes consolidation inert at 0.92. <strong>0.80 is the operating point</strong>: ~2 flags per 100 memories, about 24 prompts a month at the current write rate, tolerable when the action is <em>surface this</em> rather than <em>merge these</em>.</p>
+<p>Honest limit: this bounds <strong>noise, not precision</strong>. The corpus has no labelled conflicts, so 2 flags per 100 could be 2 real conflicts or 2 false alarms. It says a detector would not drown the user. It does not say it would find anything.</p>
+<p><strong>Adoption</strong>: build both — <code>as_of</code> as wiring against a 33% baseline, conflict detection as an advisory signal at 0.80 that never auto-merges. Fix the silent-rejection bug first.</p>
 <h3>P2 — Does write-time linking pay? A multi-hop probe</h3>
 <p><em>Tests: A-MEM&#x27;s memory-evolves-on-write, HippoRAG&#x27;s graph traversal argument.</em></p>
 <p>A-MEM&#x27;s distinctive claim is that a new note updates the notes it links to, so the network refines itself continuously rather than in a batch. Before building that, establish whether <strong>multi-hop retrieval is a real need here at all</strong>.</p>
