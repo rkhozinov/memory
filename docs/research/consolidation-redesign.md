@@ -647,6 +647,61 @@ measurement window is still required before changing the hook.
 All five write committed JSON into `benchmarks/results/`, same convention as the
 existing baselines, so the decision and the evidence stay together.
 
+## Decision: an update is not a duplicate
+
+`store()` had two outcomes, `duplicate` and `stored`. A fact that supersedes
+another is near-identical to it by construction — same subject, same tags, one
+value changed — so it cleared the 0.90 cosine bar and was returned as
+`duplicate`. The new value was discarded. `extract.py` passes
+`dedup_threshold=0.90` on every batch and `MEMORY_EXTRACT=1` is on, so the
+exposed path was the unattended one.
+
+**The discriminator is value-token divergence.** A *value token* is a dotted
+version, a kebab/snake symbol, a backticked literal, or a bare count —
+`ubuntu-22.04`, `mmr_union`, `0.92`, `847`. Rephrasing preserves them; an update
+changes one. When semantic dedup matches but value tokens diverge, the memory is
+**stored** and the result carries `supersedes_candidate` and
+`supersedes_similarity`.
+
+**Scale of what was being lost.** Of 6195 dedup-checked stores in production,
+795 were rejected: 171 by exact content hash (correct — byte-identical) and 624
+by semantic similarity. Of those 624, **519 (83%) sat in the 0.90–0.95 band**,
+and on real pairs sampled from the store that band reclassifies at 92.9%. Point
+estimate: roughly 480–500 facts carrying a distinct value were thrown away.
+
+| similarity band | pairs dedup would reject | reclassified as update | rate |
+|---|---|---|---|
+| 0.90–0.95 | 98 | 91 | 0.929 |
+| 0.95–0.99 | 9 | 6 | 0.667 |
+| ≥0.99 | 0 | 0 | — |
+
+The rate falling as similarity rises is the right direction: the more alike two
+memories are, the likelier the second really is a restatement.
+
+**The exact-hash path is untouched.** Those 171 rejections are true duplicates
+and still return `duplicate`.
+
+**Why this ships one-directional.** When the rule fires the memory is stored and
+merely flagged — nothing is merged, nothing is deleted. A false positive costs
+one near-duplicate row that consolidation can later merge; a false negative costs
+the fact outright. That asymmetry is the whole argument, and it is why this is
+advisory and never an auto-merge, per P1's finding that the measurement bounds
+noise rather than precision.
+
+**Limits, stated.** The production corpus has no labelled update/duplicate pairs,
+so this measures how often the rule *fires*, not whether each firing is right.
+The 107 sampled pairs come from random co-occurring memories rather than the
+actual dedup population (a new memory compared against the store), so it is a
+proxy. And every one of the eight examples inspected by hand was a genuinely
+*different* memory that dedup at 0.90 would have wrongly rejected — different
+infrastructure layers, different agent reports sharing a boilerplate prefix.
+That hints dedup at 0.90 is over-aggressive on this corpus independently of the
+update question, but eight is not a sample; it is a thread for task 29.
+
+Harness: `tests/bench_supersede.py`. Aggregates:
+`benchmarks/results/supersede-discriminator.json` (examples withheld — they quote
+verbatim production content).
+
 ## Decision: the cross-encoder reranker is retired
 
 Removed: `src/memory/rerank.py`, `tests/test_rerank.py`, the `--rerank` /

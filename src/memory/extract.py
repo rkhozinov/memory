@@ -533,18 +533,20 @@ def extract_pending(
 
             stored = 0
             deduped: list[dict] = []
+            superseding: list[dict] = []
             if batch:
                 result = store.store_batch(batch, dedup_threshold=0.90, reject_injection=True)
                 stored = sum(1 for r in (result or []) if isinstance(r, dict) and r.get("status") == "stored")
-                # Semantic dedup cannot tell an update from a duplicate: a fact that
-                # supersedes another is near-identical to it by construction, same
-                # subject and tags with one detail changed. So a rejection here may
-                # be a fact being thrown away, and this is the only unattended write
-                # path in the system. Record what was dropped and why — the content
-                # is otherwise gone, and operation_events keeps only the hash.
+                # store() now keeps a near-duplicate that disagrees about a concrete
+                # value, on the grounds that it probably updates rather than repeats.
+                # What still comes back as "duplicate" is a restatement — but this is
+                # the only unattended write path in the system, so keep recording the
+                # text either way: operation_events keeps only the hash.
                 for cand, r in zip(batch, result or [], strict=False):
-                    if isinstance(r, dict) and r.get("status") == "duplicate":
-                        text = cand.get("content", "") if isinstance(cand, dict) else str(cand)
+                    if not isinstance(r, dict):
+                        continue
+                    text = cand.get("content", "") if isinstance(cand, dict) else str(cand)
+                    if r.get("status") == "duplicate":
                         deduped.append(
                             {
                                 "rejected": text[:300],
@@ -552,11 +554,22 @@ def extract_pending(
                                 "similarity": r.get("message", ""),
                             }
                         )
+                    elif r.get("supersedes_candidate"):
+                        superseding.append(
+                            {
+                                "stored": text[:300],
+                                "may_supersede": r.get("supersedes_candidate"),
+                                "similarity": r.get("supersedes_similarity"),
+                            }
+                        )
             summary["stored"] += stored
             summary.setdefault("deduped", 0)
+            summary.setdefault("superseding", 0)
             summary["deduped"] += len(deduped)
+            summary["superseding"] += len(superseding)
             entry["stored"] = stored
             entry["deduped"] = len(deduped)
+            entry["superseding"] = len(superseding)
             summary["sessions"].append(entry)
             record_spend(res.get("cost_usd", 0.0))
             marker.write_text(
@@ -571,6 +584,7 @@ def extract_pending(
                         "facts_stored": stored,
                         "dropped": dropped,
                         "deduped": deduped,
+                        "superseding": superseding,
                     }
                 )
             )

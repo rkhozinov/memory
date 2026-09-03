@@ -313,6 +313,45 @@ def _extract_identifier_tokens(query: str | None) -> list[str]:
     return _IDENTIFIER_RE.findall(query)
 
 
+# Value tokens: the parts of a memory that carry a specific setting, version,
+# symbol name or count.  A rephrasing preserves them; an update changes one.
+# This is the discriminator semantic dedup was missing — a fact that supersedes
+# another is near-identical to it by construction, so cosine alone cannot tell
+# "said again" from "said differently now".
+_VALUE_RE = re.compile(
+    r"`[^`\n]{1,64}`"  # `literal`
+    r"|\b\d+(?:\.\d+)+\b"  # 22.04, 1.2.3
+    # trailing (?:\.\d+)* so ubuntu-22.04 is one token, not ubuntu-22 plus 04
+    r"|\b[A-Za-z_][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)+(?:\.\d+)*"  # ubuntu-22.04, mmr_union
+    r"|\b\d+\b"  # bare counts
+)
+
+
+def _value_tokens(text: str | None) -> set[str]:
+    """Versions, dotted numbers, kebab/snake symbols, backticked literals."""
+    if not text:
+        return set()
+    return {t.strip("`").lower() for t in _VALUE_RE.findall(text)}
+
+
+def differs_by_value(new: str, existing: str) -> bool:
+    """True when the two texts disagree about a concrete value.
+
+    Measured on the production store: of 624 semantically-deduped stores, 519
+    (83%) sat in the 0.90-0.95 band, and in that band 92.9% of pairs carry
+    diverging value tokens.  Those were facts being discarded, not restatements.
+
+    Deliberately one-directional.  When it fires the memory is STORED and merely
+    flagged, so a false positive costs a near-duplicate row that consolidation
+    can later merge, while a false negative costs the fact outright.  It is never
+    a licence to auto-merge — see P1's note that this bounds noise, not precision.
+    """
+    a, b = _value_tokens(new), _value_tokens(existing)
+    if not a and not b:
+        return False
+    return bool(a ^ b)
+
+
 def _promote_exact_matches(results: list[dict], tokens: list[str]) -> list[dict]:
     """Stable-reorder results so any whose content contains an identifier token
     verbatim (case-insensitive) come first, preserving fusion order within each
@@ -1546,6 +1585,8 @@ class MemoryStore:
                 embedding = get_model().embed_doc(content)
 
             # Similarity-based dedup (scoped to same memory_type)
+            supersedes_candidate: str | None = None
+            supersedes_similarity: float | None = None
             if dedup_threshold is not None:
                 # The candidate pool is deliberately wide. _search_semantic returns
                 # GLOBAL nearest neighbours, and the memory_type/tag filters below
@@ -1573,23 +1614,34 @@ class MemoryStore:
                 if mem.tags:
                     same_type = [s for s in same_type if any(t in s.get("tags", []) for t in mem.tags)]
                 if same_type and same_type[0].get("similarity", 0) >= dedup_threshold:
-                    duration_ms = (time.time() - start) * 1000
-                    self._track_event(
-                        conn,
-                        "store",
-                        duration_ms=duration_ms,
-                        content_hash=mem.content_hash,
-                        dedup_used=True,
-                        duplicate_detected=True,
-                        duplicate_similarity=same_type[0]["similarity"],
-                    )
-                    conn.execute("COMMIT")
-                    return {
-                        "content_hash": mem.content_hash,
-                        "status": "duplicate",
-                        "message": f"Similar memory exists (similarity={same_type[0]['similarity']:.2f})",
-                        "similar_hash": same_type[0]["content_hash"],
-                    }
+                    # Cosine alone cannot tell a restatement from an update: a
+                    # fact that supersedes another is near-identical to it by
+                    # construction.  If the two disagree about a concrete value
+                    # (a version, a setting name, a count) the new one asserts
+                    # something the old one does not, so it is stored and merely
+                    # flagged.  Advisory only — never an auto-merge.  See
+                    # docs/research/consolidation-redesign.md.
+                    if differs_by_value(content, same_type[0].get("content", "")):
+                        supersedes_candidate = same_type[0]["content_hash"]
+                        supersedes_similarity = same_type[0]["similarity"]
+                    else:
+                        duration_ms = (time.time() - start) * 1000
+                        self._track_event(
+                            conn,
+                            "store",
+                            duration_ms=duration_ms,
+                            content_hash=mem.content_hash,
+                            dedup_used=True,
+                            duplicate_detected=True,
+                            duplicate_similarity=same_type[0]["similarity"],
+                        )
+                        conn.execute("COMMIT")
+                        return {
+                            "content_hash": mem.content_hash,
+                            "status": "duplicate",
+                            "message": f"Similar memory exists (similarity={same_type[0]['similarity']:.2f})",
+                            "similar_hash": same_type[0]["content_hash"],
+                        }
 
             # Insert memory
             conn.execute(
@@ -1629,17 +1681,29 @@ class MemoryStore:
                 content_hash=mem.content_hash,
                 dedup_used=dedup_threshold is not None,
                 duplicate_detected=False,
+                duplicate_similarity=supersedes_similarity,
             )
             conn.execute("COMMIT")
         except BaseException:
             self._rollback_safe(conn)
             raise
 
-        return {
+        result = {
             "content_hash": mem.content_hash,
             "status": "stored",
             "message": "Memory stored successfully",
         }
+        if supersedes_candidate:
+            # Advisory: this cleared the dedup bar but disagrees about a value,
+            # so it probably updates that memory rather than repeating it.
+            # Nothing is merged or deleted on the strength of this.
+            result["supersedes_candidate"] = supersedes_candidate
+            result["supersedes_similarity"] = round(supersedes_similarity or 0.0, 4)
+            result["message"] = (
+                f"Stored; may supersede {supersedes_candidate[:12]} "
+                f"(similarity={supersedes_similarity:.2f}, differing values)"
+            )
+        return result
 
     def store_batch(
         self,

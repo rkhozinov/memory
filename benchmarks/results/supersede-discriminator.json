@@ -1,0 +1,57 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "probe": "value-token discriminator for update-vs-duplicate at store time",
+    "harness": "tests/bench_supersede.py",
+    "note": "Aggregates only. The per-pair examples are withheld: they quote verbatim production memory content."
+  },
+  "the_bug": {
+    "symptom": "store() has two outcomes, duplicate and stored. A fact that supersedes another is near-identical to it by construction, clears the 0.90 cosine bar, and is returned as 'duplicate' \u2014 the new value is lost.",
+    "exposed_path": "extract.py passes dedup_threshold=0.90 on every batch and MEMORY_EXTRACT=1 is on; extraction is the only unattended write path."
+  },
+  "historical_rejections": {
+    "dedup_used_stores": 6195,
+    "exact_hash_duplicates": 171,
+    "semantic_duplicates": 624,
+    "semantic_by_band": {
+      "0.90-0.95": 156,
+      "0.95-0.99": 54,
+      ">=0.99": 51
+    }
+  },
+  "discriminator_on_real_pairs": {
+    "rule": "value tokens differ, where a value token is a dotted version, a kebab/snake symbol, a backticked literal, or a bare count",
+    "sample_memories": 4000,
+    "pairs_current_dedup_would_reject": 107,
+    "reclassified_as_update": 97,
+    "reclassify_rate": 0.907,
+    "by_similarity_band": {
+      "0.90-0.95": {
+        "pairs": 98,
+        "reclassified": 91,
+        "rate": 0.929
+      },
+      "0.95-0.99": {
+        "pairs": 9,
+        "reclassified": 6,
+        "rate": 0.667
+      },
+      ">=0.99": {
+        "pairs": 0,
+        "reclassified": 0,
+        "rate": null
+      }
+    },
+    "reading": "The rate falls as similarity rises, which is the right direction: the more alike two memories are, the more likely the second really is a restatement. It does not fall far enough to call this a precision measurement."
+  },
+  "estimated_impact": {
+    "note": "519 of 624 semantic rejections (83%) sat in the 0.90-0.95 band, where 92.9% of pairs carry diverging values. Point estimate: roughly 480-500 of the 624 were facts with a distinct value, discarded.",
+    "exact_hash_path_unchanged": "The 171 byte-identical rejections are untouched. Those are true duplicates."
+  },
+  "honest_limits": {
+    "no_labelled_set": "The production corpus has no labelled update/duplicate pairs, so this measures how often the rule FIRES, not whether each firing is correct \u2014 the same limit P1 recorded for the conflict detector.",
+    "population_mismatch": "The 107 pairs come from random co-occurring memories in the store, not from the actual dedup population (a new memory compared against existing ones). It is a proxy.",
+    "inspected_examples_were_distinct_facts": "Every one of the eight inspected reclassifications was a genuinely different memory that dedup at 0.90 would have wrongly rejected \u2014 different infrastructure layers, different agent reports sharing a boilerplate prefix. That suggests dedup at 0.90 is over-aggressive on this corpus independently of the update question, but eight is not a sample.",
+    "failure_direction_is_deliberate": "When the rule fires the memory is STORED and flagged. A false positive costs one near-duplicate row that consolidation can merge; a false negative costs the fact. The asymmetry is why this ships one-directional and never auto-merges."
+  }
+}
