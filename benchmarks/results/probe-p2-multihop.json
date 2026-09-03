@@ -1,0 +1,59 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "probe": "P2 \u2014 does multi-hop retrieval pay? (decides the graph's fate)",
+    "population": "memory pairs sharing >=2 entities but semantically distant (cosine < 0.45) \u2014 exactly what a knowledge graph is for and what vector similarity structurally cannot serve"
+  },
+  "probe_design_note": "The first cut used a bare sentence from memory A as the query and scored 0.000 everywhere. That was a probe bug, not a graph verdict: the entities A and B share are drawn from their FULL content, and a single sentence from A need not contain the bridge. The corrected probe names the shared entity in the query so the traversal is actually seeded with the bridge it is meant to cross. Both runs are reported because the first one would have condemned the graph wrongly.",
+  "results_corrected_probe_n30": {
+    "hybrid": {
+      "mrr": 0.0,
+      "recall@10": 0.0,
+      "median_ms": 8
+    },
+    "graph_hops1": {
+      "mrr": 0.007,
+      "recall@10": 0.033,
+      "median_ms": 26
+    },
+    "graph_hops2": {
+      "mrr": 0.005,
+      "recall@10": 0.033,
+      "median_ms": 690
+    },
+    "graph_hops1_pool100_simrerank": {
+      "mrr": 0.006,
+      "recall@10": 0.033,
+      "median_ms": 29
+    },
+    "graph_hops1_pool300_simrerank": {
+      "mrr": 0.003,
+      "recall@10": 0.033,
+      "median_ms": 35
+    },
+    "ceiling_gold_present_in_300_deep_pool": 0.5
+  },
+  "diagnosis": {
+    "traversal_works": "The gold is inside a 300-deep 2-hop pool in 15 of 30 cases. The graph reaches the target half the time.",
+    "ranking_is_the_bottleneck": "It surfaces the target in the top 10 only 3.3% of the time. Graph score is 0.5/(1+hops) + 0.3*importance + 0.2*recency (core.py:2596) \u2014 no query term at all. A hub entity links hundreds of memories, all at hops=1, all scored identically bar importance/recency.",
+    "the_obvious_fix_is_structurally_wrong": "Adding a similarity rerank does not help and slightly hurts. It cannot: this population is defined by being semantically distant from the query. Reranking by cosine pushes the correct answer DOWN. The graph's value is exactly the targets similarity cannot find, so its ranking signal has to come from graph structure, not from the embedding.",
+    "what_is_actually_missing": "Entity specificity. A shared 'terraform' or 'kubernetes' is near-zero evidence; a shared rare entity is strong evidence. Current seeding and scoring weight both the same. This is the same IDF insight as the consolidation guard finding \u2014 the discriminator is how COMMON a shared feature is, and raw counts do not encode that."
+  },
+  "adoption_decision": {
+    "threshold": "graph must beat hybrid on multi_hop by a clear margin",
+    "met": false,
+    "verdict": "3.3% against 0.0% is a real difference \u2014 the graph does reach things hybrid cannot \u2014 but it is not a capability, and hops=2 costs 690ms against hybrid's 8ms.",
+    "do_not_build": [
+      "typed edges",
+      "A-MEM style write-time linking",
+      "write-time entity resolution"
+    ],
+    "one_bounded_experiment_first": "IDF-weighted entity seeding and path scoring. Recall has a measured ceiling of 50% here. If that experiment moves 3.3% appreciably toward it, the graph is worth investing in and typed edges become the obvious next step. If it does not, retire graph mode and reclaim the O(k^2) per-write cost in _link_entities."
+  },
+  "context": {
+    "graph_searches_in_7_months": 17,
+    "entity_relations": 19907,
+    "distinct_relation_types": 1,
+    "memory_graph_rows": 308
+  }
+}

@@ -414,10 +414,53 @@ mode to the config dict.
 
 **Adoption threshold**: if graph mode does not beat hybrid on `multi_hop` by a
 clear margin, neither A-MEM-style linking nor typed edges are worth building, and
-the honest move is to retire graph mode and reclaim the O(k²) per-write cost. If
-it does, this is the evidence that justifies the typed-edge work.
+the honest move is to retire graph mode and reclaim the O(k²) per-write cost.
 
-This probe decides the graph's fate. Do it before any entity-resolution work.
+**RUN, 2026-09-03** (`benchmarks/results/probe-p2-multihop.json`). Population:
+30 memory pairs sharing ≥2 entities but semantically distant (cosine < 0.45).
+
+| config | MRR | Recall@10 | median |
+|---|---|---|---|
+| hybrid | 0.000 | 0.000 | 8 ms |
+| graph hops=1 | 0.007 | 0.033 | 26 ms |
+| graph hops=2 | 0.005 | 0.033 | 690 ms |
+| graph + similarity rerank (pool 300) | 0.003 | 0.033 | 35 ms |
+| *ceiling — gold present in a 300-deep pool* | | *0.500* | |
+
+**Threshold not met.** 3.3% against 0.0% is a real difference — the graph does
+reach things hybrid cannot — but it is not a capability, and hops=2 costs 690 ms
+against hybrid's 8 ms.
+
+The diagnosis is more useful than the verdict:
+
+- **Traversal works.** The gold sits in a 300-deep 2-hop pool in 15 of 30 cases.
+- **Ranking is the bottleneck.** It reaches the top 10 in 3.3%. The graph score is
+  `0.5/(1+hops) + 0.3·importance + 0.2·recency` (`core.py:2596`) — **no query term
+  at all**. A hub entity links hundreds of memories, all at hops=1, all scored
+  identically bar importance and recency.
+- **The obvious fix is structurally wrong.** A similarity rerank does not help and
+  slightly hurts. It cannot: this population is *defined* by being semantically
+  distant from the query, so reranking by cosine pushes the right answer down. The
+  graph's value is precisely the targets similarity cannot find, so its ranking
+  signal must come from structure, not the embedding.
+- **What is missing is entity specificity.** A shared `terraform` is near-zero
+  evidence; a shared rare entity is strong evidence. Seeding and scoring weight
+  both the same. This is the *same* IDF insight as the consolidation guard: the
+  discriminator is how **common** a shared feature is, and raw counts do not
+  encode that.
+
+**Do not build** typed edges, A-MEM-style write-time linking, or write-time
+entity resolution. One bounded experiment first: IDF-weighted entity seeding and
+path scoring, against a measured 50% recall ceiling. If that moves 3.3%
+appreciably toward it, typed edges become the obvious next step. If not, retire
+graph mode and reclaim the per-write cost.
+
+**Probe-design note, recorded because it nearly produced a wrong verdict.** The
+first cut used a bare sentence from memory A as the query and scored 0.000
+everywhere. That was a bug in the probe, not a fact about the graph: the entities
+A and B share come from their *full* content, and one sentence of A need not
+contain the bridge. The corrected probe names the shared entity so the traversal
+is seeded with the bridge it is meant to cross.
 
 ### P3 — Index churn across rebuilds
 
