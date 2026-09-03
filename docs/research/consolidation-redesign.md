@@ -95,20 +95,43 @@ minimum the contamination will not be silently rediscovered.
 
 ## Tier 2 — measured gap, needs design
 
-### 2.1 Chunk and embed document bodies
+### 2.1 Chunk and embed document bodies — selectively
 
-**Measured**: `test_doc_body_semantic_recall` is a strict `xfail`. A fact stated
-verbatim in a document body ranks **5th of 5**, behind an unrelated runbook,
-because only the 500-char summary is ever embedded (`core.py:5041`) and FTS misses
-on vocabulary. 1 104 documents are affected.
+**Measured** (P4, `benchmarks/results/probe-p4-brevity.json`):
+
+- **Memories are fine.** Only 149 of 5 882 (2.5%) exceed the ~512-token embedding
+  ceiling. Chunking the memories table is not justified; leave the truncation.
+- **Documents are not.** 56.5 MB of body text, 366 KB of summary — **0.65% of
+  document text is embedded**. 554 of 1 081 summaries sit at the 500-char cap,
+  so they were themselves truncated. `test_doc_body_semantic_recall` (strict
+  xfail) is the behavioural proof: a fact stated verbatim in a body ranks 5th
+  of 5 behind an unrelated runbook.
+
+**But do not chunk everything, and this is the part the original proposal got
+wrong.** 683 of the 1 081 documents are raw conversation dumps:
+
+| doc_type | n | avg body | avg summary | embedded |
+|---|---|---|---|---|
+| `session-archive` | 600 | 64 688 | 474 | 0.7% |
+| `plan` | 368 | 3 635 | 184 | 5.1% |
+| `transcript` | 46 | **351 035** | **68** | 0.02% |
+| `session` | 37 | 2 791 | 179 | 6.4% |
+
+`session-archive` and `transcript` carry roughly 40 MB of the 56.5 MB. And
+`auto_archive_pending` was **deliberately unwired** from SessionEnd
+(`hooks/memory-session-end.sh:66-72`) because it produced a searchable pile of
+raw conversation rather than facts. Chunking them would embed precisely what
+that decision rejected, at roughly 80 000 vectors — and would push the corpus
+straight through the CSLS scaling wall (3.3) as a side effect.
+
+**Revised scope**: chunk the ~398 non-conversation documents — `plan`, `spec`,
+`runbook`, `reference`, `decision`, `pattern`. Small bodies (avg 3.6 KB), real
+knowledge, roughly 3 000 chunks. Leave the conversation dumps alone pending a
+separate decision about whether they should exist at all.
 
 Shape: 512-token windows with overlap, chunk rows keyed to the parent document,
-`document_embeddings` gains a chunk-level sibling table. Retrieval returns the
-parent doc, deduplicated across its chunks.
-
-Cost to be honest about: 1 104 documents at a few chunks each is a one-off
-re-embed of maybe 5–10k vectors, and it grows the vector table that CSLS already
-scans (see 3.3). Do 3.3 first if the numbers get close.
+a chunk-level sibling to `document_embeddings`, retrieval returning the parent
+doc deduplicated across its chunks. Flip the xfail when done.
 
 ### 2.2 An explicit update path
 
@@ -312,6 +335,15 @@ bug, not a design tradeoff.
 
 **Adoption threshold**: none — this is diagnosis, not a method to adopt. It sizes
 the problem the other probes assume.
+
+**RUN, 2026-09-03** (`benchmarks/results/probe-p4-brevity.json`). Result: memory
+truncation is a non-issue at 2.5%; document truncation is severe at 0.65% of
+56.5 MB embedded, but 40 MB of that is raw conversation that was deliberately
+excluded from ingest. Rewrote 2.1 from "chunk document bodies" to "chunk the 398
+non-conversation documents", and opened a separate question about whether the
+683 conversation dumps should exist. The index-line and injection-line surfaces
+remain unmeasured — they need a can-you-identify-it judgement, not a length
+query.
 
 ### P5 — Injection diversity, simulated offline
 

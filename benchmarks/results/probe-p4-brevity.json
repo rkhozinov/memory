@@ -1,0 +1,75 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "probe": "P4 \u2014 brevity bias across compression surfaces",
+    "spec": "docs/research/consolidation-redesign.md, Method probes, P4",
+    "source": "snapshot of data/sqlite_vec.db",
+    "finding": "Memory truncation is a non-issue (2.5% over the ceiling). Document truncation is severe: 0.65% of 56.5 MB of body text is embedded. But the bulk of that mass is raw conversation dumps that were deliberately unwired from the ingest path, so the fix is selective chunking plus a separate decision about those, not blanket chunking."
+  },
+  "memories_vs_512_token_ceiling": {
+    "total_live": 5882,
+    "buckets": {
+      "<500ch": 4111,
+      "500-1k": 1486,
+      "1k-1.6k": 115,
+      "1.6k-2k": 21,
+      "2k-4k_clipped": 43,
+      "4k+_clipped": 106
+    },
+    "clipped": 149,
+    "clipped_pct": 0.025,
+    "verdict": "NOT a problem. 2.5% of memories exceed ~512 tokens. Chunking the memories table is not justified; leave the truncation."
+  },
+  "documents": {
+    "total_live": 1081,
+    "total_body_chars": 56467967,
+    "total_summary_chars": 366422,
+    "pct_of_body_embedded_overall": 0.0065,
+    "summaries_at_500_char_cap": 554,
+    "body_size_buckets": {
+      "<2k": 103,
+      "2k-10k": 409,
+      "10k-50k": 181,
+      "50k-200k": 370,
+      "200k+": 18
+    },
+    "by_type": [
+      {
+        "doc_type": "session-archive",
+        "n": 600,
+        "avg_body": 64688,
+        "avg_summary": 474
+      },
+      {
+        "doc_type": "plan",
+        "n": 368,
+        "avg_body": 3635,
+        "avg_summary": 184
+      },
+      {
+        "doc_type": "transcript",
+        "n": 46,
+        "avg_body": 351035,
+        "avg_summary": 68
+      },
+      {
+        "doc_type": "session",
+        "n": 37,
+        "avg_body": 2791,
+        "avg_summary": 179
+      },
+      {
+        "doc_type": "other",
+        "n": 30,
+        "avg_body": 2500,
+        "avg_summary": 170
+      }
+    ],
+    "verdict": "Severe, but not uniformly. 683 of 1081 documents are raw conversation dumps (session-archive, transcript, session) carrying ~40 MB of the 56.5 MB. auto_archive_pending was deliberately unwired from SessionEnd because it produced a searchable pile of conversation rather than facts \u2014 chunking those would embed exactly what that decision rejected. The 398 remaining docs (mostly `plan`, avg 3.6 KB body / 184-char summary, 5% embedded) are real knowledge and are the ones worth chunking."
+  },
+  "other_surfaces": {
+    "index_line_preview_chars": 80,
+    "hook_injection_line_chars": 200,
+    "note": "Not measured here. The injection preview is already known to depress the reuse metric in real-usage-report.md; measuring it properly needs a can-you-identify-it-from-the-preview judgement, not a length query."
+  }
+}
