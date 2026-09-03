@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 from mcp.server import Server
@@ -178,18 +177,6 @@ TOOLS = [
                     "minimum": 1,
                     "maximum": 5,
                     "description": "Max hops for graph mode traversal (default 2)",
-                },
-                "rerank": {
-                    "type": "boolean",
-                    "description": (
-                        "Cross-encoder rerank top-K. Off by default; set MEMORY_AUTO_RERANK=1 to enable for hybrid."
-                    ),
-                },
-                "rerank_top_n": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 100,
-                    "description": "Truncate after rerank (default: limit)",
                 },
                 "score_fusion": {
                     "type": "string",
@@ -653,18 +640,6 @@ def _handle_store_batch(store: MemoryStore, args: dict) -> list[dict]:
 def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
     tags = _normalize_tags(args.get("tags"))
     mode = args.get("mode", "hybrid")
-    rerank_raw = args.get("rerank")
-    if rerank_raw is None:
-        # Match the CLI: off unless opted in. The cross-encoder triggers a ~568 MB
-        # ONNX download on first use, and an MCP client has nobody watching for it.
-        rerank = mode == "hybrid" and os.environ.get("MEMORY_AUTO_RERANK") == "1"
-    elif isinstance(rerank_raw, str):
-        rerank = rerank_raw.lower() in ("true", "1", "yes")
-    else:
-        rerank = bool(rerank_raw)
-    rerank_top_n = args.get("rerank_top_n")
-    if isinstance(rerank_top_n, str):
-        rerank_top_n = int(rerank_top_n) if rerank_top_n else None
     results = store.search(
         query=args.get("query"),
         mode=mode,
@@ -674,8 +649,6 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
         after=args.get("after"),
         before=args.get("before"),
         max_hops=args.get("max_hops", 2),
-        rerank=rerank,
-        rerank_top_n=rerank_top_n,
         score_fusion=args.get("score_fusion", "weighted_best"),
         as_of=args.get("as_of"),
     )

@@ -21,7 +21,7 @@ sampling bias. Read it before quoting a number.
 cp data/sqlite_vec.db /tmp/memsnap.db
 uv run python tests/build_real_corpus.py --db /tmp/memsnap.db --out /tmp/real_corpus.json --max 200
 uv run python tests/bench_replay.py --db /tmp/memsnap.db --real-corpus /tmp/real_corpus.json \
-    --configs baseline,+rrf,+rrsb,+id,+csls,+best,+rerank,+rrsb+rr,+all \
+    --configs baseline,+rrf,+rrsb,+id,+csls,+best \
     --json benchmarks/results/replay-proddb-baseline.json
 ```
 
@@ -45,18 +45,26 @@ zero hits.
 | `+id` | 0.936 | 0.952 | 0.89 | 6.4 | +1.0pp |
 | `+csls` | 0.963 | 0.972 | 0.94 | 6.2 | +3.7pp |
 | **`+best` (shipping default)** | **0.970** | **0.978** | **0.94** | 6.2 | **+4.4pp** |
-| `+rerank` | 0.939 | 0.953 | 0.90 | 714 cold | +1.3pp |
+| `+rerank` (retired) | 0.939 | 0.953 | 0.90 | 714 cold | +1.3pp |
+
+`+rerank` and its stacked variants are no longer reproducible from
+`bench_replay.py` — the cross-encoder was removed in the commit that recorded
+this decision. The numbers above and in `replay-proddb-baseline.json` are the
+surviving record.
 
 Three things follow.
 
 1. **Do not swap `weighted_best` for RRF.** RRF is the textbook default and it is
    16 points of MRR worse on this corpus. The additive-weighted path plus CSLS
    hubness correction wins, and it wins by a lot.
-2. **The cross-encoder rerank is not worth its cost.** It adds 1.3pp where
+2. **The cross-encoder rerank was retired.** It adds 1.3pp where
    `weighted_best` adds 4.4pp, and the first uncached call costs 714 ms p50
    (1529 ms p95) against a 6 ms non-rerank path. The 6 ms figures shown for
-   `+rerank`/`+all` in a repeat run are cache hits, not the real cost. Keeping it
-   opt-in is correct; retiring it is worth considering.
+   `+rerank`/`+all` in a repeat run are cache hits, not the real cost. It also
+   loses to `+best` in *every* query category (paraphrase 0.955 vs 0.989,
+   cross-topic 0.952 vs 0.978, identifier 0.771 vs 0.812), and stacking it on the
+   shipping config (`+all`) drags MRR from 0.970 down to 0.939 — it is not merely
+   expensive, it is actively harmful here. Removed.
 3. **The synthetic corpus is exhausted for ranking work.** All six non-rerank
    configs tie at MRR 0.913 on it. It still earns its keep as per-category
    coverage (identifier, importance-trap, boolean, stale-fact), not as a ranker

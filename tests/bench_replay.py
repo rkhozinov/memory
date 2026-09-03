@@ -4,10 +4,10 @@
 Replays the same 20-query corpus from benchmarks/corpus.py against
 MemoryStore.search() under four configurations:
 
-  baseline   weighted score fusion, no rerank, no activation
-  +rrf       Reciprocal Rank Fusion (Phase B default)
-  +rerank    + cross-encoder rerank (Phase A)
-  +all       + ACT-R activation override (Phase C)
+  baseline   weighted score fusion, no activation
+  +rrf       Reciprocal Rank Fusion
+  +csls      CSLS hubness correction
+  +best      weighted_best fusion (shipping default)
 
 Metrics reported per config:
   MRR@10     mean reciprocal rank, top-10 results
@@ -48,16 +48,17 @@ from memory.core import MemoryStore  # noqa: E402
 corpus = importlib.import_module("corpus")
 
 
+# The cross-encoder rerank configs (+rerank / +rrsb+rr / +all) were removed with
+# the reranker itself: they lost to +best on every query category and dragged the
+# shipping config from 0.970 to 0.939 when stacked on it.  The numbers are kept in
+# benchmarks/results/replay-proddb-baseline.json.
 CONFIGS: dict[str, dict] = {
-    "baseline": dict(score_fusion="weighted", rerank=False, use_activation=False),
-    "+rrf": dict(score_fusion="rrf", rerank=False, use_activation=False),
-    "+rrsb": dict(score_fusion="rrsb", rerank=False, use_activation=False),
-    "+rerank": dict(score_fusion="weighted", rerank=True, use_activation=False),
-    "+rrsb+rr": dict(score_fusion="rrsb", rerank=True, use_activation=False),
-    "+all": dict(score_fusion="weighted", rerank=True, use_activation=True),
-    "+id": dict(score_fusion="weighted_id", rerank=False, use_activation=False),
-    "+csls": dict(score_fusion="weighted_csls", rerank=False, use_activation=False),
-    "+best": dict(score_fusion="weighted_best", rerank=False, use_activation=False),
+    "baseline": dict(score_fusion="weighted", use_activation=False),
+    "+rrf": dict(score_fusion="rrf", use_activation=False),
+    "+rrsb": dict(score_fusion="rrsb", use_activation=False),
+    "+id": dict(score_fusion="weighted_id", use_activation=False),
+    "+csls": dict(score_fusion="weighted_csls", use_activation=False),
+    "+best": dict(score_fusion="weighted_best", use_activation=False),
 }
 
 
@@ -142,7 +143,6 @@ def _run_config(
             mode="hybrid",
             limit=max(RECALL_KS),
             score_fusion=cfg["score_fusion"],
-            rerank=cfg["rerank"],
             track_recall=False,
         )
         latencies.append((time.perf_counter() - t0) * 1000)
@@ -205,7 +205,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--configs",
-        default="baseline,+rrf,+rerank,+all",
+        default="baseline,+rrf,+csls,+best",
         help="Comma-separated subset of configs to run.",
     )
     parser.add_argument("--json", default=None, help="Write JSON results to this path.")

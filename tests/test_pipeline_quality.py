@@ -6,7 +6,6 @@ value. No external deps (no sentence-transformers).
 
 Tests answer:
 - Does hybrid beat semantic-only? (FTS adds value)
-- Does reranking beat hybrid? (cross-encoder adds value)
 - Where does each mode fail? (category-specific assertions)
 """
 
@@ -147,7 +146,7 @@ def test_importance_traps_semantic(pipeline_store):
         if results and expected.lower() in results[0]["content"].lower():
             top1 += 1
 
-    # modernbert should resolve at least half the importance traps without reranker
+    # modernbert should resolve at least half the importance traps on its own
     assert top1 >= len(queries) // 2, (
         f"Semantic only got {top1}/{len(queries)} importance traps right (want >= {len(queries) // 2})"
     )

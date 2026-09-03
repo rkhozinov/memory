@@ -147,9 +147,8 @@ def _parse_activation_weights() -> tuple[float, float, float, float, float]:
 
 ACTIVATION_WEIGHTS: tuple[float, float, float, float, float] = _parse_activation_weights()
 
-# Whether activation replaces the composite/RRF score on hybrid/semantic/fts modes
-# when rerank is OFF.  Default off for backwards compat; rerank=True always
-# uses activation as the rerank-blend base.
+# Whether activation replaces the composite/RRF score on hybrid/semantic/fts
+# modes.  Default off for backwards compat.
 USE_ACTIVATION: bool = os.environ.get("MEMORY_USE_ACTIVATION", "0") == "1"
 
 # Temporal decay characteristic time (days).  Smaller = faster forgetting.
@@ -1894,8 +1893,6 @@ class MemoryStore:
         min_importance: float | None = None,
         max_hops: int = 2,
         track_recall: bool = True,
-        rerank: bool = False,
-        rerank_top_n: int | None = None,
         score_fusion: str = "weighted_best",
         as_of: float | str | None = None,
     ) -> list[dict]:
@@ -1904,11 +1901,6 @@ class MemoryStore:
         Set track_recall=False for automated/background searches (e.g. session-start
         hooks) so they don't inflate recall_count or refresh confidence — that
         signal should reflect user-initiated retrievals only.
-
-        rerank: if True and >=2 results, apply cross-encoder rerank. Final score
-        blends 0.4 * composite + 0.6 * cross_encoder_score. Recall tracking is
-        applied AFTER reranking so only the surviving top-N reinforce.
-        rerank_top_n: truncate to N after rerank (defaults to `limit`).
 
         score_fusion: "rrf" (default) uses Reciprocal Rank Fusion to merge
         hybrid sub-rankers; "weighted" keeps the legacy additive-score path.
@@ -1994,21 +1986,7 @@ class MemoryStore:
         # trip to fetch session-count + memory_type for the result hashes.
         self._enrich_with_activation(conn, results)
 
-        # Optional cross-encoder rerank.  Skipped when fewer than 2 results or no
-        # query text — single-result lists can't be reordered, and rerank without
-        # a query is meaningless.
-        if rerank and query and len(results) >= 2:
-            from .rerank import get_reranker
-
-            reranker = get_reranker()
-            reranker.rerank(query, results, top_n=None)
-            for r in results:
-                base = r.get("activation", r.get("score", 0.0))
-                rr = r.get("rerank_score", 0.0)
-                r["score"] = round(0.4 * base + 0.6 * rr, 4)
-            results.sort(key=lambda m: m.get("score", 0.0), reverse=True)
-            results = results[: rerank_top_n or limit]
-        elif USE_ACTIVATION and mode in {"hybrid", "semantic", "fts"} and results:
+        if USE_ACTIVATION and mode in {"hybrid", "semantic", "fts"} and results:
             # When activation is opted-in, replace composite/RRF score with the
             # session-aware activation so hot-cluster bias drops naturally.
             for r in results:

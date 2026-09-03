@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -171,13 +170,6 @@ def cmd_store(args, store: MemoryStore) -> None:
 
 
 def cmd_search(args, store: MemoryStore) -> None:
-    # Rerank default OFF — opt-in via --rerank or MEMORY_AUTO_RERANK=1.  Cross-
-    # encoder triggers a ~568 MB ONNX download on first use; don't surprise users.
-    if args.rerank is None:
-        auto = os.environ.get("MEMORY_AUTO_RERANK") == "1"
-        rerank = auto and args.mode == "hybrid"
-    else:
-        rerank = args.rerank
     results = store.search(
         query=args.query,
         mode=args.mode,
@@ -187,8 +179,6 @@ def cmd_search(args, store: MemoryStore) -> None:
         memory_types=_parse_tags(args.types),
         max_hops=args.hops,
         track_recall=not args.no_track_recall,
-        rerank=rerank,
-        rerank_top_n=args.rerank_top_n,
         score_fusion=args.score_fusion,
         as_of=args.as_of,
     )
@@ -701,16 +691,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip flagging hits whose cited repo paths are gone from git HEAD.",
     )
-    rr = p.add_mutually_exclusive_group()
-    rr.add_argument(
-        "--rerank",
-        dest="rerank",
-        action="store_true",
-        default=None,
-        help="Cross-encoder rerank top-K. Off by default; set MEMORY_AUTO_RERANK=1 to enable for hybrid.",
-    )
-    rr.add_argument("--no-rerank", dest="rerank", action="store_false", help="Disable rerank.")
-    p.add_argument("--rerank-top-n", type=int, default=None, help="Truncate after rerank (default: --limit)")
     p.add_argument(
         "--score-fusion",
         choices=["weighted", "rrf", "rrsb", "weighted_id", "weighted_csls", "weighted_best"],

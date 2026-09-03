@@ -140,7 +140,6 @@ ranking signal (replaces composite/RRF score on hybrid/semantic/fts):
 ```bash
 MEMORY_USE_ACTIVATION=1 memory search "query"
 ```
-Rerank (`--rerank`) always uses activation as the base score for blending.
 
 ### Index regeneration
 

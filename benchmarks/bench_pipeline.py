@@ -26,6 +26,13 @@ Usage:
     python benchmarks/bench_pipeline.py --models e5-small-v2 bge-base --rerank
 """
 
+# NOTE: the --rerank paths in this legacy benchmark are dead and have been for a
+# while — they import `memory.reranker.RerankerModel.score_pairs`, which never
+# existed in the shipped module (`memory.rerank.Reranker`).  The cross-encoder
+# was retired outright after it lost to weighted_best in every query category;
+# see benchmarks/results/README.md.  Left unrewritten: the rest of the file
+# still runs.
+
 from __future__ import annotations
 
 import argparse

@@ -211,7 +211,6 @@ def _validate_query(store: MemoryStore, query: str, expected_hash: str, top_k: i
             mode="hybrid",
             limit=top_k,
             score_fusion="weighted",
-            rerank=False,
             track_recall=False,
         )
     except Exception:

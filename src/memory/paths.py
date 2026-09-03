@@ -1,6 +1,6 @@
 """Default data-directory + DB-path resolution.
 
-Centralised so core/embeddings/rerank agree, and so the plugin works
+Centralised so core and embeddings agree, and so the plugin works
 regardless of where it was cloned. Resolution order for the data dir:
 
   1. ``MEMORY_DATA_DIR`` env var (explicit override)

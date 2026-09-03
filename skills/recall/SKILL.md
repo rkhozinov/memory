@@ -88,8 +88,6 @@ Add to search command:
 --types decision,error       # Filter by memory type
 --min-score 0.5              # Drop hits below this score
 --limit N                    # Must be >= 1
---rerank                     # Re-score with cross-encoder (slower, +45ms)
---rerank-top-n N             # Truncate after rerank (default: --limit)
 ```
 
 ## Hybrid score fusion

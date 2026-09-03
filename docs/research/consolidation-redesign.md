@@ -647,6 +647,46 @@ measurement window is still required before changing the hook.
 All five write committed JSON into `benchmarks/results/`, same convention as the
 existing baselines, so the decision and the evidence stay together.
 
+## Decision: the cross-encoder reranker is retired
+
+Removed: `src/memory/rerank.py`, `tests/test_rerank.py`, the `--rerank` /
+`--rerank-top-n` CLI flags, the `rerank` / `rerank_top_n` MCP arguments, the
+`rerank` parameter on `MemoryStore.search()`, and the `MEMORY_AUTO_RERANK`,
+`MEMORY_RERANK_REPO`, `MEMORY_RERANK_FILE`, `MEMORY_RERANK_TOKENIZER` env vars.
+
+The reasoning is not just cost. On the 200-query production corpus the
+cross-encoder loses to the shipping `weighted_best` fusion in **every** query
+category:
+
+| category | `+best` | `+rerank` |
+|---|---|---|
+| paraphrase | **0.989** | 0.955 |
+| cross_topic | **0.978** | 0.952 |
+| identifier | **0.812** | 0.771 |
+| overall MRR@10 | **0.970** | 0.939 |
+
+And stacking it on the shipping config (`+all` = `weighted` + rerank +
+activation) scores 0.939 — it *removes* 3.1pp from what already ships. There is
+no measured population where it helps, so "keep it opt-in" was preserving a
+switch whose only documented effect is to make results worse, at 714 ms p50 cold
+against 6 ms.
+
+What removal reclaims: 279 lines, an ~80 MB ONNX model download on first use, a
+second SQLite cache DB with its own eviction path, and four env vars. No
+dependency is dropped — `onnxruntime` and `tokenizers` are shared with
+`embeddings.py`.
+
+**The limit on this evidence, stated plainly.** `build_real_corpus.py` discards
+candidates that baseline retrieval cannot already reach, so the 200-query corpus
+contains only queries the bi-encoder already answers (baseline R@1 = 0.875).
+That is precisely the population with the least headroom for a reranker, and it
+excludes the hard cases a cross-encoder exists to rescue. The corpus therefore
+*understates* the reranker's ceiling. It does not rescue the decision — on
+everything measurable the reranker is worse, and it drags the shipping config
+down — but if a hard-case corpus is ever built (see the `hot_cluster` family,
+absent from these 200 queries because all 75 candidates failed validation), this
+is the decision to revisit first. The code is one `git revert` away.
+
 ## Explicitly not proposed
 
 | | Why |
@@ -654,7 +694,7 @@ existing baselines, so the decision and the evidence stay together.
 | Postgres / Neo4j migration | Forfeits local-first — the property no hosted competitor matches — to solve nothing currently measured. |
 | Mem0 / Zep as a backend | Same, plus a network round trip inside a hook with a 4 s timeout. |
 | `weighted_best` → RRF | RRF measures **16.1pp worse MRR** here (0.765 vs 0.970, n=200). |
-| Cross-encoder rerank on by default | +1.3pp for 714 ms p50 cold, against +4.4pp at 6 ms from `weighted_best`. Retiring it is the more defensible change. |
+| Cross-encoder rerank (any setting) | **Retired**, not merely left off — see the decision below. |
 | **LLM-assisted cluster merge** | The stated gate was "only if extractive merge loses facts." Measured: `mmr_union` retains 100%. The gate did not open. Revisit only if 1.1's coherence check fails. |
 | Porting LoCoMo / LongMemEval | Conversational shape, and increasingly measures context length rather than memory quality. |
 

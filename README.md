@@ -1,7 +1,7 @@
 # memory
 
 Lean memory service for Claude Code: SQLite + sqlite-vec embeddings, FTS5
-keyword search, cross-encoder rerank, bi-temporal knowledge graph, ACT-R
+keyword search, bi-temporal knowledge graph, ACT-R
 confidence decay, cluster-based dedup, and a documents layer for long-form
 content (plans, specs, runbooks, session archives). MCP server + CLI, JSON
 output only.
