@@ -647,6 +647,48 @@ measurement window is still required before changing the hook.
 All five write committed JSON into `benchmarks/results/`, same convention as the
 existing baselines, so the decision and the evidence stay together.
 
+## Decision: CSLS hubness is persisted, not recomputed per process
+
+`compute_hubness` is an O(n²) matmul plus a full per-row sort over the whole
+corpus. At n=5908 that is **403 ms and a 498 MB RSS spike**. `weighted_best` is
+the shipping default and calls it, the CLI spawns cold on every invocation, and
+the topic-recall hook runs a search per prompt — so this was paid on **every
+single search**.
+
+**The benchmarks hid it.** `bench_replay` reuses one `MemoryStore` instance, so
+the in-process cache is warm from query 2 onward. The published 6.2 ms p50 for
+`+best` is a warm-cache artifact. Cold, measured on the real CLI:
+
+| | wall | RSS |
+|---|---|---|
+| before, `weighted` | 1.14 s | 156 MB |
+| before, **`weighted_best`** | **1.25 s** | **680 MB** |
+| after, `weighted` | 0.83 s | 156 MB |
+| after, **`weighted_best`** | **0.76 s** | **157 MB** |
+
+Over 5 runs of the shipping default: **1.332 s → 0.880 s (−34%)** and
+**725 MB → 156 MB (−78%)**. After the change CSLS is effectively free —
+`weighted_best` is indistinguishable from plain `weighted`.
+
+**The pre-check.** Persistence must not move a single metric, or it is a ranking
+change wearing a performance change's clothes. Over 200 real queries, before and
+after are **identical to three decimal places** on every config and every
+metric (`baseline` 0.927 / `+csls` 0.960 / `+best` 0.967 MRR@10). Passed.
+
+`memories.hubness` is refreshed by `dream` (after the passes that add and
+soft-delete memories, ~2.6 s on 5908 rows) or on demand via
+`memory admin refresh-hubness`. **NULL is neutral, not random**: a memory written
+since the last refresh scores 0.0, i.e. no CSLS penalty, so nothing is demoted
+merely for being new. A store where no row has been scored still computes on
+demand, so an un-upgraded DB ranks correctly — just slowly.
+
+**Limits.** Hubness now drifts between dreams; it is a mean top-10 neighbour
+cosine over thousands of vectors so a handful of writes barely moves it, but
+that is an assumption, not a measurement, and if dream stops running the values
+silently age. All figures come from one 5908-memory store — the O(n²) shape is
+structural, the milliseconds are not portable. The 1.5 GB projection at n=20000
+is arithmetic on matrix size, not a run.
+
 ## Decision: the graph is kept, frozen, and not invested in
 
 P2 left exactly one experiment open — IDF-weighted entity seeding and path

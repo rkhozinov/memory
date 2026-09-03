@@ -409,6 +409,10 @@ def cmd_admin_decay(args, store: MemoryStore) -> None:
     _json_out(store.apply_decay(min_confidence=args.min_confidence))
 
 
+def cmd_admin_refresh_hubness(args, store: MemoryStore) -> None:
+    _json_out({"hubness_refreshed": store.refresh_hubness()})
+
+
 def cmd_admin_dream(args, store: MemoryStore) -> None:
     _json_out(
         store.dream(
@@ -556,7 +560,7 @@ def cmd_admin(args, store: MemoryStore) -> None:
     admin_cmd = getattr(args, "admin_command", None)
     if not admin_cmd:
         print(
-            "Usage: memory admin {cleanup|consolidate|decay|dream|demoted|purge|undelete|"
+            "Usage: memory admin {cleanup|consolidate|decay|dream|refresh-hubness|demoted|purge|undelete|"
             "export|import|tags|stats|briefing|graph|auto-archive-pending|extract-pending|index}",
             file=sys.stderr,
         )
@@ -618,6 +622,7 @@ _ADMIN_DISPATCH = {
     "clusters": cmd_admin_clusters,
     "decay": cmd_admin_decay,
     "dream": cmd_admin_dream,
+    "refresh-hubness": cmd_admin_refresh_hubness,
     "demoted": cmd_admin_demoted,
     "purge": cmd_admin_purge,
     "undelete": cmd_admin_undelete,
@@ -878,6 +883,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--threshold-new", default=50, type=int)
     p.add_argument("--threshold-age-hours", default=24, type=int)
+
+    admin_sub.add_parser(
+        "refresh-hubness",
+        help="Recompute and persist CSLS hubness (O(n^2); dream runs it automatically)",
+    )
 
     p = admin_sub.add_parser("demoted", help="List memories most penalised by demotion ranker")
     p.add_argument("--limit", "-n", default=50, type=_positive_int)

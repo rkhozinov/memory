@@ -1178,6 +1178,9 @@ class MemoryStore:
             "ALTER TABLE memory_graph ADD COLUMN weight REAL DEFAULT 1.0",
             "ALTER TABLE memory_graph ADD COLUMN valid_from REAL DEFAULT NULL",
             "ALTER TABLE memory_graph ADD COLUMN valid_to REAL DEFAULT NULL",
+            # Persisted CSLS hubness. NULL means "not scored yet" and is treated
+            # as 0.0 (no penalty) rather than recomputed — see _get_hubness.
+            "ALTER TABLE memories ADD COLUMN hubness REAL DEFAULT NULL",
         ):
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute(col_sql)
@@ -2524,25 +2527,60 @@ class MemoryStore:
         memories.sort(key=lambda m: m["score"], reverse=True)
         return memories[:limit]
 
-    def _get_hubness(self, conn: sqlite3.Connection) -> dict[str, float]:
-        """Lazy, cached per-doc hubness (mean top-k neighbor cosine).  Computed
-        once per store instance over the full corpus; used by CSLS rescoring.
+    def _compute_hubness_now(self, conn: sqlite3.Connection) -> dict[str, float]:
+        """The O(n^2) path.  Only for refresh_hubness and the cold-store fallback."""
+        import numpy as np
 
-        ponytail: O(n^2) recompute per process (~130ms at 3k docs, in-process
-        cached). CLI spawns cold each call so it pays this once per invocation —
-        fine to ~10k docs. Past that, persist per-doc hubness in a column and
-        refresh on write/dream instead of recomputing."""
+        rows = conn.execute(
+            "SELECT m.content_hash, e.content_embedding "
+            "FROM memories m JOIN memory_embeddings e ON e.rowid = m.id "
+            "WHERE m.deleted_at IS NULL"
+        ).fetchall()
+        vecs = {r["content_hash"]: np.frombuffer(r["content_embedding"], dtype=np.float32) for r in rows}
+        return compute_hubness(vecs, k=10)
+
+    def refresh_hubness(self) -> int:
+        """Recompute hubness for the whole corpus and persist it.  Returns rows written.
+
+        This is the expensive operation, moved off the read path: it belongs on
+        dream or an explicit `memory admin refresh-hubness`, not on every search.
+        """
+        conn = self._get_conn()
+        scores = self._compute_hubness_now(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.executemany(
+                "UPDATE memories SET hubness = ? WHERE content_hash = ?",
+                [(v, h) for h, v in scores.items()],
+            )
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+        self._hubness_cache = None
+        return len(scores)
+
+    def _get_hubness(self, conn: sqlite3.Connection) -> dict[str, float]:
+        """Per-doc hubness (mean top-k neighbour cosine) for CSLS rescoring.
+
+        Read from the persisted column.  Computing it on demand is an O(n^2)
+        matmul plus a full row sort — 403 ms and a 498 MB RSS spike at n=5908 —
+        and the CLI spawns cold on every invocation, so the shipping
+        `weighted_best` default paid it on every single search (1.32 s / 688 MB
+        against 0.85 s / 156 MB for plain `weighted`).  The 6.2 ms p50 in the
+        benchmarks is a warm-cache artifact of reusing one store instance.
+
+        A memory written since the last refresh has NULL and scores 0.0 — no CSLS
+        penalty, which is the neutral default, not a random one.  Only a store
+        that has never been refreshed at all falls back to computing.
+        """
         cache = getattr(self, "_hubness_cache", None)
         if cache is None:
-            import numpy as np
-
-            rows = conn.execute(
-                "SELECT m.content_hash, e.content_embedding "
-                "FROM memories m JOIN memory_embeddings e ON e.rowid = m.id "
-                "WHERE m.deleted_at IS NULL"
-            ).fetchall()
-            vecs = {r["content_hash"]: np.frombuffer(r["content_embedding"], dtype=np.float32) for r in rows}
-            cache = compute_hubness(vecs, k=10)
+            rows = conn.execute("SELECT content_hash, hubness FROM memories WHERE deleted_at IS NULL").fetchall()
+            if any(r["hubness"] is not None for r in rows):
+                cache = {r["content_hash"]: (r["hubness"] or 0.0) for r in rows}
+            else:
+                cache = self._compute_hubness_now(conn)
             self._hubness_cache = cache
         return cache
 
@@ -4848,6 +4886,11 @@ class MemoryStore:
             self._rollback_safe(conn)
             raise
 
+        # 7. Hubness refresh — the O(n^2) CSLS input, moved off the read path.
+        # Must run AFTER the passes that add and soft-delete memories, and outside
+        # the transaction above because refresh_hubness takes its own.
+        hubness_refreshed = 0 if dry_run else self.refresh_hubness()
+
         return {
             "dry_run": dry_run,
             "dates_rewritten": dates_rewritten,
@@ -4858,6 +4901,7 @@ class MemoryStore:
             "demoted": demoted,
             "forgotten": forgotten,
             "forgotten_pairs": forgotten_pairs,
+            "hubness_refreshed": hubness_refreshed,
             "duration_ms": round((time.time() - start) * 1000, 2),
         }
 

@@ -1,0 +1,121 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "change": "CSLS hubness persisted to a memories.hubness column, refreshed by dream, instead of recomputed on every cold start",
+    "harness": "tests/bench_replay.py for quality, /usr/bin/time -l on the real CLI for cost"
+  },
+  "the_problem": {
+    "what": "compute_hubness is an O(n^2) matmul plus a full per-row sort over the whole corpus.",
+    "measured_at_n_5908": {
+      "wall_ms": 403,
+      "rss_spike_mb": 498
+    },
+    "why_it_mattered": "weighted_best is the SHIPPING default and calls _get_hubness. The CLI spawns cold on every invocation and the topic-recall hook runs a search per prompt, so this was paid on every single search.",
+    "the_benchmarks_hid_it": "bench_replay reuses one MemoryStore instance, so the in-process cache is warm after query 1. The published 6.2ms p50 for +best is a warm-cache artifact; the real cold cost was 1.3s.",
+    "projected": {
+      "sims_matrix_mb_at_n": {
+        "5908": 133,
+        "10000": 381,
+        "20000": 1526
+      },
+      "note": "The docstring's own ceiling was ~10k docs. At 20k the matrix alone is 1.5GB before the sort copy."
+    }
+  },
+  "cost_cold_cli_5_runs_mean": {
+    "before": {
+      "wall_s": 1.332,
+      "rss_mb": 725
+    },
+    "after": {
+      "wall_s": 0.88,
+      "rss_mb": 156
+    },
+    "delta": {
+      "wall": "-34%",
+      "rss": "-78%"
+    }
+  },
+  "cost_by_fusion_single_run": {
+    "before": {
+      "weighted": {
+        "wall_s": 1.14,
+        "rss_mb": 156
+      },
+      "weighted_best": {
+        "wall_s": 1.25,
+        "rss_mb": 680
+      }
+    },
+    "after": {
+      "weighted": {
+        "wall_s": 0.83,
+        "rss_mb": 156
+      },
+      "weighted_csls": {
+        "wall_s": 0.96,
+        "rss_mb": 157
+      },
+      "weighted_best": {
+        "wall_s": 0.76,
+        "rss_mb": 157
+      }
+    },
+    "reading": "After the change CSLS is free: weighted_best is indistinguishable from plain weighted."
+  },
+  "quality_precheck_200_real_queries": {
+    "rule": "persistence must not move a single metric, or it is a ranking change wearing a performance change's clothes",
+    "before": {
+      "baseline": {
+        "mrr": 0.927,
+        "ndcg": 0.945,
+        "top1": 0.88
+      },
+      "+csls": {
+        "mrr": 0.96,
+        "ndcg": 0.97,
+        "top1": 0.93
+      },
+      "+best": {
+        "mrr": 0.967,
+        "ndcg": 0.975,
+        "top1": 0.94
+      }
+    },
+    "after": {
+      "baseline": {
+        "mrr": 0.927,
+        "ndcg": 0.945,
+        "top1": 0.88
+      },
+      "+csls": {
+        "mrr": 0.96,
+        "ndcg": 0.97,
+        "top1": 0.93
+      },
+      "+best": {
+        "mrr": 0.967,
+        "ndcg": 0.975,
+        "top1": 0.94
+      }
+    },
+    "verdict": "Identical to three decimal places on every config and every metric. Passed."
+  },
+  "backfill": {
+    "rows": 5908,
+    "ms": 2635,
+    "hubness_range": [
+      0.4394,
+      0.9492
+    ]
+  },
+  "semantics": {
+    "null_is_neutral": "A memory written since the last refresh has NULL hubness and scores 0.0 \u2014 no CSLS penalty. That is the neutral value, not a random one, so a fresh memory is never demoted for lacking a score.",
+    "fallback": "A store where NO row has hubness (never refreshed) still computes on demand, so an un-upgraded DB ranks correctly, just slowly. `memory admin refresh-hubness` fixes it immediately; dream does it automatically.",
+    "refresh_point": "dream, after the passes that add and soft-delete memories. Adds ~2.6s to a dream run, which is backgrounded and throttled."
+  },
+  "honest_limits": {
+    "staleness": "Hubness now drifts between dreams. It is a mean top-10 neighbour cosine over thousands of vectors, so a handful of new memories barely moves it \u2014 but this is an assumption, not a measurement. If dream stops running, hubness silently ages.",
+    "single_corpus": "Measured on one 5908-memory store. The O(n^2) claim is structural, the specific milliseconds are not portable.",
+    "did_not_test_20k": "The 1.5GB projection at n=20000 is arithmetic on the matrix size, not a run."
+  }
+}

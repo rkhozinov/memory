@@ -52,6 +52,14 @@ zero hits.
 this decision. The numbers above and in `replay-proddb-baseline.json` are the
 surviving record.
 
+A caveat that applies to every p50 in this table: `bench_replay` reuses one
+`MemoryStore` instance, so all of these are **warm-cache** numbers. That was
+hiding a real cost — `weighted_best` calls `_get_hubness`, an O(n²) matmul, and
+the CLI spawns cold on every invocation, so the true cold cost of the shipping
+default was 1.33 s / 725 MB rather than 6.2 ms. Hubness is now persisted to a
+column and refreshed by dream (`hubness-persist.json`), which brings the cold
+path to 0.88 s / 156 MB with every metric below unchanged.
+
 Three things follow.
 
 1. **Do not swap `weighted_best` for RRF.** RRF is the textbook default and it is
