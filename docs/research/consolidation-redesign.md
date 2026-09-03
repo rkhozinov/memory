@@ -101,9 +101,20 @@ are trending on Hacker News". Returning nothing there is correct behaviour.
 headline explicitly labelled as not a defect rate, so it cannot be misread the
 same way twice.
 
-**What survives**: one small fix — 48 slash-command queries reached `search`
-since May. `hooks/memory-topic-recall.sh` skips slash commands, so another
-caller does not. Find it and skip there too.
+**What survived, and then closed itself**: slash-command queries reaching
+`search`. Investigated — it is already 85% fixed and the rest is not worth
+touching.
+
+`hooks/memory-topic-recall.sh` gained a skip on 2026-08-03 (`ce59936`). Monthly
+counts either side: May 89, June 60, July 86, then **14 across the rest of
+August**. The hook was the main source and the fix worked.
+
+The residual trickle (~1-3/day) is not from this repo. The hook's skip is
+correct, and nothing under `~/repos/handoff` or the plugin cache shells out to
+`memory search`. Most likely an agent calling the CLI or the MCP tool directly
+with a prompt-shaped string. At ~14 events/month and ~300 ms each, that is
+about four seconds of CPU a month — a defensive guard in `core` would cost more
+to maintain than it saves. **Won't fix.**
 
 **What this cost**: a top-priority item that turned out to be noise. The lesson
 is cheap and worth writing down — a rate computed over a column nobody had read
