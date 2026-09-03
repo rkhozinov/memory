@@ -111,6 +111,59 @@ def mechanical_rates(db: Path) -> dict:
         "FROM operation_events WHERE operation IN ('search', 'doc_search')"
     ).fetchone()
 
+    # The raw zero-result rate is not a defect rate, and reporting it as one is
+    # actively misleading. It decomposes into four things with nothing in common:
+    #
+    #   empty query    the `query` column is blank. 100% of these return zero by
+    #                  construction. Almost all are from a March-May 2026 window
+    #                  that has since stopped; a logging or caller artifact, not
+    #                  retrieval.
+    #   exact mode     a lookup that missed. Returning nothing is the correct
+    #                  answer, not a failure.
+    #   slash command  a `/command` that reached search at all. The hook skips
+    #                  these, so these come from some other caller. Wasted work,
+    #                  and the one genuinely actionable slice here.
+    #   real miss      a substantive query that found nothing. This is the only
+    #                  number that behaves like a defect rate.
+    zero_split = conn.execute(
+        """
+        SELECT
+          COUNT(*)                                                          AS total_zero,
+          SUM(CASE WHEN query IS NULL OR query = '' THEN 1 ELSE 0 END)      AS empty_query,
+          SUM(CASE WHEN query LIKE '/%' THEN 1 ELSE 0 END)                  AS slash_command,
+          SUM(CASE WHEN search_mode = 'exact' AND query NOT LIKE '/%'
+                   AND query IS NOT NULL AND query <> '' THEN 1 ELSE 0 END) AS exact_miss
+        FROM operation_events
+        WHERE operation IN ('search', 'doc_search') AND result_count = 0
+        """
+    ).fetchone()
+
+    by_mode = [
+        dict(r)
+        for r in conn.execute(
+            """
+            SELECT search_mode,
+                   COUNT(*) AS n,
+                   SUM(CASE WHEN result_count = 0 THEN 1 ELSE 0 END) AS zero
+            FROM operation_events WHERE operation IN ('search', 'doc_search')
+            GROUP BY search_mode ORDER BY n DESC
+            """
+        )
+    ]
+    for row in by_mode:
+        row["zero_pct"] = row["zero"] / row["n"] if row["n"] else 0.0
+
+    # Repeated identical queries are eval-harness fixtures, not user traffic.
+    # Reporting the ratio keeps them from being mistaken for a real miss rate.
+    repeats = conn.execute(
+        """
+        SELECT COUNT(*) AS n, COUNT(DISTINCT query) AS distinct_q
+        FROM operation_events
+        WHERE operation IN ('search', 'doc_search') AND result_count = 0
+          AND query IS NOT NULL AND query <> ''
+        """
+    ).fetchone()
+
     dedup = conn.execute(
         "SELECT SUM(CASE WHEN dedup_used = 1 THEN 1 ELSE 0 END) AS used, "
         "       SUM(CASE WHEN duplicate_detected = 1 THEN 1 ELSE 0 END) AS caught, "
@@ -131,6 +184,13 @@ def mechanical_rates(db: Path) -> dict:
         "by_operation": ops,
         "search_zero_result_rate": (searches["zero"] or 0) / searches["n"] if searches["n"] else None,
         "search_total": searches["n"],
+        "zero_result_split": dict(zero_split),
+        "zero_result_by_mode": by_mode,
+        "zero_result_query_repetition": {
+            "n": repeats["n"],
+            "distinct": repeats["distinct_q"],
+            "repeat_ratio": 1 - (repeats["distinct_q"] / repeats["n"]) if repeats["n"] else 0.0,
+        },
         "store_total": dedup["n"],
         "store_dedup_used": dedup["used"] or 0,
         "store_duplicate_caught": dedup["caught"] or 0,
@@ -529,6 +589,10 @@ def analyse(projects_dir: Path, db: Path, max_files: int | None = None) -> dict:
                 "subtracts only what the agent had already seen when the injection landed "
                 "(upper bound); 'strict' subtracts everything it saw from any other source "
                 "at any point in the session (lower bound). Neither is the true rate.",
+                "The headline zero-result rate is not a defect rate. Most of it is empty "
+                "query text from a March-May 2026 window that has since stopped, exact-mode "
+                "lookups where returning nothing is correct, and repeated eval-harness "
+                "fixtures. Read the split, never the headline.",
                 "memories.recall_count counts CLI and skill recalls too, so it is not a "
                 "measure of hook-injection effectiveness on its own.",
                 "The hook injects --depth summary, so what the transcript records is a "
@@ -595,7 +659,26 @@ def render(r: dict) -> str:
         am = f"{op['avg_ms']:.0f}" if op["avg_ms"] is not None else "—"
         a(f"  {op['operation']:<14} {op['n']:>7} {ar:>12} {am:>9}")
     if m["search_zero_result_rate"] is not None:
-        a(f"  zero-result searches: {m['search_zero_result_rate']:.1%} of {m['search_total']}")
+        zs = m["zero_result_split"]
+        a(f"  zero-result searches: {m['search_zero_result_rate']:.1%} of {m['search_total']} "
+          f"— but that is NOT a defect rate. It splits into:")
+        tz = zs["total_zero"] or 1
+        a(f"    empty query      {zs['empty_query']:>5} ({zs['empty_query'] / tz:.0%})  "
+          "blank query column; zero by construction, not retrieval")
+        a(f"    exact-mode miss  {zs['exact_miss']:>5} ({zs['exact_miss'] / tz:.0%})  "
+          "a lookup that missed; nothing IS the right answer")
+        a(f"    slash command    {zs['slash_command']:>5} ({zs['slash_command'] / tz:.0%})  "
+          "reached search at all; the one actionable slice")
+        real = tz - (zs["empty_query"] or 0) - (zs["exact_miss"] or 0) - (zs["slash_command"] or 0)
+        a(f"    remaining        {real:>5} ({real / tz:.0%})  "
+          "substantive queries that found nothing")
+        rep = m["zero_result_query_repetition"]
+        a(f"    of those with text, {rep['repeat_ratio']:.0%} are repeats of an earlier query "
+          "— eval fixtures, not user traffic")
+        a("  by mode:")
+        for row in m["zero_result_by_mode"]:
+            a(f"    {row['search_mode'] or '—':<10} {row['n']:>6} searches, "
+              f"{row['zero_pct']:>6.1%} zero")
     a(f"  stores: {m['store_total']}, dedup ran on {m['store_dedup_used']}, "
       f"caught {m['store_duplicate_caught']} duplicates")
 

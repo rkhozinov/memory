@@ -48,7 +48,12 @@ li { margin: .25rem 0; }
 <h2>1. Mechanical rates — full history</h2>
 <table><thead><tr><th>operation</th><th>n</th><th>avg results</th><th>avg ms</th></tr></thead><tbody><tr><td>search</td><td>19 847</td><td>4.17</td><td>292</td></tr><tr><td>store</td><td>7 453</td><td>—</td><td>176</td></tr><tr><td>doc_store</td><td>1 157</td><td>—</td><td>612</td></tr><tr><td>doc_search</td><td>381</td><td>4.86</td><td>—</td></tr><tr><td>delete</td><td>176</td><td>2.31</td><td>68</td></tr><tr><td>dream</td><td>135</td><td>2.58</td><td>2 572</td></tr><tr><td>consolidate</td><td>50</td><td>6.08</td><td>559</td></tr><tr><td>briefing</td><td>16</td><td>67.81</td><td>215</td></tr></tbody></table>
 <ul>
-<li><strong>13.1% of 20 228 searches return nothing at all.</strong> One in eight retrievals is a complete miss. That is the single largest and cheapest-to-attack number here, and it is invisible to MRR, which is only ever computed over queries that have a known reachable answer.</li>
+<li><strong>13.1% of 20 238 searches return nothing — and it is not a defect rate.</strong> An earlier draft of this report called it the largest failure in the system. It is not. Decomposed:</li>
+</ul>
+<table><thead><tr><th>slice</th><th>n</th><th>share</th><th>what it is</th></tr></thead><tbody><tr><td>empty query text</td><td>1 403</td><td>53%</td><td>the <code>query</code> column is blank; zero by construction. 1 249 of these fall in April 2026 and the pattern stopped in May — a logging or caller artifact, not retrieval.</td></tr><tr><td>exact-mode miss</td><td>657</td><td>25%</td><td>a lookup that missed. <code>exact</code> mode is 83.1% zero <em>by design</em>; returning nothing is the correct answer.</td></tr><tr><td>slash command</td><td>48</td><td>2%</td><td>a <code>/command</code> that reached search at all. The hook skips these, so another caller does not. The one genuinely actionable slice.</td></tr><tr><td>remaining</td><td>545</td><td>21%</td><td>substantive queries that found nothing — and 62% of those are verbatim repeats of an earlier query, i.e. eval-harness fixtures rather than user traffic.</td></tr></tbody></table>
+<p>By mode: <code>semantic</code> 0.1% zero, <code>hybrid</code> 21.7%, <code>exact</code> 83.1%, <code>fts</code> 63.3%. Excluding empty-query events, the hybrid zero rate has run <strong>5.5–9.0% since May 2026</strong>, against 30.8% in April.</p>
+<p>Inspecting the remainder settles it. The queries that return nothing are things like &quot;fucking finish it already&quot;, &quot;Thank you @Ruslan&quot;, &quot;add milk, eggs and coffee to my shopping list&quot;, &quot;what articles are trending on Hacker News&quot;, and <code>/hand:on &amp;lt;uuid&amp;gt;</code>. Returning nothing for those is the system working.</p>
+<ul>
 <li>8 610 stores, dedup ran on 6 172 of them, caught 847 duplicates (13.7% of deduped writes). The write path is doing real work.</li>
 <li><code>dream</code> at 2.6 s per run is the only slow operation, and it runs backgrounded every 6 h, so it costs nothing interactive.</li>
 </ul>
@@ -83,7 +88,7 @@ li { margin: .25rem 0; }
 <h2>What to do about it</h2>
 <p>Ranked by evidence strength, not by effort.</p>
 <ol>
-<li><strong>Attack the 13.1% zero-result rate.</strong> Largest measured failure, full seven months of data behind it, and completely unaddressed by the current benchmarks. Start by logging the queries that return nothing — the schema already has a <code>query</code> column on <code>operation_events</code>.</li>
+<li><strong>Stop the slash-command leak.</strong> 48 <code>/command</code> queries reached <code>search</code> since May. <code>hooks/memory-topic-recall.sh</code> skips slash commands, so these come from another caller. Small, certain, and the only actionable part of what looked like a 13.1% failure rate.</li>
 <li><strong>Rebalance what the injection slots hold.</strong> <code>decision</code> is used 8× more than <code>reference</code> and gets fewer slots. This is a scoring-weight change, not new machinery.</li>
 <li><strong>Stop treating score as a usefulness proxy.</strong> The ≥0.70 band is the least useful one. A diversity/novelty term on the injection decision is indicated; raising the score floor is contraindicated.</li>
 <li><strong>Do not trust <code>recall_count</code> before 2026-07</strong> for any lifecycle decision — demotion, forgetting, index tiering all read it, and for the pre-June corpus it reflects one sweep rather than seven months of use.</li>
@@ -94,6 +99,7 @@ li { margin: .25rem 0; }
 <li>The hook injects <code>--depth summary</code>, so the transcript holds a ~200-char preview, not the full memory. Mean distinctive tokens per memory is ~5, so single-token noise moves the metric easily.</li>
 <li>The hook fires once per session, so n ≈ one injection per session. Enough to calibrate a global threshold; too thin to slice per project.</li>
 <li><code>memories.recall_count</code> counts CLI and skill recalls too, so it is not a measure of hook effectiveness on its own — which is why measures 2 and 4 are kept apart.</li>
+<li>Aggregate rates over this DB mix real usage with eval-harness traffic. 62% of zero-result queries with text are verbatim repeats; the same caution applies to every count in measure 1. Split by mode and by repetition before drawing a conclusion from any of them.</li>
 </ul>
 </body>
 </html>

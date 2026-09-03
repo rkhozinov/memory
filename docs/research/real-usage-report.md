@@ -34,10 +34,25 @@ transcripts describes the last five weeks only, and is stated as such.
 | consolidate | 50 | 6.08 | 559 |
 | briefing | 16 | 67.81 | 215 |
 
-- **13.1% of 20 228 searches return nothing at all.** One in eight retrievals is
-  a complete miss. That is the single largest and cheapest-to-attack number here,
-  and it is invisible to MRR, which is only ever computed over queries that have
-  a known reachable answer.
+- **13.1% of 20 238 searches return nothing — and it is not a defect rate.**
+  An earlier draft of this report called it the largest failure in the system.
+  It is not. Decomposed:
+
+  | slice | n | share | what it is |
+  |---|---|---|---|
+  | empty query text | 1 403 | 53% | the `query` column is blank; zero by construction. 1 249 of these fall in April 2026 and the pattern stopped in May — a logging or caller artifact, not retrieval. |
+  | exact-mode miss | 657 | 25% | a lookup that missed. `exact` mode is 83.1% zero *by design*; returning nothing is the correct answer. |
+  | slash command | 48 | 2% | a `/command` that reached search at all. The hook skips these, so another caller does not. The one genuinely actionable slice. |
+  | remaining | 545 | 21% | substantive queries that found nothing — and 62% of those are verbatim repeats of an earlier query, i.e. eval-harness fixtures rather than user traffic. |
+
+  By mode: `semantic` 0.1% zero, `hybrid` 21.7%, `exact` 83.1%, `fts` 63.3%.
+  Excluding empty-query events, the hybrid zero rate has run **5.5–9.0% since
+  May 2026**, against 30.8% in April.
+
+  Inspecting the remainder settles it. The queries that return nothing are
+  things like "fucking finish it already", "Thank you @Ruslan", "add milk, eggs
+  and coffee to my shopping list", "what articles are trending on Hacker News",
+  and `/hand:on <uuid>`. Returning nothing for those is the system working.
 - 8 610 stores, dedup ran on 6 172 of them, caught 847 duplicates (13.7% of
   deduped writes). The write path is doing real work.
 - `dream` at 2.6 s per run is the only slow operation, and it runs backgrounded
@@ -163,10 +178,10 @@ it is being read from.
 
 Ranked by evidence strength, not by effort.
 
-1. **Attack the 13.1% zero-result rate.** Largest measured failure, full seven
-   months of data behind it, and completely unaddressed by the current
-   benchmarks. Start by logging the queries that return nothing — the schema
-   already has a `query` column on `operation_events`.
+1. **Stop the slash-command leak.** 48 `/command` queries reached `search`
+   since May. `hooks/memory-topic-recall.sh` skips slash commands, so these come
+   from another caller. Small, certain, and the only actionable part of what
+   looked like a 13.1% failure rate.
 2. **Rebalance what the injection slots hold.** `decision` is used 8× more than
    `reference` and gets fewer slots. This is a scoring-weight change, not new
    machinery.
@@ -190,3 +205,7 @@ Ranked by evidence strength, not by effort.
   calibrate a global threshold; too thin to slice per project.
 - `memories.recall_count` counts CLI and skill recalls too, so it is not a measure
   of hook effectiveness on its own — which is why measures 2 and 4 are kept apart.
+- Aggregate rates over this DB mix real usage with eval-harness traffic. 62% of
+  zero-result queries with text are verbatim repeats; the same caution applies to
+  every count in measure 1. Split by mode and by repetition before drawing a
+  conclusion from any of them.

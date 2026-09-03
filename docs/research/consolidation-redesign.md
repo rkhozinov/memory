@@ -42,19 +42,35 @@ Two things to check before flipping it, both cheap:
 Run `consolidate --dry-run` first, and note `undelete()` re-embeds, so a bad merge
 is recoverable within the 30-day `purge` retention window but not after it.
 
-### 1.2 Log zero-result queries
+### 1.2 ~~Attack the zero-result rate~~ — done, and it was not what it looked like
 
-**Measured**: **13.1% of 20 228 searches return nothing.** Largest single failure
-in the system, seven months of data behind it, and completely invisible to MRR —
-which is only ever computed over queries that have a known reachable answer.
+**This item is closed.** It was written as "13.1% of searches return nothing —
+the largest single failure in the system", and it was wrong. Reading the queries
+rather than the count decomposed it into four unrelated things:
 
-`operation_events` already has a `query` column. Nothing needs to be added to
-capture this; it needs to be *read*. Group the empty ones, and the failure modes
-will separate themselves into vocabulary misses, over-filtered tag queries, and
-genuinely absent knowledge — three different fixes.
+| slice | n | what it is |
+|---|---|---|
+| empty query text | 1 403 (53%) | blank `query` column, zero by construction. 1 249 in April 2026; stopped in May. |
+| exact-mode miss | 657 (25%) | `exact` is 83.1% zero *by design*. Nothing is the right answer. |
+| slash command | 48 (2%) | a `/command` reaching search. Actionable. |
+| remaining | 545 (21%) | 62% verbatim repeats — eval fixtures, not user traffic. |
 
-Do this before any retrieval tuning. It is the only measurement here that could
-reorder everything below it.
+Excluding empty-query events, hybrid has run 5.5-9.0% zero since May, against
+30.8% in April. And the substantive remainder is queries like "Thank you
+@Ruslan", "add milk, eggs and coffee to my shopping list", and "what articles
+are trending on Hacker News". Returning nothing there is correct behaviour.
+
+`benchmarks/session_analytics.py` now prints this split automatically, with the
+headline explicitly labelled as not a defect rate, so it cannot be misread the
+same way twice.
+
+**What survives**: one small fix — 48 slash-command queries reached `search`
+since May. `hooks/memory-topic-recall.sh` skips slash commands, so another
+caller does not. Find it and skip there too.
+
+**What this cost**: a top-priority item that turned out to be noise. The lesson
+is cheap and worth writing down — a rate computed over a column nobody had read
+is not a measurement, it is a hypothesis. Read the rows.
 
 ### 1.3 Stop trusting `recall_count` before 2026-07
 
@@ -350,8 +366,10 @@ existing baselines, so the decision and the evidence stay together.
 
 ## Suggested order
 
-`1.2 (log zero-result queries)` → `1.1 (default strategy)` → `1.3 (recall_count)`
+~~`1.2`~~ (closed, see above) → `1.1 (default strategy)` → `1.3 (recall_count)`
 → `2.1 (chunking)` → `2.2 (update path)` → `3.3 (bound CSLS)` → `2.3 (injection
 mix, after a second measurement window)` → `3.2 (decide the graph's fate)`.
 
-1.2 is first because it is the only item that could reorder the rest.
+1.2 ran first precisely because it could have reordered the rest. It did — by
+removing itself. 1.1 is now the highest-value item, and unlike 1.2 its evidence
+comes from a harness that reads the actual merged text rather than a count.

@@ -1,8 +1,8 @@
 {
   "_meta": {
-    "generated": "2026-09-03T08:08:25+00:00",
+    "generated": "2026-09-03T08:43:47+00:00",
     "projects_dir": "/Users/rkhozinov/.claude/projects",
-    "transcript_files_scanned": 819,
+    "transcript_files_scanned": 821,
     "transcript_files_with_signal": 239,
     "transcript_mtime_window": {
       "from": "2026-07-28",
@@ -13,13 +13,14 @@
       "The UserPromptSubmit hook fires once per session, so n is roughly one injection per session \u2014 enough to calibrate a global score threshold, too thin to slice per project.",
       "Reuse is token overlap, not comprehension. It cannot see a memory that correctly told the agent NOT to do something, which is a real and systematically undercounted kind of usefulness.",
       "Two controls bracket the reuse rate rather than pin it. 'ordered' subtracts only what the agent had already seen when the injection landed (upper bound); 'strict' subtracts everything it saw from any other source at any point in the session (lower bound). Neither is the true rate.",
+      "The headline zero-result rate is not a defect rate. Most of it is empty query text from a March-May 2026 window that has since stopped, exact-mode lookups where returning nothing is correct, and repeated eval-harness fixtures. Read the split, never the headline.",
       "memories.recall_count counts CLI and skill recalls too, so it is not a measure of hook-injection effectiveness on its own.",
       "The hook injects --depth summary, so what the transcript records is a ~200-char preview, not the full memory. Reuse is measured against the preview; a memory whose useful part was truncated away scores zero here through no fault of its own. Mean distinctive tokens per memory is only ~5, so single-token noise moves this metric easily.",
       "The highest score bucket having the lowest reuse is not necessarily a ranking failure. A memory scoring >=0.7 is by construction very close to the prompt, so its vocabulary is mostly already in the prompt and gets subtracted as pre-existing. Read it as: high similarity is not the same as high informativeness. Not as: the ranker is broken."
     ]
   },
   "mechanical": {
-    "events_total": 29240,
+    "events_total": 29263,
     "span": {
       "from": "2026-02-20",
       "to": "2026-09-03"
@@ -27,17 +28,17 @@
     "by_operation": [
       {
         "operation": "search",
-        "n": 19847,
-        "avg_results": 4.173628256159621,
-        "avg_ms": 292.4896084091649,
-        "zero_results": 2651,
-        "avg_top_sim": 0.709513349756584
+        "n": 19856,
+        "avg_results": 4.174204270749396,
+        "avg_ms": 293.01171983373825,
+        "zero_results": 2653,
+        "avg_top_sim": 0.7094752403846154
       },
       {
         "operation": "store",
-        "n": 7453,
+        "n": 7466,
         "avg_results": null,
-        "avg_ms": 176.01693058820055,
+        "avg_ms": 176.13689886032338,
         "zero_results": 0,
         "avg_top_sim": null
       },
@@ -51,11 +52,11 @@
       },
       {
         "operation": "doc_search",
-        "n": 381,
-        "avg_results": 4.8556430446194225,
+        "n": 382,
+        "avg_results": 4.856020942408377,
         "avg_ms": null,
         "zero_results": 0,
-        "avg_top_sim": 0.7132149606299212
+        "avg_top_sim": 0.7139657068062827
       },
       {
         "operation": "delete",
@@ -106,10 +107,59 @@
         "avg_top_sim": null
       }
     ],
-    "search_zero_result_rate": 0.1310559620328258,
-    "search_total": 20228,
-    "store_total": 8610,
-    "store_dedup_used": 6172,
+    "search_zero_result_rate": 0.13109002865895839,
+    "search_total": 20238,
+    "zero_result_split": {
+      "total_zero": 2653,
+      "empty_query": 1403,
+      "slash_command": 48,
+      "exact_miss": 657
+    },
+    "zero_result_by_mode": [
+      {
+        "search_mode": "semantic",
+        "n": 10228,
+        "zero": 11,
+        "zero_pct": 0.0010754790770434103
+      },
+      {
+        "search_mode": "hybrid",
+        "n": 8663,
+        "zero": 1880,
+        "zero_pct": 0.21701489091538728
+      },
+      {
+        "search_mode": "exact",
+        "n": 792,
+        "zero": 658,
+        "zero_pct": 0.8308080808080808
+      },
+      {
+        "search_mode": "auto",
+        "n": 380,
+        "zero": 0,
+        "zero_pct": 0.0
+      },
+      {
+        "search_mode": "fts",
+        "n": 158,
+        "zero": 100,
+        "zero_pct": 0.6329113924050633
+      },
+      {
+        "search_mode": "graph",
+        "n": 17,
+        "zero": 4,
+        "zero_pct": 0.23529411764705882
+      }
+    ],
+    "zero_result_query_repetition": {
+      "n": 1250,
+      "distinct": 469,
+      "repeat_ratio": 0.6248
+    },
+    "store_total": 8623,
+    "store_dedup_used": 6185,
     "store_duplicate_caught": 847
   },
   "coverage": {
@@ -120,73 +170,73 @@
       },
       {
         "day": "2026-08-30",
-        "n": 147
+        "n": 146
       },
       {
         "day": "2026-08-25",
         "n": 131
       }
     ],
-    "bulk_recall_contaminated": 2152,
-    "memories_live": 5869,
-    "never_recalled": 2145,
-    "never_recalled_pct": 0.36547963878003065,
+    "bulk_recall_contaminated": 2151,
+    "memories_live": 5882,
+    "never_recalled": 2143,
+    "never_recalled_pct": 0.36433185991159467,
     "by_type": [
       {
         "memory_type": "learning",
-        "n": 1864,
+        "n": 1868,
         "never_recalled": 670,
-        "avg_recalls": 11.83851931330472,
-        "never_recalled_pct": 0.3594420600858369
+        "avg_recalls": 11.818522483940043,
+        "never_recalled_pct": 0.35867237687366166
       },
       {
         "memory_type": "pattern",
-        "n": 971,
+        "n": 973,
         "never_recalled": 283,
-        "avg_recalls": 4.016477857878476,
-        "never_recalled_pct": 0.29145211122554066
+        "avg_recalls": 4.015416238437822,
+        "never_recalled_pct": 0.2908530318602261
       },
       {
         "memory_type": "reference",
-        "n": 737,
-        "never_recalled": 220,
-        "avg_recalls": 6.755766621438263,
-        "never_recalled_pct": 0.29850746268656714
+        "n": 739,
+        "never_recalled": 221,
+        "avg_recalls": 6.7415426251691475,
+        "never_recalled_pct": 0.29905277401894453
       },
       {
         "memory_type": "error",
         "n": 713,
-        "never_recalled": 341,
-        "avg_recalls": 2.4361851332398317,
-        "never_recalled_pct": 0.4782608695652174
+        "never_recalled": 339,
+        "avg_recalls": 2.4389901823281908,
+        "never_recalled_pct": 0.47545582047685836
       },
       {
         "memory_type": "decision",
-        "n": 702,
+        "n": 706,
         "never_recalled": 227,
-        "avg_recalls": 40.43019943019943,
-        "never_recalled_pct": 0.32336182336182334
+        "avg_recalls": 40.21813031161473,
+        "never_recalled_pct": 0.32152974504249293
       },
       {
         "memory_type": "observation",
-        "n": 503,
-        "never_recalled": 241,
-        "avg_recalls": 2.0874751491053676,
-        "never_recalled_pct": 0.47912524850894633
+        "n": 504,
+        "never_recalled": 242,
+        "avg_recalls": 2.0853174603174605,
+        "never_recalled_pct": 0.4801587301587302
       },
       {
         "memory_type": "note",
         "n": 317,
-        "never_recalled": 139,
-        "avg_recalls": 1.6561514195583595,
-        "never_recalled_pct": 0.4384858044164038
+        "never_recalled": 138,
+        "avg_recalls": 1.662460567823344,
+        "never_recalled_pct": 0.4353312302839117
       },
       {
         "memory_type": "todo",
         "n": 50,
-        "never_recalled": 22,
-        "avg_recalls": 5.16,
-        "never_recalled_pct": 0.44
+        "never_recalled": 21,
+        "avg_recalls": 5.18,
+        "never_recalled_pct": 0.42
       },
       {
         "memory_type": "feedback",
@@ -199,7 +249,7 @@
         "memory_type": "progress",
         "n": 3,
         "never_recalled": 0,
-        "avg_recalls": 1.3333333333333333,
+        "avg_recalls": 1.6666666666666667,
         "never_recalled_pct": 0.0
       },
       {
@@ -234,21 +284,21 @@
     "by_age": [
       {
         "age_bucket": "0-7d",
-        "n": 338,
-        "never_recalled": 264,
-        "never_recalled_pct": 0.7810650887573964
+        "n": 350,
+        "never_recalled": 274,
+        "never_recalled_pct": 0.7828571428571428
       },
       {
         "age_bucket": "30-90d",
         "n": 1627,
-        "never_recalled": 758,
-        "never_recalled_pct": 0.4658881376767056
+        "never_recalled": 754,
+        "never_recalled_pct": 0.4634296250768285
       },
       {
         "age_bucket": "7-30d",
-        "n": 1446,
-        "never_recalled": 1122,
-        "never_recalled_pct": 0.7759336099585062
+        "n": 1447,
+        "never_recalled": 1114,
+        "never_recalled_pct": 0.7698686938493434
       },
       {
         "age_bucket": "90d+",
@@ -260,23 +310,23 @@
     "never_recalled_tag_prefixes": [
       [
         "project",
-        2080
+        2078
       ],
       [
         "tool",
-        1465
+        1456
       ],
       [
         "svc",
-        969
+        972
       ],
       [
         "cloud",
-        662
+        664
       ],
       [
         "source",
-        543
+        545
       ],
       [
         "scope",
@@ -300,7 +350,7 @@
       ],
       [
         "ci-cd",
-        20
+        19
       ],
       [
         "secrets",
@@ -321,20 +371,20 @@
     ]
   },
   "injection": {
-    "injections": 202,
-    "memories_injected": 657,
-    "memories_scorable": 648,
-    "used_rate": 0.1527777777777778,
-    "used_rate_strict": 0.020061728395061727,
-    "mean_tokens": 5.415123456790123,
-    "mean_tokens_strict": 3.875,
-    "mean_reused": 0.6388888888888888,
+    "injections": 203,
+    "memories_injected": 662,
+    "memories_scorable": 653,
+    "used_rate": 0.15160796324655437,
+    "used_rate_strict": 0.019908116385911178,
+    "mean_tokens": 5.390505359877489,
+    "mean_tokens_strict": 3.8545176110260337,
+    "mean_reused": 0.6339969372128637,
     "by_type": [
       {
         "type": "learning",
-        "n": 165,
-        "used_rate": 0.18787878787878787,
-        "used_rate_strict": 0.048484848484848485
+        "n": 170,
+        "used_rate": 0.18235294117647058,
+        "used_rate_strict": 0.047058823529411764
       },
       {
         "type": "reference",
@@ -411,29 +461,29 @@
     },
     {
       "bucket": ">=0.5",
-      "n": 314,
-      "used_rate": 0.13694267515923567,
-      "used_rate_strict": 0.022292993630573247,
-      "mean_reused_tokens": 0.5987261146496815
+      "n": 319,
+      "used_rate": 0.13479623824451412,
+      "used_rate_strict": 0.0219435736677116,
+      "mean_reused_tokens": 0.5893416927899686
     }
   ],
   "surface": {
     "cli_calls": [
       [
         "store",
-        373
+        376
       ],
       [
         "search",
-        236
+        243
       ],
       [
         "get",
-        151
+        152
       ],
       [
         "doc",
-        142
+        143
       ],
       [
         "add",
@@ -441,7 +491,11 @@
       ],
       [
         "update",
-        6
+        7
+      ],
+      [
+        "admin",
+        3
       ],
       [
         "rm",
@@ -450,10 +504,6 @@
       [
         "delete",
         3
-      ],
-      [
-        "admin",
-        2
       ],
       [
         "find",
@@ -467,7 +517,7 @@
     "skill_calls": [
       [
         "memory:remember",
-        50
+        51
       ],
       [
         "memory:recall",
@@ -475,6 +525,6 @@
       ]
     ],
     "sessions_with_cli": 159,
-    "sessions_with_skill": 66
+    "sessions_with_skill": 67
   }
 }
