@@ -532,11 +532,31 @@ def extract_pending(
                 continue
 
             stored = 0
+            deduped: list[dict] = []
             if batch:
                 result = store.store_batch(batch, dedup_threshold=0.90, reject_injection=True)
                 stored = sum(1 for r in (result or []) if isinstance(r, dict) and r.get("status") == "stored")
+                # Semantic dedup cannot tell an update from a duplicate: a fact that
+                # supersedes another is near-identical to it by construction, same
+                # subject and tags with one detail changed. So a rejection here may
+                # be a fact being thrown away, and this is the only unattended write
+                # path in the system. Record what was dropped and why — the content
+                # is otherwise gone, and operation_events keeps only the hash.
+                for cand, r in zip(batch, result or [], strict=False):
+                    if isinstance(r, dict) and r.get("status") == "duplicate":
+                        text = cand.get("content", "") if isinstance(cand, dict) else str(cand)
+                        deduped.append(
+                            {
+                                "rejected": text[:300],
+                                "similar_to": r.get("similar_hash"),
+                                "similarity": r.get("message", ""),
+                            }
+                        )
             summary["stored"] += stored
+            summary.setdefault("deduped", 0)
+            summary["deduped"] += len(deduped)
             entry["stored"] = stored
+            entry["deduped"] = len(deduped)
             summary["sessions"].append(entry)
             record_spend(res.get("cost_usd", 0.0))
             marker.write_text(
@@ -550,6 +570,7 @@ def extract_pending(
                         "facts_proposed": len(res["facts"]),
                         "facts_stored": stored,
                         "dropped": dropped,
+                        "deduped": deduped,
                     }
                 )
             )
