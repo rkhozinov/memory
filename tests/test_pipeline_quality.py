@@ -317,8 +317,7 @@ _DOC_DISTRACTORS = [
     ),
     (
         "Onboarding a new service",
-        "Create the ECR repository, the IAM role, the IRSA binding and the "
-        "secret. Then wire the deployment pipeline.",
+        "Create the ECR repository, the IAM role, the IRSA binding and the secret. Then wire the deployment pipeline.",
         "Steps to onboard a new service into the platform.",
     ),
 ]

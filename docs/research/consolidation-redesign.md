@@ -17,30 +17,67 @@ not effort.
 
 ## Tier 1 — measured problem, obvious fix
 
-### 1.1 Change the default `content_strategy` to `mmr_union`
+### 1.1 Change the default `content_strategy` to `mmr_union` — done, and it matters less than it looked
 
-**Measured**: `keep_higher_recall` retains **62%** of unique facts across a merged
-cluster; `mmr_union` retains **100%** at the same surviving-memory count
-(`tests/bench_consolidate.py`, 3 clusters / 8 facts).
+**Measured** (`tests/bench_consolidate.py`, `benchmarks/results/consolidate-baseline.json`):
 
-The default keeps the survivor's text verbatim, so every other member's
-distinguishing detail — a port number, a pool mode, a probe delay — is
-soft-deleted with the row that held it. This is a one-line default change in
-`consolidate()` and in `dream`'s call into it (`core.py:4666`, which today always
-runs pairwise at 0.92 and never passes a strategy at all).
+| strategy | fact retention |
+|---|---|
+| **pairwise — dream's actual path** | **62%** |
+| `keep_higher_recall` (was the default) | 62% |
+| `keep_longer` | 62% |
+| `concat` | 100% |
+| `mmr_union` (now the default) | 100% |
 
-Two things to check before flipping it, both cheap:
+The default kept the survivor's text verbatim, so every other member's
+distinguishing detail was soft-deleted with the row that held it.
 
-- `mmr_union` stitches sentences from several memories. Does the result still
-  **re-embed to a vector that retrieves**? The merge path already re-embeds when
-  the strategy is not `keep_higher_recall` (`core.py:4080`), so this is a replay
-  question, not a code question: run `bench_replay` before and after on a mutated
-  snapshot.
-- Does it read coherently to a human? Sample 20 merged survivors and look.
+**But the pre-checks changed the conclusion**
+(`benchmarks/results/consolidate-threshold-safety.json`):
 
-**Risk**: merging is destructive (soft-delete plus embedding/FTS row removal).
-Run `consolidate --dry-run` first, and note `undelete()` re-embeds, so a bad merge
-is recoverable within the 30-day `purge` retention window but not after it.
+**Consolidation is inert on the current corpus.** `dream` calls
+`consolidate()` with every default (`core.py:4666`), which is *pairwise at
+0.92* — and pairwise never reads `content_strategy` at all. A dry-run sweep on
+the production DB:
+
+| threshold | pairs that would merge |
+|---|---|
+| **0.92 (shipping default)** | **0** |
+| 0.90 | 16 |
+| 0.88 | 51 |
+| 0.85 | 127 |
+
+It has already eaten the available duplicates — 304 historical merges via
+`consolidate`, 348 via `dream`. So the 62% gap is real and currently fires on
+nothing. The default is now `mmr_union` as latent safety: correct when it next
+matters, no effect today.
+
+**And lowering the threshold to make it fire would be unsafe.** At 0.85 there
+are 74 clusters covering 178 memories, with a **median pairwise token overlap
+of 0.19** — 69 of the 74 sit below 0.35. Cosine ≥0.85 here is driven by shared
+topic and shared template, not shared content. The largest cluster is 13
+distinct agent reports that happen to open with the same boilerplate line, at
+cosine 0.94. Merging at that threshold would destroy 149 distinct memories.
+
+**A lexical-overlap guard was built for exactly that and reverted.** The idea:
+require Jaccard over distinctive (≥6 char) tokens before merging. It is
+backwards for the case it was built for. The template-driven clusters score
+*highest* on raw lexical overlap — 0.61, 0.72, 0.86 — and pass it untouched.
+What it blocks instead is legitimate paraphrase merging: an existing test
+fixture of three genuine restatements of one fact scores ~0.13 and was vetoed.
+
+The right discriminator is **IDF-weighted** overlap. Tokens appearing across
+many memories — which is what boilerplate is — get near-zero weight, and rare
+tokens carry the signal. Raw Jaccard weights both the same, and that is the
+bug. Filed separately; not worth building until consolidation has something to
+consolidate.
+
+**Retrieval is unaffected either way.** Consolidating a production snapshot
+under each strategy and replaying the same 200-query corpus at `+best` gives
+MRR 0.970 in all three cases (unmutated, pairwise-merged, mmr_union-merged).
+Weak evidence — only ~1.5% of memories merged and no gold hash was among them —
+but there is no sign that a stitched-together survivor retrieves worse.
+
 
 ### 1.2 ~~Attack the zero-result rate~~ — done, and it was not what it looked like
 

@@ -197,7 +197,7 @@ def build(md_path: Path) -> Path:
     title = next((ln.lstrip("# ").strip() for ln in md.split("\n") if ln.startswith("# ")), md_path.stem)
     out_path = md_path.with_suffix(".html")
     out_path.write_text(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n"
+        '<!doctype html>\n<html lang="en">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<title>{html.escape(title)}</title>\n"

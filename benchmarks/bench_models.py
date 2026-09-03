@@ -36,8 +36,7 @@ import numpy as np
 CORPUS = [
     # Ticket identifiers — the core precision scenario
     (
-        "TICKET-24: RDS instance class upgrade from db.t3.medium to db.r5.large"
-        " in production",
+        "TICKET-24: RDS instance class upgrade from db.t3.medium to db.r5.large in production",
         ["TICKET-24", "RDS", "production"],
     ),
     (
@@ -46,67 +45,55 @@ CORPUS = [
         ["TICKET-75", "DNS", "K8s"],
     ),
     (
-        "TICKET-198: Eliminate billing-manager Node.js sidecar. Install"
-        " frontend-templates at Docker build time",
+        "TICKET-198: Eliminate billing-manager Node.js sidecar. Install frontend-templates at Docker build time",
         ["TICKET-198", "Node.js", "Docker"],
     ),
     (
-        "TICKET-64: notifications-service PRs: infra repo PR #N"
-        " covers ECR, IAM policy, SM secret, IRSA",
+        "TICKET-64: notifications-service PRs: infra repo PR #N covers ECR, IAM policy, SM secret, IRSA",
         ["TICKET-64", "ECR", "IAM"],
     ),
     (
-        "TICKET-109, TICKET-110, TICKET-111 are unassigned In Progress tickets"
-        " that need owner cleanup",
+        "TICKET-109, TICKET-110, TICKET-111 are unassigned In Progress tickets that need owner cleanup",
         ["TICKET-109", "tickets", "cleanup"],
     ),
     # Kubernetes/deployment
     (
-        "Kubernetes pod crash loop backoff: check container exit code,"
-        " OOM kills, and liveness probe misconfiguration",
+        "Kubernetes pod crash loop backoff: check container exit code, OOM kills, and liveness probe misconfiguration",
         ["kubernetes", "crash", "OOM"],
     ),
     (
-        "Kubernetes node autoscaler scales down aggressively during"
-        " low traffic windows",
+        "Kubernetes node autoscaler scales down aggressively during low traffic windows",
         ["kubernetes", "autoscaler", "scaling"],
     ),
     # Terraform
     (
-        "Terraform S3 backend state locking requires DynamoDB table"
-        " with LockID partition key",
+        "Terraform S3 backend state locking requires DynamoDB table with LockID partition key",
         ["terraform", "state", "DynamoDB"],
     ),
     (
-        "Terraform module for AWS VPC networking with public and"
-        " private subnets across 3 AZs",
+        "Terraform module for AWS VPC networking with public and private subnets across 3 AZs",
         ["terraform", "VPC", "AWS"],
     ),
     # Docker / build
     (
-        ".NET Dockerfile with BuildKit secrets is incompatible with"
-        " QEMU cross-compilation",
+        ".NET Dockerfile with BuildKit secrets is incompatible with QEMU cross-compilation",
         ["Docker", ".NET", "BuildKit"],
     ),
     # Unrelated / noise
     (
-        "Go60 ZMK firmware: disabled BLE and RGB underglow,"
-        " firmware shrunk 70%",
+        "Go60 ZMK firmware: disabled BLE and RGB underglow, firmware shrunk 70%",
         ["ZMK", "firmware", "BLE"],
     ),
     (
-        "nvim zen-mode on_close: must use vim.schedule() to defer"
-        " quit command outside WinClosed handler",
+        "nvim zen-mode on_close: must use vim.schedule() to defer quit command outside WinClosed handler",
         ["nvim", "zen-mode", "lua"],
     ),
     (
-        "Python asyncio: use asyncio.gather for concurrent IO-bound"
-        " tasks, avoid mixing with threads",
+        "Python asyncio: use asyncio.gather for concurrent IO-bound tasks, avoid mixing with threads",
         ["python", "asyncio", "concurrency"],
     ),
     (
-        "MediaMTX alerts target only mediamtx-origin pods because"
-        " edge nodes always show notReady by design",
+        "MediaMTX alerts target only mediamtx-origin pods because edge nodes always show notReady by design",
         ["MediaMTX", "alerts", "kubernetes"],
     ),
     (
@@ -522,14 +509,16 @@ def run_tests(
                             details = f"'{bad}' outranked expected result"
                         break
 
-        results.append(TestResult(
-            name=tc.name,
-            category=tc.category,
-            passed=passed,
-            top1_content=top1_content[:70],
-            top1_sim=top1_sim,
-            details=details,
-        ))
+        results.append(
+            TestResult(
+                name=tc.name,
+                category=tc.category,
+                passed=passed,
+                top1_content=top1_content[:70],
+                top1_sim=top1_sim,
+                details=details,
+            )
+        )
 
     # Aggregate metrics
     by_cat = {}
@@ -561,14 +550,10 @@ def benchmark_model(
 
     if backend == "mlx":
         model_obj = _load_mlx_model(model_cfg["hf_id"])
-        embedder = lambda texts, is_query, model_cfg: _embed_mlx(
-            model_obj, texts, is_query, model_cfg
-        )
+        embedder = lambda texts, is_query, model_cfg: _embed_mlx(model_obj, texts, is_query, model_cfg)
     else:
         model_obj = _load_st_model(model_cfg["hf_id"])
-        embedder = lambda texts, is_query, model_cfg: _embed_st(
-            model_obj, texts, is_query, model_cfg
-        )
+        embedder = lambda texts, is_query, model_cfg: _embed_st(model_obj, texts, is_query, model_cfg)
 
     load_time = (time.perf_counter() - t0) * 1000
     print(f"  Loaded in {load_time:.0f}ms")
@@ -622,7 +607,7 @@ def print_report(
     print("=" * 80)
 
     for tc in TEST_CASES:
-        print(f"\n  [{tc.category}] {tc.name}: query=\"{tc.query}\"")
+        print(f'\n  [{tc.category}] {tc.name}: query="{tc.query}"')
         for name in model_names:
             results, _, _ = all_results[name]
             r = next(r for r in results if r.name == tc.name)
@@ -646,7 +631,6 @@ def print_report(
         if gaps:
             avg_sim = sum(gaps) / len(gaps)
             print(f"  {name:<20} avg top-1 sim: {avg_sim:.4f}")
-
 
 
 # ---------------------------------------------------------------------------
@@ -850,14 +834,16 @@ def benchmark_rerankers(
             else:
                 delta = "unchanged"
 
-            results.append(RerankResult(
-                name=tc.name,
-                rank_base=rank_base,
-                rank_reranked=rank_reranked,
-                base_sim=base_sim,
-                reranker_score=rs,
-                delta=delta,
-            ))
+            results.append(
+                RerankResult(
+                    name=tc.name,
+                    rank_base=rank_base,
+                    rank_reranked=rank_reranked,
+                    base_sim=base_sim,
+                    reranker_score=rs,
+                    delta=delta,
+                )
+            )
 
         # Metrics
         mrr_base = 0.0
@@ -914,7 +900,7 @@ def print_rerank_report(
     for i, tc in enumerate(RERANK_TEST_CASES):
         if tc.expected_top is None:
             continue
-        print(f"\n  [{tc.name}] query=\"{tc.query}\"")
+        print(f'\n  [{tc.name}] query="{tc.query}"')
         for rname in reranker_names:
             results, _, _ = rerank_results[rname]
             r = results[i]
@@ -1009,10 +995,12 @@ def main() -> None:
     print(f"Models: {', '.join(model_names)}")
     print(f"Backend: {args.backend}")
     print(f"Corpus: {len(CORPUS)} memories")
-    print(f"Tests: {len(TEST_CASES)} ({len([t for t in TEST_CASES if t.category == 'identifier'])} identifier, "
-          f"{len([t for t in TEST_CASES if t.category == 'topic'])} topic, "
-          f"{len([t for t in TEST_CASES if t.category == 'semantic'])} semantic, "
-          f"{len([t for t in TEST_CASES if t.category == 'noise'])} noise)")
+    print(
+        f"Tests: {len(TEST_CASES)} ({len([t for t in TEST_CASES if t.category == 'identifier'])} identifier, "
+        f"{len([t for t in TEST_CASES if t.category == 'topic'])} topic, "
+        f"{len([t for t in TEST_CASES if t.category == 'semantic'])} semantic, "
+        f"{len([t for t in TEST_CASES if t.category == 'noise'])} noise)"
+    )
 
     all_results = {}
     for name in model_names:
@@ -1025,6 +1013,7 @@ def main() -> None:
         except Exception as e:
             print(f"  ERROR: {e}")
             import traceback
+
             traceback.print_exc()
 
     if all_results:
@@ -1044,14 +1033,10 @@ def main() -> None:
 
         if args.backend == "mlx":
             model_obj = _load_mlx_model(bi_encoder_cfg["hf_id"])
-            embedder = lambda texts, is_query, model_cfg: _embed_mlx(
-                model_obj, texts, is_query, model_cfg
-            )
+            embedder = lambda texts, is_query, model_cfg: _embed_mlx(model_obj, texts, is_query, model_cfg)
         else:
             model_obj = _load_st_model(bi_encoder_cfg["hf_id"])
-            embedder = lambda texts, is_query, model_cfg: _embed_st(
-                model_obj, texts, is_query, model_cfg
-            )
+            embedder = lambda texts, is_query, model_cfg: _embed_st(model_obj, texts, is_query, model_cfg)
 
         rerank_results = benchmark_rerankers(embedder, bi_encoder_cfg, reranker_names)
         print_rerank_report(rerank_results)

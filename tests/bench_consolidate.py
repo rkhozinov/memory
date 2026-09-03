@@ -40,6 +40,13 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 STRATEGIES = ("keep_higher_recall", "keep_longer", "concat", "mmr_union")
 
+# The path dream actually takes. dream calls `self.consolidate(dry_run=...)` with
+# every default (core.py:4666), which is PAIRWISE mode — and pairwise never reads
+# content_strategy at all. The loser is soft-deleted and the survivor's text is
+# left untouched, so whatever the loser uniquely knew is simply gone. Measuring
+# only the cluster-mode strategies would report on a path production never runs.
+PAIRWISE = "pairwise (dream's actual path)"
+
 # Cluster threshold. consolidate()'s pairwise default is 0.92, but cluster mode is
 # documented at 0.85 and that is what `memory admin clusters` uses.
 CLUSTER_THRESHOLD = 0.85
@@ -67,18 +74,15 @@ FIXTURES: list[ClusterFixture] = [
         "reference",
         [
             (
-                "PgBouncer sits in front of Postgres for connection pooling. "
-                "It listens on port 6432.",
+                "PgBouncer sits in front of Postgres for connection pooling. It listens on port 6432.",
                 "6432",
             ),
             (
-                "PgBouncer sits in front of Postgres for connection pooling. "
-                "The pool mode is transaction.",
+                "PgBouncer sits in front of Postgres for connection pooling. The pool mode is transaction.",
                 "transaction",
             ),
             (
-                "PgBouncer sits in front of Postgres for connection pooling. "
-                "The default pool size is 25 connections.",
+                "PgBouncer sits in front of Postgres for connection pooling. The default pool size is 25 connections.",
                 "25 connections",
             ),
         ],
@@ -94,13 +98,11 @@ FIXTURES: list[ClusterFixture] = [
                 "30 seconds",
             ),
             (
-                "The service defines a Kubernetes readiness probe on the health endpoint. "
-                "Its failure threshold is 5.",
+                "The service defines a Kubernetes readiness probe on the health endpoint. Its failure threshold is 5.",
                 "failure threshold is 5",
             ),
             (
-                "The service defines a Kubernetes readiness probe on the health endpoint. "
-                "It polls every 10 seconds.",
+                "The service defines a Kubernetes readiness probe on the health endpoint. It polls every 10 seconds.",
                 "every 10 seconds",
             ),
         ],
@@ -111,13 +113,11 @@ FIXTURES: list[ClusterFixture] = [
         "reference",
         [
             (
-                "Terraform keeps remote state in an S3 backend for this stack. "
-                "The bucket is versioned.",
+                "Terraform keeps remote state in an S3 backend for this stack. The bucket is versioned.",
                 "versioned",
             ),
             (
-                "Terraform keeps remote state in an S3 backend for this stack. "
-                "Locking uses a DynamoDB table.",
+                "Terraform keeps remote state in an S3 backend for this stack. Locking uses a DynamoDB table.",
                 "DynamoDB",
             ),
         ],
@@ -171,13 +171,21 @@ def measure(strategy: str) -> dict:
         _load(store)
         before = len(_surviving(store))
 
-        result = store.consolidate(
-            threshold=CLUSTER_THRESHOLD,
-            cluster=True,
-            content_strategy=strategy,
-            exclude_types=[],
-            project_scoped=True,
-        )
+        if strategy == PAIRWISE:
+            result = store.consolidate(
+                threshold=CLUSTER_THRESHOLD,
+                cluster=False,
+                exclude_types=[],
+                project_scoped=True,
+            )
+        else:
+            result = store.consolidate(
+                threshold=CLUSTER_THRESHOLD,
+                cluster=True,
+                content_strategy=strategy,
+                exclude_types=[],
+                project_scoped=True,
+            )
 
         survivors = _surviving(store)
         text = "\n".join(survivors).lower()
@@ -198,15 +206,17 @@ def measure(strategy: str) -> dict:
 
 
 def main() -> int:
-    rows = [measure(s) for s in STRATEGIES]
+    rows = [measure(s) for s in (PAIRWISE, *STRATEGIES)]
 
-    print(f"\nFixtures: {len(FIXTURES)} clusters, {sum(len(f.members) for f in FIXTURES)} memories, "
-          f"{rows[0]['facts_total']} unique facts, cluster threshold {CLUSTER_THRESHOLD}\n")
-    print("| strategy           | merged | memories after | facts kept | retention |")
-    print("|--------------------|--------|----------------|------------|-----------|")
+    print(
+        f"\nFixtures: {len(FIXTURES)} clusters, {sum(len(f.members) for f in FIXTURES)} memories, "
+        f"{rows[0]['facts_total']} unique facts, cluster threshold {CLUSTER_THRESHOLD}\n"
+    )
+    print("| strategy                    | merged | memories after | facts kept | retention |")
+    print("|-----------------------------|--------|----------------|------------|-----------|")
     for r in rows:
         print(
-            f"| {r['strategy']:<18} | {r['merged']:>6} | {r['memories_after']:>14} "
+            f"| {r['strategy']:<27} | {r['merged']:>6} | {r['memories_after']:>14} "
             f"| {r['facts_kept']:>2}/{r['facts_total']:<8} | {r['retention']:>8.0%} |"
         )
 
@@ -236,6 +246,21 @@ def test_mmr_union_retains_at_least_as_much_as_default():
     assert union["retention"] >= default["retention"], (
         f"mmr_union retained {union['retention']:.0%} vs "
         f"keep_higher_recall {default['retention']:.0%}; lost {union['lost']}"
+    )
+
+
+def test_pairwise_is_not_worse_than_the_union_strategy():
+    """Pins the gap between what dream runs and what it could run.
+
+    dream takes the pairwise path, which cannot preserve a loser's unique content
+    because it never rewrites the survivor. If this ever stops being a gap —
+    because dream switched to cluster mode, or pairwise learned to merge content —
+    this test should fail and be deleted along with the finding it guards.
+    """
+    pairwise = measure(PAIRWISE)
+    union = measure("mmr_union")
+    assert union["retention"] >= pairwise["retention"], (
+        f"mmr_union {union['retention']:.0%} vs pairwise {pairwise['retention']:.0%}"
     )
 
 

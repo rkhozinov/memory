@@ -212,9 +212,7 @@ def _load_model(hf_id: str, cfg: dict) -> tuple:
     if _BACKEND == "onnx":
         try:
             model_kwargs = {"provider": "CPUExecutionProvider"}
-            model = SentenceTransformer(
-                hf_id, backend="onnx", model_kwargs=model_kwargs, trust_remote_code=True
-            )
+            model = SentenceTransformer(hf_id, backend="onnx", model_kwargs=model_kwargs, trust_remote_code=True)
             return model, "onnx"
         except Exception as e:
             print(f"\n    ONNX failed ({e}), falling back to pytorch...", end=" ", flush=True)
@@ -343,9 +341,7 @@ def _rank_hybrid_rerank(
 ) -> list[tuple[int, float]]:
     """Hybrid + cross-encoder reranking (mirrors core.py _apply_rerank)."""
     # Get hybrid ranking first (overfetch)
-    hybrid_ranked = _rank_hybrid(
-        query_emb, corpus_embs, importance_scores, fts_conn, fts_idx_map, query
-    )
+    hybrid_ranked = _rank_hybrid(query_emb, corpus_embs, importance_scores, fts_conn, fts_idx_map, query)
 
     # Take top candidates for reranking
     top_indices = [idx for idx, _ in hybrid_ranked[:30]]
@@ -473,16 +469,25 @@ def run_pipeline(
                 ranked = _rank_semantic(query_emb, corpus_embs, importance_scores)
             elif mode == "hybrid":
                 ranked = _rank_hybrid(
-                    query_emb, corpus_embs, importance_scores,
-                    fts_conn, fts_idx_map, tc.query,
+                    query_emb,
+                    corpus_embs,
+                    importance_scores,
+                    fts_conn,
+                    fts_idx_map,
+                    tc.query,
                 )
             elif mode == "hybrid+rerank":
                 if reranker is None:
                     raise ValueError("Reranker required for hybrid+rerank mode")
                 ranked = _rank_hybrid_rerank(
-                    query_emb, corpus_embs, importance_scores,
-                    fts_conn, fts_idx_map, tc.query,
-                    corpus_texts, reranker,
+                    query_emb,
+                    corpus_embs,
+                    importance_scores,
+                    fts_conn,
+                    fts_idx_map,
+                    tc.query,
+                    corpus_texts,
+                    reranker,
                 )
             else:
                 raise ValueError(f"Unknown mode: {mode}")
@@ -612,8 +617,7 @@ def _compute_metrics(results: list[TestResult]) -> dict:
                 "passed": sum(1 for r in rs if r.passed),
                 "total": len(rs),
                 "mrr": (
-                    sum(1.0 / r.rank for r in rs if r.rank is not None)
-                    / sum(1 for r in rs if r.rank is not None)
+                    sum(1.0 / r.rank for r in rs if r.rank is not None) / sum(1 for r in rs if r.rank is not None)
                     if any(r.rank is not None for r in rs)
                     else 0.0
                 ),
@@ -666,10 +670,7 @@ def print_report(
 
         for model_name in model_names:
             lat = all_latencies[model_name]
-            row = (
-                f"{model_name:<22} {lat.load_ms:>6.0f}  {lat.embed_corpus_ms:>6.0f}  "
-                f"{lat.query_5_ms:>7.0f}  "
-            )
+            row = f"{model_name:<22} {lat.load_ms:>6.0f}  {lat.embed_corpus_ms:>6.0f}  {lat.query_5_ms:>7.0f}  "
             for m in lat_modes:
                 row += f"  {lat.search_per_query_ms.get(m, 0):>9.1f}"
             print(row)
@@ -703,7 +704,7 @@ def print_report(
     print("=" * 90)
 
     for tc in ALL_TEST_CASES:
-        print(f"\n  [{tc.category}] {tc.name}: query=\"{tc.query}\"")
+        print(f'\n  [{tc.category}] {tc.name}: query="{tc.query}"')
         if tc.expected_top:
             print(f"  Expected: ...{tc.expected_top}...")
         for model_name in model_names:
@@ -745,7 +746,11 @@ def print_report(
 
     # Check: can best semantic-only beat current hybrid?
     if "hybrid" in modes:
-        current_hyb_mrr = _compute_metrics(all_results.get("e5-small-v2", {}).get("hybrid", []))["mrr"] if "e5-small-v2" in all_results else 0
+        current_hyb_mrr = (
+            _compute_metrics(all_results.get("e5-small-v2", {}).get("hybrid", []))["mrr"]
+            if "e5-small-v2" in all_results
+            else 0
+        )
         if current_hyb_mrr > 0:
             print(f"\n  Current production (e5-small-v2 hybrid): MRR={current_hyb_mrr:.3f}")
             if best_sem_mrr >= current_hyb_mrr:

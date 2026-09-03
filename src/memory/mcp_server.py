@@ -181,7 +181,9 @@ TOOLS = [
                 },
                 "rerank": {
                     "type": "boolean",
-                    "description": "Cross-encoder rerank top-K. Off by default; set MEMORY_AUTO_RERANK=1 to enable for hybrid.",
+                    "description": (
+                        "Cross-encoder rerank top-K. Off by default; set MEMORY_AUTO_RERANK=1 to enable for hybrid."
+                    ),
                 },
                 "rerank_top_n": {
                     "type": "integer",

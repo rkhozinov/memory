@@ -1,0 +1,44 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "task": "Switch default content_strategy to mmr_union \u2014 and what the pre-checks found",
+    "headline": "Consolidation is INERT on the current corpus. At the 0.92 default zero pairs merge; it has already eaten the available duplicates. Lowering the threshold to make it fire would be unsafe, and the obvious guard against that does not work."
+  },
+  "threshold_sweep_pairwise_dry_run": {
+    "0.92_shipping_default": 0,
+    "0.90": 16,
+    "0.88": 51,
+    "0.85": 127,
+    "note": "dream calls consolidate() with all defaults (core.py:4666) => pairwise at 0.92 => merges nothing. The 62% fact-retention gap is real but currently fires on no rows."
+  },
+  "cluster_safety_at_085": {
+    "clusters": 74,
+    "memories": 178,
+    "median_pairwise_token_jaccard": 0.19,
+    "clusters_below_0.35_overlap": 69,
+    "memories_in_those": 149,
+    "verdict": "Cosine >= 0.85 does not mean duplicate. It is driven by shared topic and shared template. Merging at this threshold would destroy 149 distinct memories."
+  },
+  "rejected_fix_lexical_overlap_guard": {
+    "idea": "Require Jaccard over distinctive (>=6 char) tokens before merging.",
+    "implemented": true,
+    "reverted": true,
+    "why_it_failed": "It is backwards for the case it was built for. The template-driven clusters \u2014 many distinct agent reports sharing one boilerplate opening line \u2014 score HIGHEST on raw lexical overlap (0.61, 0.72, 0.86) and pass the guard untouched. What it blocks instead is legitimate paraphrase merging: an existing test fixture of three genuine restatements of one fact scores ~0.13 and was vetoed.",
+    "what_would_work": "IDF-weighted overlap. Tokens appearing across many memories (the boilerplate) get near-zero weight; rare tokens carry the signal. Raw Jaccard weights both the same, which is the bug."
+  },
+  "fact_retention": {
+    "pairwise_dreams_actual_path": 0.62,
+    "keep_higher_recall": 0.62,
+    "keep_longer": 0.62,
+    "concat": 1.0,
+    "mmr_union": 1.0
+  },
+  "retrieval_impact_precheck": {
+    "method": "consolidate a prod snapshot under each strategy, replay the same 200-query real corpus at +best",
+    "unmutated_mrr": 0.97,
+    "pairwise_merged_mrr": 0.97,
+    "mmr_union_merged_mrr": 0.97,
+    "verdict": "mmr_union's rewritten survivors do not hurt retrieval. Weak evidence though \u2014 only ~1.5% of memories merged and no gold hash was among them."
+  },
+  "change_made": "consolidate() default content_strategy: keep_higher_recall -> mmr_union. Latent safety only: pairwise mode never reads content_strategy, and cluster mode is not on any automatic path. Correct when it next fires; no effect today."
+}

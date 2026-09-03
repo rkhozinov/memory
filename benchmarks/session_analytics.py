@@ -208,7 +208,9 @@ def coverage(db: Path) -> dict:
     live = "deleted_at IS NULL"
 
     total = conn.execute(f"SELECT COUNT(*) AS n FROM memories WHERE {live}").fetchone()["n"]
-    never = conn.execute(f"SELECT COUNT(*) AS n FROM memories WHERE {live} AND COALESCE(recall_count,0) = 0").fetchone()["n"]
+    never = conn.execute(
+        f"SELECT COUNT(*) AS n FROM memories WHERE {live} AND COALESCE(recall_count,0) = 0"
+    ).fetchone()["n"]
 
     by_type = [
         dict(r)
@@ -250,9 +252,7 @@ def coverage(db: Path) -> dict:
 
     # Tag prefixes on never-recalled memories: what class of thing is dead weight?
     dead_tags: Counter = Counter()
-    for (tags_json,) in conn.execute(
-        f"SELECT tags FROM memories WHERE {live} AND COALESCE(recall_count,0) = 0"
-    ):
+    for (tags_json,) in conn.execute(f"SELECT tags FROM memories WHERE {live} AND COALESCE(recall_count,0) = 0"):
         try:
             for t in json.loads(tags_json or "[]"):
                 dead_tags[t.split(":")[0] if ":" in t else t] += 1
@@ -647,9 +647,11 @@ def render(r: dict) -> str:
     a("=" * 74)
     a("MEMORY SERVICE — REAL USAGE")
     a("=" * 74)
-    a(f"transcripts   {meta['transcript_files_scanned']} files, "
-      f"{meta['transcript_files_with_signal']} with memory signal, "
-      f"{meta['transcript_mtime_window']['from']} → {meta['transcript_mtime_window']['to']}")
+    a(
+        f"transcripts   {meta['transcript_files_scanned']} files, "
+        f"{meta['transcript_files_with_signal']} with memory signal, "
+        f"{meta['transcript_mtime_window']['from']} → {meta['transcript_mtime_window']['to']}"
+    )
     a(f"db events     {m['events_total']} events, {m['span']['from']} → {m['span']['to']}")
 
     a("\n1. MECHANICAL RATES  (DB only — full history)")
@@ -660,36 +662,49 @@ def render(r: dict) -> str:
         a(f"  {op['operation']:<14} {op['n']:>7} {ar:>12} {am:>9}")
     if m["search_zero_result_rate"] is not None:
         zs = m["zero_result_split"]
-        a(f"  zero-result searches: {m['search_zero_result_rate']:.1%} of {m['search_total']} "
-          f"— but that is NOT a defect rate. It splits into:")
+        a(
+            f"  zero-result searches: {m['search_zero_result_rate']:.1%} of {m['search_total']} "
+            f"— but that is NOT a defect rate. It splits into:"
+        )
         tz = zs["total_zero"] or 1
-        a(f"    empty query      {zs['empty_query']:>5} ({zs['empty_query'] / tz:.0%})  "
-          "blank query column; zero by construction, not retrieval")
-        a(f"    exact-mode miss  {zs['exact_miss']:>5} ({zs['exact_miss'] / tz:.0%})  "
-          "a lookup that missed; nothing IS the right answer")
-        a(f"    slash command    {zs['slash_command']:>5} ({zs['slash_command'] / tz:.0%})  "
-          "reached search at all; the one actionable slice")
+        a(
+            f"    empty query      {zs['empty_query']:>5} ({zs['empty_query'] / tz:.0%})  "
+            "blank query column; zero by construction, not retrieval"
+        )
+        a(
+            f"    exact-mode miss  {zs['exact_miss']:>5} ({zs['exact_miss'] / tz:.0%})  "
+            "a lookup that missed; nothing IS the right answer"
+        )
+        a(
+            f"    slash command    {zs['slash_command']:>5} ({zs['slash_command'] / tz:.0%})  "
+            "reached search at all; the one actionable slice"
+        )
         real = tz - (zs["empty_query"] or 0) - (zs["exact_miss"] or 0) - (zs["slash_command"] or 0)
-        a(f"    remaining        {real:>5} ({real / tz:.0%})  "
-          "substantive queries that found nothing")
+        a(f"    remaining        {real:>5} ({real / tz:.0%})  substantive queries that found nothing")
         rep = m["zero_result_query_repetition"]
-        a(f"    of those with text, {rep['repeat_ratio']:.0%} are repeats of an earlier query "
-          "— eval fixtures, not user traffic")
+        a(
+            f"    of those with text, {rep['repeat_ratio']:.0%} are repeats of an earlier query "
+            "— eval fixtures, not user traffic"
+        )
         a("  by mode:")
         for row in m["zero_result_by_mode"]:
-            a(f"    {row['search_mode'] or '—':<10} {row['n']:>6} searches, "
-              f"{row['zero_pct']:>6.1%} zero")
-    a(f"  stores: {m['store_total']}, dedup ran on {m['store_dedup_used']}, "
-      f"caught {m['store_duplicate_caught']} duplicates")
+            a(f"    {row['search_mode'] or '—':<10} {row['n']:>6} searches, {row['zero_pct']:>6.1%} zero")
+    a(
+        f"  stores: {m['store_total']}, dedup ran on {m['store_dedup_used']}, "
+        f"caught {m['store_duplicate_caught']} duplicates"
+    )
 
     a("\n2. INJECTION USEFULNESS  (transcript window)")
     if inj["memories_scorable"]:
-        a(f"  {inj['injections']} injections → {inj['memories_injected']} memories "
-          f"({inj['memories_scorable']} scorable)")
-        a(f"  used rate: {inj['used_rate']:.1%} (ordered control) .. "
-          f"{inj['used_rate_strict']:.1%} (strict control)")
-        a(f"  mean distinctive tokens {inj['mean_tokens']:.1f} ordered / "
-          f"{inj['mean_tokens_strict']:.1f} strict, mean reused {inj['mean_reused']:.1f}")
+        a(
+            f"  {inj['injections']} injections → {inj['memories_injected']} memories "
+            f"({inj['memories_scorable']} scorable)"
+        )
+        a(f"  used rate: {inj['used_rate']:.1%} (ordered control) .. {inj['used_rate_strict']:.1%} (strict control)")
+        a(
+            f"  mean distinctive tokens {inj['mean_tokens']:.1f} ordered / "
+            f"{inj['mean_tokens_strict']:.1f} strict, mean reused {inj['mean_reused']:.1f}"
+        )
         a(f"  {'type':<14} {'n':>6} {'used':>8} {'strict':>8}")
         for t in inj["by_type"]:
             a(f"  {t['type']:<14} {t['n']:>6} {t['used_rate']:>7.1%} {t['used_rate_strict']:>7.1%}")
@@ -699,12 +714,16 @@ def render(r: dict) -> str:
     a("\n3. SCORE CALIBRATION  (is --min-score 0.5 in the right place?)")
     a(f"  {'bucket':<10} {'n':>6} {'used':>8} {'strict':>8} {'mean reused':>13}")
     for c in cal:
-        a(f"  {c['bucket']:<10} {c['n']:>6} {c['used_rate']:>7.1%} "
-          f"{c['used_rate_strict']:>7.1%} {c['mean_reused_tokens']:>13.2f}")
+        a(
+            f"  {c['bucket']:<10} {c['n']:>6} {c['used_rate']:>7.1%} "
+            f"{c['used_rate_strict']:>7.1%} {c['mean_reused_tokens']:>13.2f}"
+        )
 
     a("\n4. WRITE/READ COVERAGE  (DB only — full history)")
-    a(f"  {cov['never_recalled']}/{cov['memories_live']} live memories never recalled "
-      f"({cov['never_recalled_pct']:.1%})")
+    a(
+        f"  {cov['never_recalled']}/{cov['memories_live']} live memories never recalled "
+        f"({cov['never_recalled_pct']:.1%})"
+    )
     if cov["bulk_recall_days"]:
         a("  !! recall_count is contaminated. These days each bumped >=100 memories at once,")
         a("     which is a sweep, not reading. Treat the rate above as an UNDERCOUNT of")
@@ -714,13 +733,11 @@ def render(r: dict) -> str:
         a(f"     {cov['bulk_recall_contaminated']} memories affected in total.")
     a(f"  {'type':<14} {'n':>6} {'never recalled':>16} {'avg recalls':>12}")
     for t in cov["by_type"]:
-        a(f"  {t['memory_type'] or '—':<14} {t['n']:>6} {t['never_recalled_pct']:>15.1%} "
-          f"{t['avg_recalls']:>12.2f}")
+        a(f"  {t['memory_type'] or '—':<14} {t['n']:>6} {t['never_recalled_pct']:>15.1%} {t['avg_recalls']:>12.2f}")
     a("  by age (a memory written yesterday has had no chance to be recalled):")
     for b in sorted(cov["by_age"], key=lambda x: x["age_bucket"]):
         a(f"    {b['age_bucket']:<8} {b['n']:>6} never {b['never_recalled_pct']:>6.1%}")
-    a("  never-recalled tag prefixes: "
-      + ", ".join(f"{k}={v}" for k, v in cov["never_recalled_tag_prefixes"][:8]))
+    a("  never-recalled tag prefixes: " + ", ".join(f"{k}={v}" for k, v in cov["never_recalled_tag_prefixes"][:8]))
 
     a("\n5. INVOCATION SURFACE  (transcript window)")
     a(f"  CLI:   {', '.join(f'{k}={v}' for k, v in sur['cli_calls']) or 'none'}")

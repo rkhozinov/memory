@@ -3834,7 +3834,7 @@ class MemoryStore:
         dry_run: bool = False,
         exclude_types: list[str] | None = None,
         cluster: bool = False,
-        content_strategy: str = "keep_higher_recall",
+        content_strategy: str = "mmr_union",
         project_scoped: bool = True,
     ) -> dict:
         """Merge near-duplicate memories deterministically.

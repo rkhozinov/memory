@@ -42,119 +42,103 @@ CORPUS: list[CorpusEntry] = [
         0.6,
     ),
     CorpusEntry(
-        "TICKET-198: Eliminate billing-manager Node.js sidecar. Install"
-        " frontend-templates at Docker build time",
+        "TICKET-198: Eliminate billing-manager Node.js sidecar. Install frontend-templates at Docker build time",
         "decision",
         ["project:myproject", "tool:docker", "svc:nodejs"],
         0.8,
     ),
     CorpusEntry(
-        "TICKET-64: notifications-service PRs: infra repo PR #N"
-        " covers ECR, IAM policy, SM secret, IRSA",
+        "TICKET-64: notifications-service PRs: infra repo PR #N covers ECR, IAM policy, SM secret, IRSA",
         "reference",
         ["project:myproject", "cloud:aws", "svc:ecr"],
         0.6,
     ),
     # --- Kubernetes / deployment ---
     CorpusEntry(
-        "Kubernetes pod crash loop backoff caused by OOM kills"
-        " when memory limit set to 256Mi",
+        "Kubernetes pod crash loop backoff caused by OOM kills when memory limit set to 256Mi",
         "error",
         ["svc:kubernetes"],
         0.5,
     ),
     CorpusEntry(
-        "Kubernetes node autoscaler scales down aggressively"
-        " during weekend low-traffic windows",
+        "Kubernetes node autoscaler scales down aggressively during weekend low-traffic windows",
         "learning",
         ["svc:kubernetes"],
         0.5,
     ),
     CorpusEntry(
-        "Kubernetes liveness probe on /healthz with 3-second timeout"
-        " causes false restarts under load",
+        "Kubernetes liveness probe on /healthz with 3-second timeout causes false restarts under load",
         "error",
         ["svc:kubernetes"],
         0.7,
     ),
     CorpusEntry(
-        "Kubernetes DNS resolution fails intermittently when ndots"
-        " is set to 5 in resolv.conf",
+        "Kubernetes DNS resolution fails intermittently when ndots is set to 5 in resolv.conf",
         "error",
         ["svc:kubernetes"],
         0.5,
     ),
     # --- Terraform / IaC ---
     CorpusEntry(
-        "Terraform S3 backend state locking requires DynamoDB table"
-        " with LockID partition key",
+        "Terraform S3 backend state locking requires DynamoDB table with LockID partition key",
         "pattern",
         ["tool:terraform", "cloud:aws"],
         0.5,
     ),
     CorpusEntry(
-        "Terraform module for AWS VPC networking with public and"
-        " private subnets across 3 AZs",
+        "Terraform module for AWS VPC networking with public and private subnets across 3 AZs",
         "pattern",
         ["tool:terraform", "cloud:aws", "svc:vpc"],
         0.7,
     ),
     # --- Docker / build ---
     CorpusEntry(
-        ".NET Dockerfile with BuildKit secrets is incompatible with"
-        " QEMU cross-compilation",
+        ".NET Dockerfile with BuildKit secrets is incompatible with QEMU cross-compilation",
         "error",
         ["tool:docker", "tool:buildkit"],
         0.7,
     ),
     CorpusEntry(
-        "Docker multi-stage builds reduced container image size"
-        " from 1.2GB to 180MB",
+        "Docker multi-stage builds reduced container image size from 1.2GB to 180MB",
         "pattern",
         ["tool:docker"],
         0.5,
     ),
     # --- Database ---
     CorpusEntry(
-        "PostgreSQL connection pooling with PgBouncer reduces"
-        " connection overhead by 90%",
+        "PostgreSQL connection pooling with PgBouncer reduces connection overhead by 90%",
         "pattern",
         ["cloud:aws", "svc:database"],
         0.5,
     ),
     CorpusEntry(
-        "Redis cluster mode enabled for session caching,"
-        " reduced API P99 from 200ms to 120ms",
+        "Redis cluster mode enabled for session caching, reduced API P99 from 200ms to 120ms",
         "learning",
         ["cloud:aws", "svc:redis"],
         0.6,
     ),
     # --- Networking ---
     CorpusEntry(
-        "ALB health check path must match the application"
-        " readiness endpoint exactly or targets go unhealthy",
+        "ALB health check path must match the application readiness endpoint exactly or targets go unhealthy",
         "pattern",
         ["cloud:aws", "svc:alb"],
         0.7,
     ),
     # --- Noise floor (unrelated topics) ---
     CorpusEntry(
-        "Go60 ZMK firmware: disabled BLE and RGB underglow,"
-        " firmware shrunk 70%",
+        "Go60 ZMK firmware: disabled BLE and RGB underglow, firmware shrunk 70%",
         "decision",
         ["project:go60"],
         0.8,
     ),
     CorpusEntry(
-        "nvim zen-mode on_close: must use vim.schedule() to defer"
-        " quit command outside WinClosed handler",
+        "nvim zen-mode on_close: must use vim.schedule() to defer quit command outside WinClosed handler",
         "learning",
         ["tool:nvim"],
         0.6,
     ),
     CorpusEntry(
-        "Python asyncio: use asyncio.gather for concurrent IO-bound"
-        " tasks, avoid mixing with threads",
+        "Python asyncio: use asyncio.gather for concurrent IO-bound tasks, avoid mixing with threads",
         "learning",
         ["tool:python"],
         0.6,
@@ -168,59 +152,51 @@ CORPUS: list[CorpusEntry] = [
     ),
     # --- Importance traps (high-importance distractors) ---
     CorpusEntry(
-        "CRITICAL: Terraform plan must always run before apply"
-        " in CI pipelines to catch drift",
+        "CRITICAL: Terraform plan must always run before apply in CI pipelines to catch drift",
         "decision",
         ["tool:terraform"],
         0.9,
     ),
     CorpusEntry(
-        "IMPORTANT: Kubernetes resource quotas must be set per namespace"
-        " to prevent noisy-neighbor pod evictions",
+        "IMPORTANT: Kubernetes resource quotas must be set per namespace to prevent noisy-neighbor pod evictions",
         "decision",
         ["svc:kubernetes"],
         0.9,
     ),
     CorpusEntry(
-        "CRITICAL: Docker BuildKit cache mount requires explicit"
-        " --mount=type=cache flag or builds are 3x slower",
+        "CRITICAL: Docker BuildKit cache mount requires explicit --mount=type=cache flag or builds are 3x slower",
         "decision",
         ["tool:docker", "tool:buildkit"],
         0.9,
     ),
     CorpusEntry(
-        "IMPORTANT: Always set DNS TTL to 60 seconds during"
-        " migrations to allow fast rollback",
+        "IMPORTANT: Always set DNS TTL to 60 seconds during migrations to allow fast rollback",
         "decision",
         ["svc:dns"],
         0.9,
     ),
     CorpusEntry(
-        "CRITICAL: PostgreSQL vacuum must run weekly on tables"
-        " with heavy write load to prevent bloat",
+        "CRITICAL: PostgreSQL vacuum must run weekly on tables with heavy write load to prevent bloat",
         "decision",
         ["cloud:aws", "svc:database"],
         0.9,
     ),
     CorpusEntry(
-        "IMPORTANT: asyncio event loop must not be shared across"
-        " threads in Python web servers",
+        "IMPORTANT: asyncio event loop must not be shared across threads in Python web servers",
         "decision",
         ["tool:python"],
         0.9,
     ),
     # --- Stale-fact pairs: old entry backdated, replacement recent ---
     CorpusEntry(
-        "The memory service embeds with all-MiniLM-L6-v2, 384 dimensions,"
-        " running on ONNX CPU",
+        "The memory service embeds with all-MiniLM-L6-v2, 384 dimensions, running on ONNX CPU",
         "reference",
         ["project:memory", "svc:embeddings"],
         0.6,
         age_days=180,
     ),
     CorpusEntry(
-        "The memory service embeds with modernbert-embed-base at 768 dimensions"
-        " on the MLX Metal backend",
+        "The memory service embeds with modernbert-embed-base at 768 dimensions on the MLX Metal backend",
         "reference",
         ["project:memory", "svc:embeddings"],
         0.6,
@@ -248,8 +224,7 @@ CORPUS: list[CorpusEntry] = [
         age_days=200,
     ),
     CorpusEntry(
-        "The API authenticates callers with short-lived OIDC tokens instead of"
-        " static API keys",
+        "The API authenticates callers with short-lived OIDC tokens instead of static API keys",
         "decision",
         ["project:memory", "svc:auth"],
         0.8,
@@ -318,7 +293,9 @@ TOPIC_CASES = [
 # --- Semantic paraphrase: query uses different words than content ---
 SEMANTIC_CASES = [
     TestCase("container orchestration → k8s", "container orchestration platform scaling", "Kubernetes", "semantic"),
-    TestCase("infrastructure as code → terraform", "infrastructure as code cloud provisioning", "Terraform", "semantic"),
+    TestCase(
+        "infrastructure as code → terraform", "infrastructure as code cloud provisioning", "Terraform", "semantic"
+    ),
     TestCase("concurrent programming → asyncio", "concurrent programming async await", "asyncio", "semantic"),
 ]
 

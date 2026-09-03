@@ -63,8 +63,7 @@ def _jaccard(a: list[str], b: list[str]) -> float:
 
 
 def _fmt_table(rows: list[tuple], headers: list[str]) -> str:
-    col_widths = [max(len(h), max((len(str(r[i])) for r in rows), default=0))
-                  for i, h in enumerate(headers)]
+    col_widths = [max(len(h), max((len(str(r[i])) for r in rows), default=0)) for i, h in enumerate(headers)]
     sep = "+-" + "-+-".join("-" * w for w in col_widths) + "-+"
     hdr = "| " + " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers)) + " |"
     lines = [sep, hdr, sep]
