@@ -1,0 +1,94 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "probe": "P2 rerun \u2014 the one bounded experiment P2 left open: does IDF-weighted entity ranking rescue the graph?",
+    "harness": "tests/bench_probe_p2.py",
+    "design": "3 seeds x n=90 cases, sample 4000 memories, pairs sharing >=2 entities with cosine < 0.45, restricted to cases whose rarest shared entity appears in <=50 memories",
+    "not_comparable_to_the_first_p2_run": "Different harness (the original was never committed, only its results). Baseline and ceiling both differ \u2014 0.111 vs 0.033 recall@10, 0.42 vs 0.50 ceiling. Read this run against itself, not against probe-p2-multihop.json."
+  },
+  "adoption_rule_set_before_running": "IDF must move recall@10 appreciably toward the measured ceiling. If not, do not invest in the graph.",
+  "results_mean_of_3_seeds": {
+    "hybrid": {
+      "mrr_mean": 0.0,
+      "recall@10_mean": 0.0,
+      "recall@10_per_seed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_ms_mean": 13.2
+    },
+    "graph_hops1": {
+      "mrr_mean": 0.0312,
+      "recall@10_mean": 0.1111,
+      "recall@10_per_seed": [
+        0.1111,
+        0.1222,
+        0.1
+      ],
+      "median_ms_mean": 17.7
+    },
+    "graph_hops2": {
+      "mrr_mean": 0.0139,
+      "recall@10_mean": 0.0519,
+      "recall@10_per_seed": [
+        0.0556,
+        0.0667,
+        0.0333
+      ],
+      "median_ms_mean": 125.4
+    },
+    "graph_hops1_idf": {
+      "mrr_mean": 0.0271,
+      "recall@10_mean": 0.1296,
+      "recall@10_per_seed": [
+        0.1444,
+        0.1556,
+        0.0889
+      ],
+      "median_ms_mean": 22.6
+    },
+    "graph_hops2_idf": {
+      "mrr_mean": 0.0294,
+      "recall@10_mean": 0.1333,
+      "recall@10_per_seed": [
+        0.1444,
+        0.1778,
+        0.0778
+      ],
+      "median_ms_mean": 131.2
+    }
+  },
+  "ceiling_gold_present_in_300_deep_pool": 0.4223,
+  "verdict": {
+    "idf_helps_but_fails_the_bar": "recall@10 0.1111 -> 0.1296, which closes 5.9% of the gap to the 0.4223 ceiling. It is not stable: seed 47 regresses (0.1 -> 0.0889). MRR gets slightly WORSE (0.0312 -> 0.0271) \u2014 IDF pulls more golds into the top 10 but ranks them lower.",
+    "do_not_build": [
+      "typed edges",
+      "A-MEM write-time linking",
+      "write-time entity resolution"
+    ],
+    "but_do_not_retire_either": "P2's stated reason to retire was reclaiming the O(k^2) per-write cost in _link_entities. Measured, that cost is not real: median k=4 entities per memory means 6 pair-inserts, p95 k=9 means 36, against an average store of 178ms dominated by embedding. All four entity tables total 1.8MB. Retiring would remove the only mechanism that reaches this population at all, to reclaim approximately nothing.",
+    "recommendation": "Keep, freeze, do not invest. Graph mode reaches 11-13% of a population where hybrid reaches 0.0%, costs a rounding error per write, and is used 17 times in 7 months. That is a cheap dormant capability, not a liability."
+  },
+  "write_cost_measured": {
+    "memories_with_entities": 6375,
+    "median_entities_per_memory": 4,
+    "p95": 9,
+    "max": 38,
+    "median_pair_inserts": 6,
+    "max_pair_inserts": 703,
+    "avg_store_ms": 178.06,
+    "entity_table_mb": {
+      "entities": 0.11,
+      "memory_entities": 0.54,
+      "entity_relations": 1.09,
+      "memory_graph": 0.07
+    }
+  },
+  "honest_limits": {
+    "this_population_is_one_hop_by_construction": "Cases are pairs that SHARE an entity, so they are adjacent. hops=2 losing to hops=1 here (0.052 vs 0.111 recall, at 6-9x the latency) is therefore NOT evidence that genuine 2-hop chains are worthless \u2014 it is evidence that a second hop adds noise when the answer is one hop away. A true multi-hop population (A-e1-B-e2-C where A and C share nothing) is untested, by this probe and by the original P2. Do not change the max_hops default on this.",
+    "n": "90 cases per seed; one case is worth 0.011 recall@10. The IDF delta of 0.019 is under two cases.",
+    "hub_corpus": "Without the max_bridge_df<=50 filter the median rarest-shared-entity has df=977, so most co-entity pairs are bridged only by a hub and IDF has nothing to weight. That is a property of this corpus, and it caps how much any entity-specificity scheme can achieve here.",
+    "a_bug_that_looked_like_a_finding": "The first run of the IDF rescorer keyed on result['id'], which _search_graph does not return. It silently scored everything 0 and re-sorted by importance, reporting recall 0.133 -> 0.000. That would have read as a decisive refutation. Keyed on content_hash it reads 0.133 -> 0.167. Same trap the original P2 hit with its first cut."
+  }
+}

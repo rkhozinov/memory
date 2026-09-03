@@ -647,6 +647,67 @@ measurement window is still required before changing the hook.
 All five write committed JSON into `benchmarks/results/`, same convention as the
 existing baselines, so the decision and the evidence stay together.
 
+## Decision: the graph is kept, frozen, and not invested in
+
+P2 left exactly one experiment open — IDF-weighted entity seeding and path
+scoring — with the rule set in advance: *if it moves recall@10 appreciably
+toward the measured ceiling, invest; if not, retire graph mode and reclaim the
+O(k²) per-write cost*. Both halves were run. **IDF fails the bar, and the retire
+rationale turns out to be false.**
+
+Harness `tests/bench_probe_p2.py` (the original P2 harness was never committed,
+only its results, so this is a rebuild — read it against itself, not against
+`probe-p2-multihop.json`, whose baseline and ceiling both differ). 3 seeds ×
+n=90, pairs sharing ≥2 entities at cosine < 0.45, restricted to cases whose
+rarest shared entity appears in ≤50 memories.
+
+| config | MRR | recall@10 | median ms |
+|---|---|---|---|
+| hybrid | 0.000 | **0.000** | 13 |
+| graph hops=1 | 0.031 | 0.111 | 18 |
+| graph hops=2 | 0.014 | 0.052 | 126 |
+| graph hops=1 + IDF | 0.027 | 0.130 | 23 |
+| graph hops=2 + IDF | 0.029 | 0.133 | 131 |
+| *ceiling (gold in 300-deep pool)* | | *0.422* | |
+
+**IDF fails.** 0.111 → 0.130 closes **5.9%** of the gap to the ceiling, it is not
+stable (seed 47 regresses, 0.100 → 0.089), and MRR gets *worse* — it pulls more
+golds into the top 10 while ranking them lower. So: no typed edges, no A-MEM
+write-time linking, no write-time entity resolution. That half of P2 stands.
+
+**But the retire rationale does not survive measurement.** P2 proposed reclaiming
+the O(k²) per-write cost in `_link_entities`. Measured: median **4** entities per
+memory → **6** pair-inserts; p95 of 9 → 36; against an average store of **178 ms**
+dominated by embedding. All four entity tables total **1.8 MB**. There is nothing
+meaningful to reclaim. Retiring would delete the only mechanism that reaches this
+population at all — hybrid scores **0.000** on it, in every seed — in exchange for
+approximately nothing.
+
+**Verdict: keep, freeze, do not invest.** A dormant capability that costs a
+rounding error per write is not a liability. Revisit only if graph usage rises
+above its 17 searches in seven months, or if someone builds a genuine multi-hop
+corpus (below).
+
+**Three limits, stated.**
+
+1. **This population is one hop by construction.** Cases are pairs that *share*
+   an entity, so they are adjacent. hops=2 losing to hops=1 here — 0.052 vs
+   0.111 at 7× the latency — is therefore **not** evidence that real 2-hop
+   chains are worthless, only that a second hop adds noise when the answer is one
+   hop away. A true multi-hop population (A–e₁–B–e₂–C, where A and C share
+   nothing) is untested by this probe *and* by the original P2. **Do not change
+   the `max_hops` default on this evidence.**
+2. **The corpus is hub-dominated.** Without the `≤50` bridge filter, the median
+   rarest shared entity has df **977** — most co-entity pairs are bridged only by
+   a hub, so IDF has nothing to weight. That caps what any entity-specificity
+   scheme can achieve here, and it is a fact about the data, not about IDF.
+3. **A bug that read exactly like a finding.** The first IDF run keyed on
+   `result["id"]`, which `_search_graph` does not return. It silently scored
+   everything 0 and re-sorted by importance, reporting 0.133 → **0.000** — a
+   decisive-looking refutation. Keyed on `content_hash` it reads 0.133 → 0.167.
+   The original P2 hit the same class of trap with its first cut. Two for two:
+   on this probe, a zero result means check the harness first.
+
 ## Decision: `as_of` answers in every mode, and the conflict detector does not ship
 
 **`as_of`: 33% → 100%**, against P1's 90% adoption bar.
