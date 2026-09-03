@@ -25,6 +25,9 @@ lint = ["ruff>=0.9.0", "bandit>=1.8.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# bench_consolidate.py is a report script that also carries two regression
+# guards. Without this it is never collected and the guards never run.
+python_files = ["test_*.py", "bench_consolidate.py"]
 
 [tool.ruff]
 target-version = "py311"

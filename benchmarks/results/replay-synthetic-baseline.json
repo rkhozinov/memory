@@ -1,0 +1,271 @@
+{
+  "baseline": {
+    "mrr@10": 0.9130434782608695,
+    "ndcg@10": 0.924428674223605,
+    "top1": 0.8695652173913043,
+    "p50_ms": 0.5585420876741409,
+    "p95_ms": 0.8600751403719187,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9166666666666666,
+      "mixed": 1.0,
+      "stale_fact": 0.8333333333333334
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9384882922619097,
+      "mixed": 1.0,
+      "stale_fact": 0.8769765845238192
+    },
+    "recall@1": 0.8695652173913043,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.013334416085854173
+  },
+  "+rrf": {
+    "mrr@10": 0.9130434782608695,
+    "ndcg@10": 0.924428674223605,
+    "top1": 0.8695652173913043,
+    "p50_ms": 0.5222498439252377,
+    "p95_ms": 0.7355839479714632,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9166666666666666,
+      "mixed": 1.0,
+      "stale_fact": 0.8333333333333334
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9384882922619097,
+      "mixed": 1.0,
+      "stale_fact": 0.8769765845238192
+    },
+    "recall@1": 0.8695652173913043,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.012368292082101107
+  },
+  "+rrsb": {
+    "mrr@10": 0.9130434782608695,
+    "ndcg@10": 0.924428674223605,
+    "top1": 0.8695652173913043,
+    "p50_ms": 0.5558750126510859,
+    "p95_ms": 0.7320002187043428,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9166666666666666,
+      "mixed": 1.0,
+      "stale_fact": 0.8333333333333334
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9384882922619097,
+      "mixed": 1.0,
+      "stale_fact": 0.8769765845238192
+    },
+    "recall@1": 0.8695652173913043,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.013382958015426993
+  },
+  "+id": {
+    "mrr@10": 0.9130434782608695,
+    "ndcg@10": 0.924428674223605,
+    "top1": 0.8695652173913043,
+    "p50_ms": 0.5205839406698942,
+    "p95_ms": 0.5893165245652199,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9166666666666666,
+      "mixed": 1.0,
+      "stale_fact": 0.8333333333333334
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9384882922619097,
+      "mixed": 1.0,
+      "stale_fact": 0.8769765845238192
+    },
+    "recall@1": 0.8695652173913043,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.012275167042389512
+  },
+  "+csls": {
+    "mrr@10": 0.9130434782608695,
+    "ndcg@10": 0.924428674223605,
+    "top1": 0.8695652173913043,
+    "p50_ms": 0.5318750627338886,
+    "p95_ms": 0.8580339141190052,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9166666666666666,
+      "mixed": 1.0,
+      "stale_fact": 0.8333333333333334
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9384882922619097,
+      "mixed": 1.0,
+      "stale_fact": 0.8769765845238192
+    },
+    "recall@1": 0.8695652173913043,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.012851249892264605
+  },
+  "+best": {
+    "mrr@10": 0.9130434782608695,
+    "ndcg@10": 0.924428674223605,
+    "top1": 0.8695652173913043,
+    "p50_ms": 0.5255828145891428,
+    "p95_ms": 0.5669749807566404,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9166666666666666,
+      "mixed": 1.0,
+      "stale_fact": 0.8333333333333334
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 0.9384882922619097,
+      "mixed": 1.0,
+      "stale_fact": 0.8769765845238192
+    },
+    "recall@1": 0.8695652173913043,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.012277540983632207
+  },
+  "+rerank": {
+    "mrr@10": 0.9565217391304348,
+    "ndcg@10": 0.9565217391304348,
+    "top1": 0.9565217391304348,
+    "p50_ms": 0.5798749625682831,
+    "p95_ms": 517.3999751452357,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 1.0,
+      "mixed": 1.0,
+      "stale_fact": 1.0
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 1.0,
+      "mixed": 1.0,
+      "stale_fact": 1.0
+    },
+    "recall@1": 0.9565217391304348,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.9514962921384722
+  },
+  "+rrsb+rr": {
+    "mrr@10": 0.9565217391304348,
+    "ndcg@10": 0.9565217391304348,
+    "top1": 0.9565217391304348,
+    "p50_ms": 0.5622080061584711,
+    "p95_ms": 0.8963748812675476,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 1.0,
+      "mixed": 1.0,
+      "stale_fact": 1.0
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 1.0,
+      "mixed": 1.0,
+      "stale_fact": 1.0
+    },
+    "recall@1": 0.9565217391304348,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.013863292057067156
+  },
+  "+all": {
+    "mrr@10": 0.9565217391304348,
+    "ndcg@10": 0.9565217391304348,
+    "top1": 0.9565217391304348,
+    "p50_ms": 0.5369579885154963,
+    "p95_ms": 0.6175165995955467,
+    "n_queries": 23,
+    "by_category_mrr": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 1.0,
+      "mixed": 1.0,
+      "stale_fact": 1.0
+    },
+    "by_category_ndcg": {
+      "identifier": 1.0,
+      "topic": 1.0,
+      "semantic": 0.6666666666666666,
+      "importance_trap": 1.0,
+      "mixed": 1.0,
+      "stale_fact": 1.0
+    },
+    "recall@1": 0.9565217391304348,
+    "recall@5": 0.9565217391304348,
+    "recall@10": 0.9565217391304348,
+    "recall@20": 0.9565217391304348,
+    "wall_s": 0.012566542020067573
+  },
+  "_meta": {
+    "generated": "2026-09-03",
+    "corpus": "benchmarks/corpus.py (synthetic)",
+    "n_memories": 31,
+    "n_queries": 23,
+    "match": "substring",
+    "note": "All six non-rerank fusion configs score identically here \u2014 at 31 entries the synthetic corpus can no longer discriminate between fusion strategies. Use the prod-db run for fusion decisions; keep this one for category coverage."
+  }
+}

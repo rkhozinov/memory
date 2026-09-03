@@ -1,5 +1,5 @@
 .PHONY: install sync lint format format-check security test check reinstall \
-        link-dev unlink-dev verify-runtime
+        link-dev unlink-dev verify-runtime analytics bench-consolidate bench-replay
 
 # The installed plugin lives in Claude Code's plugin cache, NOT in this checkout.
 PLUGIN_CACHE := $(HOME)/.claude/plugins/cache/rkhozinov/memory
@@ -63,6 +63,23 @@ test:
 ## MUST run after any code change — the PATH binary is a separate uv tool install, not the .venv editable copy.
 reinstall:
 	uv tool install --force --editable .
+
+## Real-usage analytics: how the memory service performs in actual sessions.
+## Read-only — snapshots the DB before opening it, never writes to ~/.claude.
+analytics:
+	uv run python benchmarks/session_analytics.py --json /tmp/memory-analytics.json
+
+## Consolidation fact-retention per content_strategy
+bench-consolidate:
+	uv run python tests/bench_consolidate.py
+
+## Retrieval A/B replay over the synthetic corpus.
+## For the production-DB run see benchmarks/results/README.md — it needs a
+## generated query set that must not be committed.
+bench-replay:
+	uv run python tests/bench_replay.py \
+		--configs baseline,+rrf,+rrsb,+id,+csls,+best,+rerank,+rrsb+rr,+all \
+		--json benchmarks/results/replay-synthetic-baseline.json
 
 ## Lint + format + security + tests
 check: lint format-check security test

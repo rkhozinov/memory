@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "harness": "tests/bench_consolidate.py",
+    "fixtures": "3 synthetic clusters, 8 memories, 8 unique facts, cluster threshold 0.85",
+    "finding": "The shipping default content_strategy (keep_higher_recall) loses 38% of unique facts when it merges a cluster: the survivor's text is kept verbatim and every other member's distinguishing detail is soft-deleted with it. mmr_union and concat retain 100% at the same surviving-memory count, so the loss is a choice of default, not a cost of consolidating."
+  },
+  "strategies": {
+    "keep_higher_recall": {
+      "merged": 3,
+      "memories_after": 5,
+      "facts_kept": 5,
+      "facts_total": 8,
+      "retention": 0.62
+    },
+    "keep_longer": {
+      "merged": 3,
+      "memories_after": 5,
+      "facts_kept": 5,
+      "facts_total": 8,
+      "retention": 0.62
+    },
+    "concat": {
+      "merged": 3,
+      "memories_after": 5,
+      "facts_kept": 8,
+      "facts_total": 8,
+      "retention": 1.0
+    },
+    "mmr_union": {
+      "merged": 3,
+      "memories_after": 5,
+      "facts_kept": 8,
+      "facts_total": 8,
+      "retention": 1.0
+    }
+  }
+}

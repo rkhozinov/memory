@@ -1,0 +1,218 @@
+{
+  "baseline": {
+    "mrr@10": 0.9258531746031745,
+    "ndcg@10": 0.9444902821853556,
+    "top1": 0.875,
+    "p50_ms": 6.319208419881761,
+    "p95_ms": 7.053798018023372,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.9674940898345153,
+      "cross_topic": 0.9259259259259258,
+      "identifier": 0.6808035714285714
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.9754661623018973,
+      "cross_topic": 0.9449715336507962,
+      "identifier": 0.7597999470075687
+    },
+    "recall@1": 0.875,
+    "recall@5": 0.99,
+    "recall@10": 1.0,
+    "recall@20": 1.0,
+    "wall_s": 2.153717374894768
+  },
+  "+rrf": {
+    "mrr@10": 0.7647083333333333,
+    "ndcg@10": 0.8236620353708212,
+    "top1": 0.575,
+    "p50_ms": 6.221103947609663,
+    "p95_ms": 6.867133057676256,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.7875886524822695,
+      "cross_topic": 0.779074074074074,
+      "identifier": 0.5494791666666666
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.839765511039021,
+      "cross_topic": 0.8355680307618172,
+      "identifier": 0.6620828917457948
+    },
+    "recall@1": 0.575,
+    "recall@5": 0.985,
+    "recall@10": 0.995,
+    "recall@20": 1.0,
+    "wall_s": 1.2526012919843197
+  },
+  "+rrsb": {
+    "mrr@10": 0.7766666666666667,
+    "ndcg@10": 0.8301644350947012,
+    "top1": 0.6,
+    "p50_ms": 6.216625450178981,
+    "p95_ms": 7.094360108021647,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.7965425531914894,
+      "cross_topic": 0.7962962962962964,
+      "identifier": 0.5494791666666666
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.8436698276124927,
+      "cross_topic": 0.8459399661714803,
+      "identifier": 0.6620828917457948
+    },
+    "recall@1": 0.6,
+    "recall@5": 0.975,
+    "recall@10": 0.985,
+    "recall@20": 0.995,
+    "wall_s": 1.2585634170100093
+  },
+  "+id": {
+    "mrr@10": 0.936138888888889,
+    "ndcg@10": 0.9522578795548615,
+    "top1": 0.89,
+    "p50_ms": 6.423312588594854,
+    "p95_ms": 7.207652018405497,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.9728132387706856,
+      "cross_topic": 0.9277777777777778,
+      "identifier": 0.7677083333333333
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.9793924415192223,
+      "cross_topic": 0.9464263086904791,
+      "identifier": 0.8256449141263942
+    },
+    "recall@1": 0.89,
+    "recall@5": 0.995,
+    "recall@10": 1.0,
+    "recall@20": 1.0,
+    "wall_s": 1.2942047088872641
+  },
+  "+csls": {
+    "mrr@10": 0.9630833333333334,
+    "ndcg@10": 0.9724794857372552,
+    "top1": 0.935,
+    "p50_ms": 6.226666504517198,
+    "p95_ms": 6.782144028693438,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.9893617021276596,
+      "cross_topic": 0.9777777777777777,
+      "identifier": 0.7260416666666667
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.9921474415653502,
+      "cross_topic": 0.9835968779365092,
+      "identifier": 0.7943949141263942
+    },
+    "recall@1": 0.935,
+    "recall@5": 1.0,
+    "recall@10": 1.0,
+    "recall@20": 1.0,
+    "wall_s": 1.7182785409968346
+  },
+  "+best": {
+    "mrr@10": 0.97,
+    "ndcg@10": 0.9776986044914495,
+    "top1": 0.945,
+    "p50_ms": 6.234749918803573,
+    "p95_ms": 6.991127319633961,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.9893617021276596,
+      "cross_topic": 0.9777777777777777,
+      "identifier": 0.8125
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.9921474415653502,
+      "cross_topic": 0.9835968779365092,
+      "identifier": 0.8596338985538224
+    },
+    "recall@1": 0.945,
+    "recall@5": 1.0,
+    "recall@10": 1.0,
+    "recall@20": 1.0,
+    "wall_s": 1.2594209159724414
+  },
+  "+rerank": {
+    "mrr@10": 0.93875,
+    "ndcg@10": 0.9531638167725117,
+    "top1": 0.895,
+    "p50_ms": 6.359457969665527,
+    "p95_ms": 7.300794043112546,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.9547872340425532,
+      "cross_topic": 0.951851851851852,
+      "identifier": 0.7708333333333334
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.9662070831785933,
+      "cross_topic": 0.9642842057936527,
+      "identifier": 0.8139824383928644
+    },
+    "recall@1": 0.895,
+    "recall@5": 0.995,
+    "recall@10": 0.995,
+    "recall@20": 1.0,
+    "wall_s": 1.2897934999782592
+  },
+  "+rrsb+rr": {
+    "mrr@10": 0.9370833333333333,
+    "ndcg@10": 0.9506638167725118,
+    "top1": 0.895,
+    "p50_ms": 6.148833432234824,
+    "p95_ms": 6.839986960403621,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.9512411347517731,
+      "cross_topic": 0.951851851851852,
+      "identifier": 0.7708333333333334
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.960887934242423,
+      "cross_topic": 0.9642842057936527,
+      "identifier": 0.8139824383928644
+    },
+    "recall@1": 0.895,
+    "recall@5": 0.99,
+    "recall@10": 0.99,
+    "recall@20": 0.995,
+    "wall_s": 1.6713507089298218
+  },
+  "+all": {
+    "mrr@10": 0.93875,
+    "ndcg@10": 0.9531638167725117,
+    "top1": 0.895,
+    "p50_ms": 6.285937502980232,
+    "p95_ms": 6.984446430578828,
+    "n_queries": 200,
+    "by_category_mrr": {
+      "paraphrase": 0.9547872340425532,
+      "cross_topic": 0.951851851851852,
+      "identifier": 0.7708333333333334
+    },
+    "by_category_ndcg": {
+      "paraphrase": 0.9662070831785933,
+      "cross_topic": 0.9642842057936527,
+      "identifier": 0.8139824383928644
+    },
+    "recall@1": 0.895,
+    "recall@5": 0.995,
+    "recall@10": 0.995,
+    "recall@20": 1.0,
+    "wall_s": 1.2591152500826865
+  },
+  "_meta": {
+    "generated": "2026-09-03",
+    "corpus": "benchmarks/results/real-corpus-20260903.json (built by tests/build_real_corpus.py)",
+    "db": "snapshot of data/sqlite_vec.db, 6767 active memories",
+    "n_queries": 200,
+    "match": "hash",
+    "bias": "build_real_corpus.py discards any candidate the BASELINE hybrid config cannot already reach. That inflates baseline and hides recall a different config would add. All 75 hot_cluster candidates were discarded this way \u2014 the activation-stress family is absent from these numbers entirely.",
+    "note": "weighted_best beats RRF by 16.1pp MRR; the cross-encoder rerank adds only 1.3pp for a 714ms p50 (measured cold, 120x the 6ms non-rerank path)."
+  }
+}
