@@ -11,9 +11,14 @@ MemoryStore.search() under four configurations:
 
 Metrics reported per config:
   MRR@10     mean reciprocal rank, top-10 results
-  Recall@5   fraction of queries whose expected match is in top-5
-  Top1       fraction with expected match at rank 1
+  nDCG@10    normalised discounted cumulative gain, top-10 (single relevant doc,
+             so IDCG = 1 and nDCG = 1/log2(rank+1))
+  Recall@k   fraction of queries whose expected match is in top-k, k in 1/5/10/20
+  Top1       fraction with expected match at rank 1 (== Recall@1)
   p50, p95   per-query search latency (ms)
+
+Search runs at limit=RECALL_KS[-1] so the deepest Recall@k is measurable; MRR and
+nDCG are still truncated at 10.
 
 Usage:
   uv run python tests/bench_replay.py
@@ -26,6 +31,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import math
 import statistics
 import sys
 import time
@@ -53,6 +59,21 @@ CONFIGS: dict[str, dict] = {
     "+csls": dict(score_fusion="weighted_csls", rerank=False, use_activation=False),
     "+best": dict(score_fusion="weighted_best", rerank=False, use_activation=False),
 }
+
+
+RECALL_KS = (1, 5, 10, 20)
+RANK_CUTOFF = 10  # MRR and nDCG are computed over the top-10 only
+
+
+def _ndcg(rank: int | None, cutoff: int = RANK_CUTOFF) -> float:
+    """nDCG for a single binary-relevant document at 1-based `rank`.
+
+    With exactly one relevant doc the ideal ranking puts it first, so IDCG is
+    1/log2(1+1) = 1 and nDCG collapses to the discount term.
+    """
+    if rank is None or rank > cutoff:
+        return 0.0
+    return 1.0 / math.log2(rank + 1)
 
 
 def _reciprocal_rank(results: list[dict], expected: str, *, match: str = "substring") -> tuple[float, int | None]:
@@ -89,13 +110,7 @@ def _build_store(tmp: Path) -> MemoryStore:
         "USING fts5(content, content='memories', content_rowid='id', "
         "tokenize='porter ascii')"
     )
-    for entry in corpus.CORPUS:
-        s.store(
-            entry.content,
-            memory_type=entry.memory_type,
-            tags=entry.tags,
-            importance=entry.importance,
-        )
+    corpus.load_corpus(s)
     return s
 
 
@@ -114,9 +129,10 @@ def _run_config(
     core_mod.USE_ACTIVATION = bool(cfg["use_activation"])
 
     rrs: list[float] = []
+    ndcgs: list[float] = []
     per_category: dict[str, list[float]] = {}
-    recall_at_5_hits = 0
-    top1_hits = 0
+    per_category_ndcg: dict[str, list[float]] = {}
+    recall_hits = dict.fromkeys(RECALL_KS, 0)
     latencies: list[float] = []
 
     for query, expected, cat in queries:
@@ -124,31 +140,38 @@ def _run_config(
         results = store.search(
             query,
             mode="hybrid",
-            limit=10,
+            limit=max(RECALL_KS),
             score_fusion=cfg["score_fusion"],
             rerank=cfg["rerank"],
             track_recall=False,
         )
         latencies.append((time.perf_counter() - t0) * 1000)
 
-        rr, rank = _reciprocal_rank(results, expected, match=match)
+        rr, rank = _reciprocal_rank(results[:RANK_CUTOFF], expected, match=match)
+        _, deep_rank = _reciprocal_rank(results, expected, match=match)
+        ndcg = _ndcg(rank)
         rrs.append(rr)
+        ndcgs.append(ndcg)
         per_category.setdefault(cat, []).append(rr)
-        if rank == 1:
-            top1_hits += 1
-        if rank is not None and rank <= 5:
-            recall_at_5_hits += 1
+        per_category_ndcg.setdefault(cat, []).append(ndcg)
+        for k in RECALL_KS:
+            if deep_rank is not None and deep_rank <= k:
+                recall_hits[k] += 1
 
     n = len(queries)
-    return {
+    out = {
         "mrr@10": sum(rrs) / n,
-        "recall@5": recall_at_5_hits / n,
-        "top1": top1_hits / n,
+        "ndcg@10": sum(ndcgs) / n,
+        "top1": recall_hits[1] / n,
         "p50_ms": statistics.median(latencies),
         "p95_ms": statistics.quantiles(latencies, n=20)[-1] if len(latencies) >= 20 else max(latencies),
         "n_queries": n,
         "by_category_mrr": {c: sum(v) / len(v) for c, v in per_category.items()},
+        "by_category_ndcg": {c: sum(v) / len(v) for c, v in per_category_ndcg.items()},
     }
+    for k in RECALL_KS:
+        out[f"recall@{k}"] = recall_hits[k] / n
+    return out
 
 
 def _format_table(rows: dict[str, dict]) -> str:
@@ -161,17 +184,19 @@ def _format_table(rows: dict[str, dict]) -> str:
             return f"{d * 100:+.1f}pp" if abs(d) > 1e-6 else "    —"
         return f"{d:+.1f}ms" if abs(d) > 0.01 else "    —"
 
+    rk = " | ".join(f"R@{k}" for k in RECALL_KS)
     lines = [
         "",
-        "| config    | MRR@10 | Recall@5 | Top1 | p50 ms | p95 ms | ΔMRR | ΔRecall@5 |",
-        "|-----------|--------|----------|------|--------|--------|------|-----------|",
+        f"| config    | MRR@10 | nDCG@10 | {rk} | p50 ms | p95 ms | ΔMRR | ΔnDCG |",
+        "|-----------|--------|---------|" + "------|" * len(RECALL_KS) + "--------|--------|------|-------|",
     ]
     for name, m in rows.items():
+        recalls = " | ".join(f"{m[f'recall@{k}']:.2f}" for k in RECALL_KS)
         lines.append(
-            f"| {name:<9} | {m['mrr@10']:.3f}  | {m['recall@5']:.3f}    "
-            f"| {m['top1']:.2f} | {m['p50_ms']:6.1f} | {m['p95_ms']:6.1f} "
+            f"| {name:<9} | {m['mrr@10']:.3f}  | {m['ndcg@10']:.3f}   | {recalls} "
+            f"| {m['p50_ms']:6.1f} | {m['p95_ms']:6.1f} "
             f"| {_delta(m['mrr@10'], base.get('mrr@10', m['mrr@10']))} "
-            f"| {_delta(m['recall@5'], base.get('recall@5', m['recall@5']))} |"
+            f"| {_delta(m['ndcg@10'], base.get('ndcg@10', m['ndcg@10']))} |"
         )
     return "\n".join(lines)
 
@@ -253,6 +278,7 @@ def main() -> int:
             results[name]["wall_s"] = time.perf_counter() - t0
             print(
                 f"  {name:<9} MRR={results[name]['mrr@10']:.3f} "
+                f"nDCG={results[name]['ndcg@10']:.3f} "
                 f"R@5={results[name]['recall@5']:.3f} "
                 f"top1={results[name]['top1']:.2f} "
                 f"p50={results[name]['p50_ms']:.1f}ms "

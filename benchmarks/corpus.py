@@ -20,6 +20,10 @@ class CorpusEntry:
     memory_type: str
     tags: list[str]
     importance: float
+    # Backdate `created_at` by this many days when loading. Only the stale-fact
+    # pairs use it: recency is 10% of the composite score, so an old fact and its
+    # replacement are indistinguishable unless they actually differ in age.
+    age_days: float = 0.0
 
 
 CORPUS: list[CorpusEntry] = [
@@ -205,6 +209,52 @@ CORPUS: list[CorpusEntry] = [
         ["tool:python"],
         0.9,
     ),
+    # --- Stale-fact pairs: old entry backdated, replacement recent ---
+    CorpusEntry(
+        "The memory service embeds with all-MiniLM-L6-v2, 384 dimensions,"
+        " running on ONNX CPU",
+        "reference",
+        ["project:memory", "svc:embeddings"],
+        0.6,
+        age_days=180,
+    ),
+    CorpusEntry(
+        "The memory service embeds with modernbert-embed-base at 768 dimensions"
+        " on the MLX Metal backend",
+        "reference",
+        ["project:memory", "svc:embeddings"],
+        0.6,
+        age_days=2,
+    ),
+    CorpusEntry(
+        "CI for this repo builds on GitHub Actions ubuntu-22.04 runners",
+        "reference",
+        ["project:memory", "tool:github-actions"],
+        0.6,
+        age_days=120,
+    ),
+    CorpusEntry(
+        "CI for this repo builds on GitHub Actions ubuntu-24.04 runners",
+        "reference",
+        ["project:memory", "tool:github-actions"],
+        0.6,
+        age_days=1,
+    ),
+    CorpusEntry(
+        "The API authenticates callers with static API keys stored in the environment",
+        "decision",
+        ["project:memory", "svc:auth"],
+        0.8,
+        age_days=200,
+    ),
+    CorpusEntry(
+        "The API authenticates callers with short-lived OIDC tokens instead of"
+        " static API keys",
+        "decision",
+        ["project:memory", "svc:auth"],
+        0.8,
+        age_days=3,
+    ),
 ]
 
 
@@ -346,6 +396,36 @@ NOISE_CASES = [
     TestCase("unrelated topic", "quantum computing qubits entanglement", None, "noise"),
 ]
 
+# --- Stale facts: a superseded fact and its replacement both present ---
+# Probes the missing update operation. `dream`'s supersession pass only fires on
+# cos>=0.85 AND >=2 shared tags AND (a contradiction keyword OR type in
+# {decision,error}), so the CI-runner pair below is invisible to it: it is a
+# `reference` and its replacement contains no contradiction word. Expect these to
+# fail on the current build — that failing baseline is the point.
+STALE_FACT_CASES = [
+    TestCase(
+        "embedding model superseded",
+        "which embedding model does the memory service use",
+        "modernbert-embed-base",
+        "stale_fact",
+        ["384 dimensions"],
+    ),
+    TestCase(
+        "CI runner image superseded",
+        "which CI runner image does the repo build on",
+        "ubuntu-24.04",
+        "stale_fact",
+        ["ubuntu-22.04"],
+    ),
+    TestCase(
+        "auth mechanism superseded",
+        "how does the API authenticate callers",
+        "short-lived OIDC tokens",
+        "stale_fact",
+        ["static API keys stored in the environment"],
+    ),
+]
+
 ALL_TEST_CASES = (
     IDENTIFIER_CASES
     + TOPIC_CASES
@@ -354,4 +434,37 @@ ALL_TEST_CASES = (
     + BOOLEAN_CASES
     + MIXED_CASES
     + NOISE_CASES
+    + STALE_FACT_CASES
 )
+
+
+# ---------------------------------------------------------------------------
+# Loader
+# ---------------------------------------------------------------------------
+
+
+def load_corpus(store, entries: list[CorpusEntry] | None = None) -> None:
+    """Store every corpus entry, backdating `created_at` where `age_days` is set.
+
+    Shared by tests/bench_replay.py and tests/test_pipeline_quality.py so the two
+    harnesses can never drift on how the stale-fact pairs are aged.
+    """
+    import time as _time
+
+    now = _time.time()
+    conn = store._get_conn()
+    for entry in entries if entries is not None else CORPUS:
+        res = store.store(
+            entry.content,
+            memory_type=entry.memory_type,
+            tags=entry.tags,
+            importance=entry.importance,
+        )
+        if not entry.age_days:
+            continue
+        ts = now - entry.age_days * 86400
+        iso = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(ts))
+        conn.execute(
+            "UPDATE memories SET created_at = ?, created_at_iso = ? WHERE content_hash = ?",
+            (ts, iso, res["content_hash"]),
+        )

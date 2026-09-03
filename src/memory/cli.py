@@ -697,7 +697,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="rerank",
         action="store_true",
         default=None,
-        help="Cross-encoder rerank top-K. Default: on for hybrid mode, off elsewhere.",
+        help="Cross-encoder rerank top-K. Off by default; set MEMORY_AUTO_RERANK=1 to enable for hybrid.",
     )
     rr.add_argument("--no-rerank", dest="rerank", action="store_false", help="Disable rerank.")
     p.add_argument("--rerank-top-n", type=int, default=None, help="Truncate after rerank (default: --limit)")

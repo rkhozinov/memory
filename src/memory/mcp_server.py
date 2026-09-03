@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from mcp.server import Server
@@ -180,7 +181,7 @@ TOOLS = [
                 },
                 "rerank": {
                     "type": "boolean",
-                    "description": "Cross-encoder rerank top-K. Default: on for hybrid mode, off elsewhere.",
+                    "description": "Cross-encoder rerank top-K. Off by default; set MEMORY_AUTO_RERANK=1 to enable for hybrid.",
                 },
                 "rerank_top_n": {
                     "type": "integer",
@@ -190,10 +191,12 @@ TOOLS = [
                 },
                 "score_fusion": {
                     "type": "string",
-                    "enum": ["weighted", "rrf", "rrsb"],
-                    "default": "weighted",
+                    "enum": ["weighted", "rrf", "rrsb", "weighted_id", "weighted_csls", "weighted_best"],
+                    "default": "weighted_best",
                     "description": (
-                        "Hybrid score fusion: weighted (default), rrf (rank-only), rrsb (rank + score-boost)."
+                        "Hybrid score fusion: weighted_best (default; CSLS hubness correction "
+                        "+ exact-ID promotion), weighted (additive baseline), rrf (rank-only), "
+                        "rrsb (rank + score-boost), weighted_id (id only), weighted_csls (csls only)."
                     ),
                 },
                 "as_of": {
@@ -650,7 +653,9 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
     mode = args.get("mode", "hybrid")
     rerank_raw = args.get("rerank")
     if rerank_raw is None:
-        rerank = mode == "hybrid"
+        # Match the CLI: off unless opted in. The cross-encoder triggers a ~568 MB
+        # ONNX download on first use, and an MCP client has nobody watching for it.
+        rerank = mode == "hybrid" and os.environ.get("MEMORY_AUTO_RERANK") == "1"
     elif isinstance(rerank_raw, str):
         rerank = rerank_raw.lower() in ("true", "1", "yes")
     else:
@@ -669,7 +674,7 @@ def _handle_search(store: MemoryStore, args: dict) -> list[dict]:
         max_hops=args.get("max_hops", 2),
         rerank=rerank,
         rerank_top_n=rerank_top_n,
-        score_fusion=args.get("score_fusion", "weighted"),
+        score_fusion=args.get("score_fusion", "weighted_best"),
         as_of=args.get("as_of"),
     )
     depth = args.get("depth", "summary")
