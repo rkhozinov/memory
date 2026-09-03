@@ -103,14 +103,22 @@ generic centroid-hugging memories) + exact-identifier promotion (a memory
 literally containing a queried id like `TICKET-194` is lifted to rank 1). Also
 available: `weighted_id`, `weighted_csls` (each half alone), `rrsb`.
 
-## Temporal graph (Phase B)
+## Time travel: `--as-of`
 
-Edges in the entity / memory graph carry `valid_from`/`valid_to`. Use `--as-of` to
-restrict graph traversal to edges valid at a given instant:
+`--as-of` asks what the store knew at an instant, and it works in **every mode**,
+not just graph. A memory is visible if it was written by then and had not been
+deleted by then — so a memory deleted since still answers a question about the
+past, which is the point of asking.
 ```bash
-memory search "primary database" --mode graph --as-of 2025-01-01
-memory search "primary database" --mode graph                  # defaults to now
+memory search "CI runner image" --as-of 2026-01-01   # what we believed then
+memory search "CI runner image"                      # what we believe now
 ```
+This matters because an update no longer overwrites what it supersedes: both
+facts live in the store and the timestamp is what separates them.
+
+In `--mode graph` it additionally restricts traversal to edges whose
+`valid_from`/`valid_to` bracket that instant.
+
 Useful for "what did we decide about X *before* Y was deprecated?"
 
 Dream supersession + consolidation now write provenance edges (`supersedes`,

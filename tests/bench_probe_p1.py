@@ -154,8 +154,9 @@ def probe_as_of() -> dict:
             "current_accuracy": now_correct / n,
             "as_of_accuracy": as_of_correct / n,
             "detail": detail,
-            "note": "as_of currently only reaches graph traversal (core.py _search_graph); the "
-            "semantic and FTS rankers ignore it, so a past-tense query returns the present.",
+            "note": "as_of now reaches every ranker: _build_time_filter contributes the "
+            "created_at half and _liveness_sql the deleted_at half, replacing the hardcoded "
+            "`deleted_at IS NULL` so a memory deleted since is still visible as of then.",
         }
 
 
@@ -169,18 +170,41 @@ def probe_conflict_detection(threshold: float = 0.90) -> dict:
             _store_aged(store, c.old_content, c.memory_type, c.tags, c.old_age_days)
             res = store.store(c.new_content, memory_type=c.memory_type, tags=c.tags, dedup_threshold=threshold)
             status = res.get("status")
-            # "duplicate" means the store REJECTED the replacement — arguably worse
-            # than silence, because the new fact is lost. Neither is a conflict signal.
-            is_conflict = status == "conflict"
+            # The question is "did store() tell you this contradicts something you
+            # already know". The shipped answer is not a third status but a flag on
+            # a successful store: the fact is KEPT (a rejected update is lost, which
+            # is worse than silence) and carries supersedes_candidate. So that flag
+            # is what counts as detection here, and "duplicate" still counts as a
+            # failure — it means the replacement was thrown away.
+            candidate = res.get("supersedes_candidate")
+            is_conflict = status == "stored" and bool(candidate)
             flagged += is_conflict
-            detail.append({"case": c.name, "status": status, "flagged_as_conflict": is_conflict})
+            detail.append(
+                {
+                    "case": c.name,
+                    "status": status,
+                    "supersedes_candidate": bool(candidate),
+                    "flagged_as_conflict": is_conflict,
+                }
+            )
         n = len(TEMPORAL_CASES)
         return {
             "n": n,
             "conflicts_detected": flagged / n,
             "detail": detail,
-            "note": "store() has two outcomes: duplicate (rejected) and stored. There is no "
-            "third outcome for 'this contradicts something you already know'.",
+            "note": "Detection is store() returning status=stored WITH supersedes_candidate set. "
+            "A bare 'stored' means the contradiction went unnoticed; 'duplicate' means the "
+            "replacement was discarded.",
+            "why_it_is_not_higher": "The discriminator only runs inside the dedup branch, so it "
+            "sees a pair only at cosine >= dedup_threshold. On the embedding path dedup actually "
+            "uses (embed_doc both sides) these three contradictions measure 0.697, 0.920 and "
+            "0.764: only the CI-runner pair clears 0.90. The other two sit below even the 0.80 "
+            "advisory threshold P1 itself recommended, so P1's threshold would have caught none "
+            "of the cases P1 chose. Catching them means operating near 0.70, where P1 measured 8.3 "
+            "flags per 100 memories (~100/month) and called it too noisy. n=3 cannot justify "
+            "picking a threshold, so the wide-band detector is NOT built. The data-loss fix does "
+            "not depend on it: a fact can only be DISCARDED inside the dedup band, which is "
+            "exactly where the discriminator does run.",
         }
 
 

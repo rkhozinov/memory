@@ -1994,6 +1994,7 @@ class MemoryStore:
                 time_expr,
                 after,
                 before,
+                as_of=as_of_ts,
                 exclude_tags=exclude_tags,
                 memory_types=memory_types,
                 min_importance=min_importance,
@@ -2007,6 +2008,7 @@ class MemoryStore:
                 time_expr,
                 after,
                 before,
+                as_of=as_of_ts,
                 scoring_weights=scoring_weights,
                 exclude_tags=exclude_tags,
                 memory_types=memory_types,
@@ -2021,6 +2023,7 @@ class MemoryStore:
                 time_expr,
                 after,
                 before,
+                as_of=as_of_ts,
                 scoring_weights=scoring_weights,
                 exclude_tags=exclude_tags,
                 memory_types=memory_types,
@@ -2036,6 +2039,7 @@ class MemoryStore:
                 time_expr,
                 after,
                 before,
+                as_of=as_of_ts,
                 scoring_weights=scoring_weights,
                 exclude_tags=exclude_tags,
                 memory_types=memory_types,
@@ -2170,15 +2174,37 @@ class MemoryStore:
 
         return all_results
 
+    @staticmethod
+    def _liveness_sql(as_of: float | None) -> tuple[str, list]:
+        """Which memories count as alive.
+
+        Without as_of that means "not deleted now".  With it, "not deleted yet
+        at that instant" — a memory deleted since is still the right answer to a
+        question about the past, which is the whole point of asking.
+        """
+        if as_of is None:
+            return "m.deleted_at IS NULL", []
+        return "(m.deleted_at IS NULL OR m.deleted_at > ?)", [as_of]
+
     def _build_time_filter(
         self,
         time_expr: str | None,
         after: str | None,
         before: str | None,
+        as_of: float | None = None,
     ) -> tuple[str, list]:
-        """Build SQL WHERE clause for time filters."""
+        """Build SQL WHERE clause for time filters.
+
+        as_of contributes the created_at half of transaction time here; the
+        deleted_at half lives in _liveness_sql, because it has to *replace* the
+        rankers' hardcoded `deleted_at IS NULL` rather than be ANDed with it.
+        """
         clauses = []
         params = []
+
+        if as_of is not None:
+            clauses.append("m.created_at <= ?")
+            params.append(as_of)
 
         if time_expr:
             dt = _parse_time_expr(time_expr)
@@ -2222,6 +2248,7 @@ class MemoryStore:
         time_expr: str | None,
         after: str | None,
         before: str | None,
+        as_of: float | None = None,
         _embedding: object | None = None,
         scoring_weights: tuple[float, float, float] | None = None,
         exclude_tags: list[str] | None = None,
@@ -2237,7 +2264,7 @@ class MemoryStore:
         else:
             return []
         # Fetch more than needed to allow post-filtering and re-ranking
-        has_filters = tags or time_expr or after or before or exclude_tags or memory_types or min_importance
+        has_filters = tags or time_expr or after or before or as_of or exclude_tags or memory_types or min_importance
         fetch_limit = max(limit * 5, 50) if has_filters else max(limit * 3, 30)
 
         rows = conn.execute(
@@ -2258,15 +2285,16 @@ class MemoryStore:
         distances = {r["rowid"]: r["distance"] for r in rows}
 
         placeholders = ",".join("?" * len(rowids))
-        time_clause, time_params = self._build_time_filter(time_expr, after, before)
+        time_clause, time_params = self._build_time_filter(time_expr, after, before, as_of)
 
+        live_clause, live_params = self._liveness_sql(as_of)
         sql = f"""
             SELECT * FROM memories m
             WHERE m.id IN ({placeholders})
-              AND m.deleted_at IS NULL
+              AND {live_clause}
               AND {_NOT_INJECTED_SQL}
         """
-        params = list(rowids)
+        params = [*rowids, *live_params]
         if time_clause:
             sql += f" AND {time_clause}"
             params.extend(time_params)
@@ -2341,14 +2369,16 @@ class MemoryStore:
         time_expr: str | None,
         after: str | None,
         before: str | None,
+        as_of: float | None = None,
         exclude_tags: list[str] | None = None,
         memory_types: list[str] | None = None,
         min_importance: float | None = None,
     ) -> list[dict]:
-        time_clause, time_params = self._build_time_filter(time_expr, after, before)
+        time_clause, time_params = self._build_time_filter(time_expr, after, before, as_of)
 
-        sql = f"SELECT * FROM memories m WHERE m.deleted_at IS NULL AND {_NOT_INJECTED_SQL}"
-        params: list = []
+        live_clause, live_params = self._liveness_sql(as_of)
+        sql = f"SELECT * FROM memories m WHERE {live_clause} AND {_NOT_INJECTED_SQL}"
+        params: list = [*live_params]
 
         if query:
             sql += " AND m.content LIKE ?"
@@ -2394,6 +2424,7 @@ class MemoryStore:
         time_expr: str | None,
         after: str | None,
         before: str | None,
+        as_of: float | None = None,
         scoring_weights: tuple[float, float, float] | None = None,
         exclude_tags: list[str] | None = None,
         memory_types: list[str] | None = None,
@@ -2407,7 +2438,7 @@ class MemoryStore:
         if not safe_query:
             return []
 
-        has_filters = tags or time_expr or after or before or exclude_tags or memory_types or min_importance
+        has_filters = tags or time_expr or after or before or as_of or exclude_tags or memory_types or min_importance
         fetch_limit = max(limit * 5, 50) if has_filters else max(limit * 3, 30)
 
         fts_rows = conn.execute(
@@ -2427,15 +2458,16 @@ class MemoryStore:
 
         rowids = list(ranks.keys())
         placeholders = ",".join("?" * len(rowids))
-        time_clause, time_params = self._build_time_filter(time_expr, after, before)
+        time_clause, time_params = self._build_time_filter(time_expr, after, before, as_of)
 
+        live_clause, live_params = self._liveness_sql(as_of)
         sql = f"""
             SELECT * FROM memories m
             WHERE m.id IN ({placeholders})
-              AND m.deleted_at IS NULL
+              AND {live_clause}
               AND {_NOT_INJECTED_SQL}
         """
-        params = list(rowids)
+        params = [*rowids, *live_params]
         if time_clause:
             sql += f" AND {time_clause}"
             params.extend(time_params)
@@ -2523,6 +2555,7 @@ class MemoryStore:
         time_expr: str | None,
         after: str | None,
         before: str | None,
+        as_of: float | None = None,
         scoring_weights: tuple[float, float, float] | None = None,
         exclude_tags: list[str] | None = None,
         memory_types: list[str] | None = None,
@@ -2543,6 +2576,7 @@ class MemoryStore:
             time_expr,
             after,
             before,
+            as_of=as_of,
             scoring_weights=scoring_weights,
             exclude_tags=exclude_tags,
             memory_types=memory_types,
@@ -2556,6 +2590,7 @@ class MemoryStore:
             time_expr,
             after,
             before,
+            as_of=as_of,
             scoring_weights=scoring_weights,
             exclude_tags=exclude_tags,
             memory_types=memory_types,

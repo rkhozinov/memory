@@ -1,40 +1,51 @@
 {
-  "_meta": {
-    "generated": "2026-09-03",
-    "probe": "P1 \u2014 temporal retrieval + write-time conflict detection",
-    "harness": "tests/bench_probe_p1.py"
-  },
-  "as_of_retrieval": {
-    "accuracy": 0.33,
-    "adoption_threshold": 0.9,
-    "verdict": "FAIL",
-    "cause": "as_of only reaches graph traversal (_search_graph). The semantic and FTS rankers ignore it entirely, so a past-tense query returns the present.",
-    "note": "The one apparent pass is not evidence \u2014 it is the case where the current-tense control ALSO missed, so the old fact won by accident."
+  "as_of": {
+    "n": 3,
+    "current_accuracy": 0.6666666666666666,
+    "as_of_accuracy": 1.0,
+    "detail": [
+      {
+        "case": "embedding model",
+        "current_query_returns_new_fact": true,
+        "as_of_returns_old_fact": true
+      },
+      {
+        "case": "CI runner",
+        "current_query_returns_new_fact": true,
+        "as_of_returns_old_fact": true
+      },
+      {
+        "case": "auth mechanism",
+        "current_query_returns_new_fact": false,
+        "as_of_returns_old_fact": true
+      }
+    ],
+    "note": "as_of now reaches every ranker: _build_time_filter contributes the created_at half and _liveness_sql the deleted_at half, replacing the hardcoded `deleted_at IS NULL` so a memory deleted since is still visible as of then."
   },
   "conflict_detection": {
-    "detected": 0.0,
-    "verdict": "FAIL \u2014 there is no conflict outcome at all",
-    "worse": "One case returned status 'duplicate', meaning the REPLACEMENT FACT WAS SILENTLY REJECTED AND LOST. store() has two outcomes, duplicate and stored; an update that resembles what it replaces takes the first one."
-  },
-  "false_positive_sweep": {
-    "rule": "cosine >= threshold AND same memory_type AND >= 1 shared tag",
-    "sample": {
-      "memories": 600,
-      "pairs": 179700
-    },
-    "flags_per_100_memories": {
-      "0.90": 0.2,
-      "0.85": 1.5,
-      "0.80": 2.0,
-      "0.75": 3.7,
-      "0.70": 8.3
-    },
-    "verdict": "A usable operating point exists, but only for an ADVISORY signal. At 0.90 the rule fires on essentially nothing (same saturation as consolidation at 0.92). At 0.80 it is ~2 flags per 100 memories \u2014 roughly 24 prompts a month at the current ~1200/month write rate, which is tolerable when the action is 'surface this' and not 'merge these'. At 0.70 it is ~100/month, too noisy.",
-    "honest_limit": "This bounds NOISE, not precision. The corpus has no labelled conflicts, so 2 flags per 100 could be 2 real conflicts or 2 false alarms. The measurement says a detector would not drown the user; it does not say it would find anything."
-  },
-  "adoption_decision": {
-    "bi_temporal_as_of": "BUILD. The columns exist unused and the ranker ignores them; this is wiring. 33% accuracy is the baseline to beat.",
-    "conflict_detection": "BUILD, advisory only, threshold ~0.80. Never auto-merge on it.",
-    "blocking_bug_first": "Fix the silent-rejection bug before either \u2014 an update path is pointless while updates are being discarded as duplicates."
+    "n": 3,
+    "conflicts_detected": 0.3333333333333333,
+    "detail": [
+      {
+        "case": "embedding model",
+        "status": "stored",
+        "supersedes_candidate": false,
+        "flagged_as_conflict": false
+      },
+      {
+        "case": "CI runner",
+        "status": "stored",
+        "supersedes_candidate": true,
+        "flagged_as_conflict": true
+      },
+      {
+        "case": "auth mechanism",
+        "status": "stored",
+        "supersedes_candidate": false,
+        "flagged_as_conflict": false
+      }
+    ],
+    "note": "Detection is store() returning status=stored WITH supersedes_candidate set. A bare 'stored' means the contradiction went unnoticed; 'duplicate' means the replacement was discarded.",
+    "why_it_is_not_higher": "The discriminator only runs inside the dedup branch, so it sees a pair only at cosine >= dedup_threshold. On the embedding path dedup actually uses (embed_doc both sides) these three contradictions measure 0.697, 0.920 and 0.764: only the CI-runner pair clears 0.90. The other two sit below even the 0.80 advisory threshold P1 itself recommended, so P1's threshold would have caught none of the cases P1 chose. Catching them means operating near 0.70, where P1 measured 8.3 flags per 100 memories (~100/month) and called it too noisy. n=3 cannot justify picking a threshold, so the wide-band detector is NOT built. The data-loss fix does not depend on it: a fact can only be DISCARDED inside the dedup band, which is exactly where the discriminator does run."
   }
 }

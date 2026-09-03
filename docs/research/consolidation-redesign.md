@@ -647,6 +647,52 @@ measurement window is still required before changing the hook.
 All five write committed JSON into `benchmarks/results/`, same convention as the
 existing baselines, so the decision and the evidence stay together.
 
+## Decision: `as_of` answers in every mode, and the conflict detector does not ship
+
+**`as_of`: 33% → 100%**, against P1's 90% adoption bar.
+
+It previously reached only `_search_graph`, so semantic, FTS, exact and hybrid
+queries answered a past-tense question with the present. The wiring is in two
+halves, because they are not the same predicate:
+
+- `_build_time_filter` gains the `created_at <= as_of` half.
+- `_liveness_sql` owns the `deleted_at` half, and it **replaces** each ranker's
+  hardcoded `deleted_at IS NULL` rather than being ANDed with it. A memory
+  deleted since is still the right answer to a question about the past — ANDing
+  would have made that branch unreachable, which is exactly the bug the first
+  attempt had.
+
+`as_of` also now widens the semantic KNN pool (`has_filters`), since it is a
+post-filter over the fetched neighbours and a narrow pool silently truncates.
+
+**The wide-band conflict detector is not built, and P1's threshold is refuted by
+P1's own cases.** P1 recommended an advisory detector at ~0.80. Measured on the
+embedding path dedup actually uses (`embed_doc` on both sides), the three
+contradictions P1 chose sit at:
+
+| case | cosine | ≥0.90 dedup | ≥0.80 advisory |
+|---|---|---|---|
+| embedding model | 0.697 | no | no |
+| CI runner | 0.920 | yes | yes |
+| auth mechanism | 0.764 | no | no |
+
+So 0.80 would have caught one of three — the same one 0.90 already catches.
+Catching the other two means operating near 0.70, where P1 measured 8.3 flags
+per 100 memories (~100/month) and called it too noisy. **n=3 cannot justify
+choosing a threshold**, so the detector stays inside the dedup branch.
+
+Nothing is lost by that restraint: a fact can only be *discarded* at
+cosine ≥ dedup_threshold, which is precisely where the discriminator does run.
+Wide-band detection is a nice-to-have warning, not the data-loss fix.
+
+**The risk this introduces, stated.** Because an update no longer overwrites what
+it supersedes, both facts now live in the store and a present-tense query can
+return the stale one. P1's control already shows it: the `auth mechanism` case
+returns the *old* fact for a current-tense query, which is why current-query
+accuracy reads 67%. That is the deliberate trade — a stale hit is recoverable,
+a discarded fact is not — but it is a real regression surface and it gets
+measured before any ranking term is added to compensate.
+
 ## Decision: an update is not a duplicate
 
 `store()` had two outcomes, `duplicate` and `stored`. A fact that supersedes

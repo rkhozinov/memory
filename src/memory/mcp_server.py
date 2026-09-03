@@ -190,7 +190,7 @@ TOOLS = [
                 },
                 "as_of": {
                     "type": "string",
-                    "description": "ISO date — graph traversal restricts to edges valid then.",
+                    "description": "ISO date — return what the store knew at that instant, in any mode.",
                 },
             },
         },

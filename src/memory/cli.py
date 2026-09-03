@@ -704,7 +704,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--as-of",
         default=None,
-        help="ISO date or Unix timestamp; graph traversal restricts to edges valid then.",
+        help="ISO date or Unix timestamp; return what the store knew then, in any mode.",
     )
     p.add_argument(
         "--depth",
