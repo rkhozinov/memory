@@ -1,0 +1,357 @@
+# Consolidation and lifecycle redesign — proposal
+
+Proposal only. Nothing here is implemented. Each item states the measurement that
+justifies it, and items without a measurement behind them are marked as such.
+
+Evidence base:
+
+- `benchmarks/results/README.md` — retrieval A/B, 200 production queries
+- `benchmarks/results/consolidate-baseline.json` — fact retention per strategy
+- `docs/research/real-usage-report.md` — 202 real injections, 29 240 DB events
+- `docs/research/2026-memory-landscape.md` — what the field does differently
+
+Ordered cheapest-first within each tier. The tiers are about evidence strength,
+not effort.
+
+---
+
+## Tier 1 — measured problem, obvious fix
+
+### 1.1 Change the default `content_strategy` to `mmr_union`
+
+**Measured**: `keep_higher_recall` retains **62%** of unique facts across a merged
+cluster; `mmr_union` retains **100%** at the same surviving-memory count
+(`tests/bench_consolidate.py`, 3 clusters / 8 facts).
+
+The default keeps the survivor's text verbatim, so every other member's
+distinguishing detail — a port number, a pool mode, a probe delay — is
+soft-deleted with the row that held it. This is a one-line default change in
+`consolidate()` and in `dream`'s call into it (`core.py:4666`, which today always
+runs pairwise at 0.92 and never passes a strategy at all).
+
+Two things to check before flipping it, both cheap:
+
+- `mmr_union` stitches sentences from several memories. Does the result still
+  **re-embed to a vector that retrieves**? The merge path already re-embeds when
+  the strategy is not `keep_higher_recall` (`core.py:4080`), so this is a replay
+  question, not a code question: run `bench_replay` before and after on a mutated
+  snapshot.
+- Does it read coherently to a human? Sample 20 merged survivors and look.
+
+**Risk**: merging is destructive (soft-delete plus embedding/FTS row removal).
+Run `consolidate --dry-run` first, and note `undelete()` re-embeds, so a bad merge
+is recoverable within the 30-day `purge` retention window but not after it.
+
+### 1.2 Log zero-result queries
+
+**Measured**: **13.1% of 20 228 searches return nothing.** Largest single failure
+in the system, seven months of data behind it, and completely invisible to MRR —
+which is only ever computed over queries that have a known reachable answer.
+
+`operation_events` already has a `query` column. Nothing needs to be added to
+capture this; it needs to be *read*. Group the empty ones, and the failure modes
+will separate themselves into vocabulary misses, over-filtered tag queries, and
+genuinely absent knowledge — three different fixes.
+
+Do this before any retrieval tuning. It is the only measurement here that could
+reorder everything below it.
+
+### 1.3 Stop trusting `recall_count` before 2026-07
+
+**Measured**: 2 152 memories share one of three `last_recalled_at` days — 1 874 on
+2026-06-23 alone. Of 2 458 memories older than 90 days, exactly **one** has
+`recall_count = 0`. That is a sweep with tracking on, not reading.
+
+`recall_count` feeds the ranking demotion factor, dream's demotion pass, the index
+tier-2 score, and active-forget eligibility. All four are reading contaminated
+data for the pre-July corpus. Options, in order of preference:
+
+1. Add a `recall_count_since` epoch and score on recalls after it.
+2. Reset `recall_count` for memories whose only recall falls on a detected bulk
+   day. Destructive and irreversible; needs explicit sign-off.
+3. Do nothing but document it. Cheapest, and honest, if lifecycle work is not
+   imminent.
+
+`benchmarks/session_analytics.py` now detects and prints bulk-recall days, so at
+minimum the contamination will not be silently rediscovered.
+
+---
+
+## Tier 2 — measured gap, needs design
+
+### 2.1 Chunk and embed document bodies
+
+**Measured**: `test_doc_body_semantic_recall` is a strict `xfail`. A fact stated
+verbatim in a document body ranks **5th of 5**, behind an unrelated runbook,
+because only the 500-char summary is ever embedded (`core.py:5041`) and FTS misses
+on vocabulary. 1 104 documents are affected.
+
+Shape: 512-token windows with overlap, chunk rows keyed to the parent document,
+`document_embeddings` gains a chunk-level sibling table. Retrieval returns the
+parent doc, deduplicated across its chunks.
+
+Cost to be honest about: 1 104 documents at a few chunks each is a one-off
+re-embed of maybe 5–10k vectors, and it grows the vector table that CSLS already
+scans (see 3.3). Do 3.3 first if the numbers get close.
+
+### 2.2 An explicit update path
+
+**Measured**: `stale_fact` category MRR is 0.833 on the synthetic corpus — 1 of 3
+superseded facts already outranks its replacement. `dream`'s supersession pass
+fires only on cosine ≥0.85 **and** ≥2 shared tags **and** (a contradiction keyword
+**or** type ∈ {decision, error}). A `reference` whose replacement happens not to
+contain the word "instead" is invisible to it, permanently.
+
+Two halves:
+
+- **`memory update --supersedes <hash>`** — an explicit, human-driven path. Small.
+- **Conflict detection on store** — when a new memory is ≥0.90 to an existing one
+  of the same type with shared tags, *surface the conflict* rather than storing
+  both silently. Note the store path already computes exactly this comparison for
+  dedup (`core.py:1477`), so the signal is in hand; what is missing is a third
+  outcome besides "duplicate, rejected" and "distinct, stored".
+
+Then populate `memory_graph.valid_from` / `valid_to`. **The bi-temporal columns
+already exist and are unused** (`core.py:888`, `1065`); `search(as_of=...)` already
+threads a timestamp into graph traversal. This is wiring, not schema work.
+
+### 2.3 Rebalance what the injection slots hold
+
+**Measured**: `decision` memories are reused **28.8%** of the time versus
+`reference` at **3.6%** — an 8× gap — yet `reference` occupies 110 of 657 injected
+slots against `decision`'s 66. The hook injects five lines per session; the
+composition of those five is a pure-upside change.
+
+Also measured: the ≥0.70 score band has a **0.0%** reuse rate while ≥0.60 has
+22.2%. Read `real-usage-report.md` §3 for why that is partly a measurement
+artifact and partly a real finding — the short version is that a memory very close
+to the prompt tells the agent what it just read. The implication is a novelty or
+diversity term on the *injection* decision, not a higher score floor. Raising
+`--min-score` would remove the useful 0.55–0.65 band and keep the useless top.
+
+**Do not implement this from these numbers alone.** n=66 for `decision`, and the
+reuse metric brackets rather than pins (15.3% ordered vs 2.0% strict). Confirm on
+a second window before changing weights.
+
+---
+
+## Tier 3 — known risk, not yet biting
+
+### 3.1 Entity resolution at write time
+
+`extract_entities` is ~85 hardcoded technology keywords plus ticket/PR/service
+regexes (`core.py:726`). Surface forms are never canonicalised, so "the auth
+service", "auth-svc" and "authentication service" are three entities. 2 293
+entities exist to seed an alias table.
+
+No measurement justifies this yet — the graph is barely used. Which is itself the
+point: see 3.2.
+
+### 3.2 Typed edges, or drop the graph
+
+All 19 886 `entity_relations` are `co_occurrence`. `memory_graph` supports
+`supersedes` / `contradicts` / `refines` / `references` / `merged_into` and holds
+308 rows. Co-occurrence edges largely re-derive what cosine already found, so
+graph mode is paying O(k²) write cost per memory (`_link_entities`, `core.py:1285`)
+for retrieval that overlaps heavily with the semantic ranker.
+
+Two honest options, and the current state is neither:
+
+- Add typed edges and make traversal earn its cost. gbrain reports +31.4 P@5 from
+  its typed graph over vector-only (its own benchmark, directional only).
+- Measure graph mode against hybrid on the production corpus and, if it adds
+  nothing, retire it and reclaim the write cost.
+
+**Measure before building.** `bench_replay` does not currently cover graph mode.
+
+### 3.3 Bound the CSLS hubness computation
+
+`compute_hubness` is an O(n²) full-corpus matmul, cached per process, on the
+**default** retrieval path (`core.py:322`, `2380`). The code's own comment puts it
+at ~130 ms for 3k documents and calls it unsuitable past ~10k. The corpus is at
+6 767 and growing roughly 1 200/month, so this becomes a problem in about six
+months — sooner if 2.1 adds chunk vectors to the same table.
+
+CSLS is worth keeping: it contributes **+3.7pp MRR** on its own and is most of
+`weighted_best`'s +4.4pp. The fix is to bound it, not remove it — sample-based
+hubness over a fixed subset, or an ANN index. Either way, re-run
+`benchmarks/results/replay-proddb-baseline.json` to confirm the approximation
+does not eat the gain it exists to provide.
+
+### 3.4 Markdown export mirror
+
+gbrain's structural advantage is that markdown in git is the system of record and
+the database is a rebuildable index: you can `git diff` what the agent learned
+overnight, review writes line by line, and rebuild if the DB is lost. Here, the
+SQLite file *is* the source of truth — no diff, no review surface, no rebuild.
+
+The lazy version of that benefit is an **export**, not a migration: `memory admin
+export --markdown` into a directory, committed on a schedule. Keeps SQLite as the
+engine, adds a human-reviewable audit trail, costs nothing at query time. An
+`export` command already exists (`cli.py`); this is a formatter on top of it.
+
+---
+
+## Method probes — test the borrowed ideas before adopting them
+
+Section 5 of `2026-memory-landscape.md` lists ideas worth stealing. None of them
+should be built on the strength of someone else's benchmark. Three times already
+in this codebase the field's default turned out to be the wrong choice here — RRF
+(-16.1pp), the cross-encoder (+1.3pp for 120x latency), and LLM-assisted merge
+(unnecessary; the extractive path already retains 100%). Each of those was caught
+by a measurement that took under an hour.
+
+So each borrowed method gets a probe first: a fixture, a metric, and a stated
+threshold that would justify adoption. A probe that cannot fail is not a probe.
+Every one below is designed to fail on the current build — that failing baseline
+is the deliverable.
+
+### P1 — Temporal retrieval and write-time conflict detection
+
+*Tests: Zep/Graphiti bi-temporal facts, Mem0 conflict detection.*
+
+Two fixtures, both extending `benchmarks/corpus.py`:
+
+- **`as_of` queries.** Store a fact, supersede it, then ask for the state at a
+  timestamp between the two. Correct answer is the *old* fact. Today `as_of` only
+  reaches graph traversal (`core.py:2492`); the semantic and FTS rankers ignore it
+  entirely, so this returns the current fact regardless.
+- **Conflict pairs.** Store a memory, then store a conflicting one of the same type
+  with shared tags at cosine >=0.90. Assert the store result reports a conflict.
+  Today it reports `stored` and both coexist forever.
+
+**Adoption threshold**: `as_of` accuracy 0.9+ on the fixture, and conflict
+detection with a false-positive rate under 5% measured against the *existing*
+near-duplicate clusters in the production DB — a conflict detector that fires on
+ordinary duplicates is worse than none, because it will train the operator to
+ignore it.
+
+**Cheap because**: the ≥0.90 comparison already runs on every store for dedup
+(`core.py:1477`), and `valid_from`/`valid_to` already exist unused.
+
+### P2 — Does write-time linking pay? A multi-hop probe
+
+*Tests: A-MEM's memory-evolves-on-write, HippoRAG's graph traversal argument.*
+
+A-MEM's distinctive claim is that a new note updates the notes it links to, so the
+network refines itself continuously rather than in a batch. Before building that,
+establish whether **multi-hop retrieval is a real need here at all**.
+
+Fixture: a `multi_hop` case family where the answer requires joining two memories
+that share no query vocabulary — "which service did the incident that caused the
+rollback belong to", answerable only by chaining incident → rollback → service.
+
+Run it three ways: hybrid (current default), graph mode, and hybrid+graph.
+`bench_replay` currently hardcodes `mode="hybrid"` and cannot express this — add
+mode to the config dict.
+
+**Adoption threshold**: if graph mode does not beat hybrid on `multi_hop` by a
+clear margin, neither A-MEM-style linking nor typed edges are worth building, and
+the honest move is to retire graph mode and reclaim the O(k²) per-write cost. If
+it does, this is the evidence that justifies the typed-edge work.
+
+This probe decides the graph's fate. Do it before any entity-resolution work.
+
+### P3 — Index churn across rebuilds
+
+*Tests: ACE's context-collapse claim, against `build_index`.*
+
+ACE's argument is that rewriting a context wholesale on every update erodes
+detail, and that incremental itemized updates avoid it. `build_index`
+(`core.py:5637`) rebuilds wholesale every time, at 60 lines against ~5000 eligible
+memories — under 2% of the corpus.
+
+Probe: snapshot the DB, rebuild the index N times while adding memories between
+rebuilds, and measure **retention** — what fraction of tier-1 entries present in
+build *k* survive into build *k+1*. Also record the churn rate for entries that
+have not changed.
+
+**Adoption threshold**: if retention is high, the wholesale rebuild is fine and
+ACE's concern does not apply at this budget — record that and close it. If tier-1
+entries are churning out because tier-2 scores fluctuate, that is context collapse
+in the literal sense and incremental updates are justified.
+
+**Note the footer bug this will surface**: the index's "Demoted" count is
+`excluded_count + demoted_from_cap` (`core.py:5819`) — mostly budget overflow, not
+a lifecycle state. It reads as ~4500 demoted memories and is nothing of the kind.
+Fix the label while you are in there.
+
+### P4 — Brevity bias: does the summary carry the answer?
+
+*Tests: ACE's brevity-bias failure mode, on three surfaces at once.*
+
+`tests/bench_consolidate.py` already measures fact retention through a merge. The
+same question applies to every other place this service compresses:
+
+| Surface | Budget | Probe |
+|---|---|---|
+| index line | 80-char preview (`core.py:5765`) | can the entry be identified from the preview alone? |
+| hook injection | ~200-char summary line | is the actionable part inside the truncation? |
+| document summary | 500 chars, the only embedded text | already proven lossy — `test_doc_body_semantic_recall` |
+| embedding input | 512 tokens, hard truncation | what fraction of stored memories exceed it? |
+
+The last one is a one-line query and worth running immediately: if a meaningful
+share of memories are being silently clipped at 512 tokens, that is a live recall
+bug, not a design tradeoff.
+
+**Adoption threshold**: none — this is diagnosis, not a method to adopt. It sizes
+the problem the other probes assume.
+
+### P5 — Injection diversity, simulated offline
+
+*Tests: the finding that retrieval score inverts as a usefulness predictor.*
+
+The measurement in `real-usage-report.md` §3 says a memory scoring ≥0.70 has a
+0.0% observed reuse rate because it mostly restates the prompt. The proposed fix
+is a novelty term on the injection decision — but that is one measurement on
+n=42, so simulate before shipping.
+
+Probe, entirely offline against data already on disk: for each of the 202 recorded
+real injections, recompute the five-line selection under (a) the current top-5 by
+score and (b) an MMR-style selection trading score against dissimilarity to the
+prompt and to already-selected lines. Then compare, on the same transcripts:
+
+- mean pairwise similarity among the selected five (redundancy)
+- mean similarity to the prompt (novelty)
+- projected reuse, using the per-memory reuse already computed by
+  `session_analytics.py`
+
+**Adoption threshold**: MMR selection must raise projected reuse on the recorded
+injections. If it only reduces redundancy without moving reuse, it is a metric
+that improved and a system that did not.
+
+**Honest limit**: this reuses the same 202 injections that produced the
+hypothesis, so it can confirm internal consistency but cannot validate. A second
+measurement window is still required before changing the hook.
+
+### Probe summary
+
+| Probe | Tests | Decides |
+|---|---|---|
+| P1 | bi-temporal, conflict detection | whether the update path is built as proposed |
+| P2 | write-time linking, graph traversal | whether the graph lives or is retired |
+| P3 | wholesale index rebuild | whether incremental index updates are needed |
+| P4 | compression budgets | sizes the problem; no adoption decision |
+| P5 | injection diversity | whether a novelty term ships |
+
+All five write committed JSON into `benchmarks/results/`, same convention as the
+existing baselines, so the decision and the evidence stay together.
+
+## Explicitly not proposed
+
+| | Why |
+|---|---|
+| Postgres / Neo4j migration | Forfeits local-first — the property no hosted competitor matches — to solve nothing currently measured. |
+| Mem0 / Zep as a backend | Same, plus a network round trip inside a hook with a 4 s timeout. |
+| `weighted_best` → RRF | RRF measures **16.1pp worse MRR** here (0.765 vs 0.970, n=200). |
+| Cross-encoder rerank on by default | +1.3pp for 714 ms p50 cold, against +4.4pp at 6 ms from `weighted_best`. Retiring it is the more defensible change. |
+| **LLM-assisted cluster merge** | The stated gate was "only if extractive merge loses facts." Measured: `mmr_union` retains 100%. The gate did not open. Revisit only if 1.1's coherence check fails. |
+| Porting LoCoMo / LongMemEval | Conversational shape, and increasingly measures context length rather than memory quality. |
+
+## Suggested order
+
+`1.2 (log zero-result queries)` → `1.1 (default strategy)` → `1.3 (recall_count)`
+→ `2.1 (chunking)` → `2.2 (update path)` → `3.3 (bound CSLS)` → `2.3 (injection
+mix, after a second measurement window)` → `3.2 (decide the graph's fate)`.
+
+1.2 is first because it is the only item that could reorder the rest.

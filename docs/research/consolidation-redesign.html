@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consolidation and lifecycle redesign — proposal</title>
+<style>
+:root { color-scheme: light dark; }
+body { max-width: 52rem; margin: 3rem auto; padding: 0 1.5rem;
+       font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       color: #1a1a1a; background: #fff; }
+@media (prefers-color-scheme: dark) {
+  body { color: #ddd; background: #16181c; }
+  code, pre { background: #23262c !important; }
+  th { background: #23262c !important; }
+  td, th { border-color: #333 !important; }
+  blockquote { border-color: #444 !important; color: #aaa !important; }
+  a { color: #7aa2f7 !important; }
+  h1, h2 { border-color: #2a2d33 !important; }
+}
+h1 { font-size: 1.9rem; border-bottom: 2px solid #eee; padding-bottom: .4rem; }
+h2 { font-size: 1.4rem; margin-top: 2.5rem; border-bottom: 1px solid #eee;
+     padding-bottom: .3rem; }
+h3 { font-size: 1.15rem; margin-top: 1.8rem; }
+code { background: #f3f4f6; padding: .12em .35em; border-radius: 3px;
+       font-size: .88em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre { background: #f3f4f6; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: none; padding: 0; font-size: .85em; }
+table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; font-size: .92em; }
+th, td { border: 1px solid #ddd; padding: .45rem .7rem; text-align: left;
+         vertical-align: top; }
+th { background: #f6f7f9; font-weight: 600; }
+blockquote { border-left: 3px solid #ddd; margin: 1rem 0; padding: .1rem 1rem;
+             color: #666; }
+hr { border: none; border-top: 1px solid #ddd; margin: 2.5rem 0; }
+a { color: #0b57d0; }
+li { margin: .25rem 0; }
+</style>
+</head>
+<body>
+<h1>Consolidation and lifecycle redesign — proposal</h1>
+<p>Proposal only. Nothing here is implemented. Each item states the measurement that justifies it, and items without a measurement behind them are marked as such.</p>
+<p>Evidence base:</p>
+<ul>
+<li><code>benchmarks/results/README.md</code> — retrieval A/B, 200 production queries</li>
+<li><code>benchmarks/results/consolidate-baseline.json</code> — fact retention per strategy</li>
+<li><code>docs/research/real-usage-report.md</code> — 202 real injections, 29 240 DB events</li>
+<li><code>docs/research/2026-memory-landscape.md</code> — what the field does differently</li>
+</ul>
+<p>Ordered cheapest-first within each tier. The tiers are about evidence strength, not effort.</p>
+<hr>
+<h2>Tier 1 — measured problem, obvious fix</h2>
+<h3>1.1 Change the default <code>content_strategy</code> to <code>mmr_union</code></h3>
+<p><strong>Measured</strong>: <code>keep_higher_recall</code> retains <strong>62%</strong> of unique facts across a merged cluster; <code>mmr_union</code> retains <strong>100%</strong> at the same surviving-memory count (<code>tests/bench_consolidate.py</code>, 3 clusters / 8 facts).</p>
+<p>The default keeps the survivor&#x27;s text verbatim, so every other member&#x27;s distinguishing detail — a port number, a pool mode, a probe delay — is soft-deleted with the row that held it. This is a one-line default change in <code>consolidate()</code> and in <code>dream</code>&#x27;s call into it (<code>core.py:4666</code>, which today always runs pairwise at 0.92 and never passes a strategy at all).</p>
+<p>Two things to check before flipping it, both cheap:</p>
+<ul>
+<li><code>mmr_union</code> stitches sentences from several memories. Does the result still <strong>re-embed to a vector that retrieves</strong>? The merge path already re-embeds when the strategy is not <code>keep_higher_recall</code> (<code>core.py:4080</code>), so this is a replay question, not a code question: run <code>bench_replay</code> before and after on a mutated snapshot.</li>
+<li>Does it read coherently to a human? Sample 20 merged survivors and look.</li>
+</ul>
+<p><strong>Risk</strong>: merging is destructive (soft-delete plus embedding/FTS row removal). Run <code>consolidate --dry-run</code> first, and note <code>undelete()</code> re-embeds, so a bad merge is recoverable within the 30-day <code>purge</code> retention window but not after it.</p>
+<h3>1.2 Log zero-result queries</h3>
+<p><strong>Measured</strong>: <strong>13.1% of 20 228 searches return nothing.</strong> Largest single failure in the system, seven months of data behind it, and completely invisible to MRR — which is only ever computed over queries that have a known reachable answer.</p>
+<p><code>operation_events</code> already has a <code>query</code> column. Nothing needs to be added to capture this; it needs to be <em>read</em>. Group the empty ones, and the failure modes will separate themselves into vocabulary misses, over-filtered tag queries, and genuinely absent knowledge — three different fixes.</p>
+<p>Do this before any retrieval tuning. It is the only measurement here that could reorder everything below it.</p>
+<h3>1.3 Stop trusting <code>recall_count</code> before 2026-07</h3>
+<p><strong>Measured</strong>: 2 152 memories share one of three <code>last_recalled_at</code> days — 1 874 on 2026-06-23 alone. Of 2 458 memories older than 90 days, exactly <strong>one</strong> has <code>recall_count = 0</code>. That is a sweep with tracking on, not reading.</p>
+<p><code>recall_count</code> feeds the ranking demotion factor, dream&#x27;s demotion pass, the index tier-2 score, and active-forget eligibility. All four are reading contaminated data for the pre-July corpus. Options, in order of preference:</p>
+<ol>
+<li>Add a <code>recall_count_since</code> epoch and score on recalls after it.</li>
+<li>Reset <code>recall_count</code> for memories whose only recall falls on a detected bulk day. Destructive and irreversible; needs explicit sign-off.</li>
+<li>Do nothing but document it. Cheapest, and honest, if lifecycle work is not imminent.</li>
+</ol>
+<p><code>benchmarks/session_analytics.py</code> now detects and prints bulk-recall days, so at minimum the contamination will not be silently rediscovered.</p>
+<hr>
+<h2>Tier 2 — measured gap, needs design</h2>
+<h3>2.1 Chunk and embed document bodies</h3>
+<p><strong>Measured</strong>: <code>test_doc_body_semantic_recall</code> is a strict <code>xfail</code>. A fact stated verbatim in a document body ranks <strong>5th of 5</strong>, behind an unrelated runbook, because only the 500-char summary is ever embedded (<code>core.py:5041</code>) and FTS misses on vocabulary. 1 104 documents are affected.</p>
+<p>Shape: 512-token windows with overlap, chunk rows keyed to the parent document, <code>document_embeddings</code> gains a chunk-level sibling table. Retrieval returns the parent doc, deduplicated across its chunks.</p>
+<p>Cost to be honest about: 1 104 documents at a few chunks each is a one-off re-embed of maybe 5–10k vectors, and it grows the vector table that CSLS already scans (see 3.3). Do 3.3 first if the numbers get close.</p>
+<h3>2.2 An explicit update path</h3>
+<p><strong>Measured</strong>: <code>stale_fact</code> category MRR is 0.833 on the synthetic corpus — 1 of 3 superseded facts already outranks its replacement. <code>dream</code>&#x27;s supersession pass fires only on cosine ≥0.85 <strong>and</strong> ≥2 shared tags <strong>and</strong> (a contradiction keyword <strong>or</strong> type ∈ {decision, error}). A <code>reference</code> whose replacement happens not to contain the word &quot;instead&quot; is invisible to it, permanently.</p>
+<p>Two halves:</p>
+<ul>
+<li><strong><code>memory update --supersedes &amp;lt;hash&amp;gt;</code></strong> — an explicit, human-driven path. Small.</li>
+<li><strong>Conflict detection on store</strong> — when a new memory is ≥0.90 to an existing one of the same type with shared tags, <em>surface the conflict</em> rather than storing both silently. Note the store path already computes exactly this comparison for dedup (<code>core.py:1477</code>), so the signal is in hand; what is missing is a third outcome besides &quot;duplicate, rejected&quot; and &quot;distinct, stored&quot;.</li>
+</ul>
+<p>Then populate <code>memory_graph.valid_from</code> / <code>valid_to</code>. <strong>The bi-temporal columns already exist and are unused</strong> (<code>core.py:888</code>, <code>1065</code>); <code>search(as_of=...)</code> already threads a timestamp into graph traversal. This is wiring, not schema work.</p>
+<h3>2.3 Rebalance what the injection slots hold</h3>
+<p><strong>Measured</strong>: <code>decision</code> memories are reused <strong>28.8%</strong> of the time versus <code>reference</code> at <strong>3.6%</strong> — an 8× gap — yet <code>reference</code> occupies 110 of 657 injected slots against <code>decision</code>&#x27;s 66. The hook injects five lines per session; the composition of those five is a pure-upside change.</p>
+<p>Also measured: the ≥0.70 score band has a <strong>0.0%</strong> reuse rate while ≥0.60 has 22.2%. Read <code>real-usage-report.md</code> §3 for why that is partly a measurement artifact and partly a real finding — the short version is that a memory very close to the prompt tells the agent what it just read. The implication is a novelty or diversity term on the <em>injection</em> decision, not a higher score floor. Raising <code>--min-score</code> would remove the useful 0.55–0.65 band and keep the useless top.</p>
+<p><strong>Do not implement this from these numbers alone.</strong> n=66 for <code>decision</code>, and the reuse metric brackets rather than pins (15.3% ordered vs 2.0% strict). Confirm on a second window before changing weights.</p>
+<hr>
+<h2>Tier 3 — known risk, not yet biting</h2>
+<h3>3.1 Entity resolution at write time</h3>
+<p><code>extract_entities</code> is ~85 hardcoded technology keywords plus ticket/PR/service regexes (<code>core.py:726</code>). Surface forms are never canonicalised, so &quot;the auth service&quot;, &quot;auth-svc&quot; and &quot;authentication service&quot; are three entities. 2 293 entities exist to seed an alias table.</p>
+<p>No measurement justifies this yet — the graph is barely used. Which is itself the point: see 3.2.</p>
+<h3>3.2 Typed edges, or drop the graph</h3>
+<p>All 19 886 <code>entity_relations</code> are <code>co_occurrence</code>. <code>memory_graph</code> supports <code>supersedes</code> / <code>contradicts</code> / <code>refines</code> / <code>references</code> / <code>merged_into</code> and holds 308 rows. Co-occurrence edges largely re-derive what cosine already found, so graph mode is paying O(k²) write cost per memory (<code>_link_entities</code>, <code>core.py:1285</code>) for retrieval that overlaps heavily with the semantic ranker.</p>
+<p>Two honest options, and the current state is neither:</p>
+<ul>
+<li>Add typed edges and make traversal earn its cost. gbrain reports +31.4 P@5 from its typed graph over vector-only (its own benchmark, directional only).</li>
+<li>Measure graph mode against hybrid on the production corpus and, if it adds nothing, retire it and reclaim the write cost.</li>
+</ul>
+<p><strong>Measure before building.</strong> <code>bench_replay</code> does not currently cover graph mode.</p>
+<h3>3.3 Bound the CSLS hubness computation</h3>
+<p><code>compute_hubness</code> is an O(n²) full-corpus matmul, cached per process, on the <strong>default</strong> retrieval path (<code>core.py:322</code>, <code>2380</code>). The code&#x27;s own comment puts it at ~130 ms for 3k documents and calls it unsuitable past ~10k. The corpus is at 6 767 and growing roughly 1 200/month, so this becomes a problem in about six months — sooner if 2.1 adds chunk vectors to the same table.</p>
+<p>CSLS is worth keeping: it contributes <strong>+3.7pp MRR</strong> on its own and is most of <code>weighted_best</code>&#x27;s +4.4pp. The fix is to bound it, not remove it — sample-based hubness over a fixed subset, or an ANN index. Either way, re-run <code>benchmarks/results/replay-proddb-baseline.json</code> to confirm the approximation does not eat the gain it exists to provide.</p>
+<h3>3.4 Markdown export mirror</h3>
+<p>gbrain&#x27;s structural advantage is that markdown in git is the system of record and the database is a rebuildable index: you can <code>git diff</code> what the agent learned overnight, review writes line by line, and rebuild if the DB is lost. Here, the SQLite file <em>is</em> the source of truth — no diff, no review surface, no rebuild.</p>
+<p>The lazy version of that benefit is an <strong>export</strong>, not a migration: <code>memory admin export --markdown</code> into a directory, committed on a schedule. Keeps SQLite as the engine, adds a human-reviewable audit trail, costs nothing at query time. An <code>export</code> command already exists (<code>cli.py</code>); this is a formatter on top of it.</p>
+<hr>
+<h2>Method probes — test the borrowed ideas before adopting them</h2>
+<p>Section 5 of <code>2026-memory-landscape.md</code> lists ideas worth stealing. None of them should be built on the strength of someone else&#x27;s benchmark. Three times already in this codebase the field&#x27;s default turned out to be the wrong choice here — RRF (-16.1pp), the cross-encoder (+1.3pp for 120x latency), and LLM-assisted merge (unnecessary; the extractive path already retains 100%). Each of those was caught by a measurement that took under an hour.</p>
+<p>So each borrowed method gets a probe first: a fixture, a metric, and a stated threshold that would justify adoption. A probe that cannot fail is not a probe. Every one below is designed to fail on the current build — that failing baseline is the deliverable.</p>
+<h3>P1 — Temporal retrieval and write-time conflict detection</h3>
+<p><em>Tests: Zep/Graphiti bi-temporal facts, Mem0 conflict detection.</em></p>
+<p>Two fixtures, both extending <code>benchmarks/corpus.py</code>:</p>
+<ul>
+<li><strong><code>as_of</code> queries.</strong> Store a fact, supersede it, then ask for the state at a timestamp between the two. Correct answer is the <em>old</em> fact. Today <code>as_of</code> only reaches graph traversal (<code>core.py:2492</code>); the semantic and FTS rankers ignore it entirely, so this returns the current fact regardless.</li>
+<li><strong>Conflict pairs.</strong> Store a memory, then store a conflicting one of the same type with shared tags at cosine &gt;=0.90. Assert the store result reports a conflict. Today it reports <code>stored</code> and both coexist forever.</li>
+</ul>
+<p><strong>Adoption threshold</strong>: <code>as_of</code> accuracy 0.9+ on the fixture, and conflict detection with a false-positive rate under 5% measured against the <em>existing</em> near-duplicate clusters in the production DB — a conflict detector that fires on ordinary duplicates is worse than none, because it will train the operator to ignore it.</p>
+<p><strong>Cheap because</strong>: the ≥0.90 comparison already runs on every store for dedup (<code>core.py:1477</code>), and <code>valid_from</code>/<code>valid_to</code> already exist unused.</p>
+<h3>P2 — Does write-time linking pay? A multi-hop probe</h3>
+<p><em>Tests: A-MEM&#x27;s memory-evolves-on-write, HippoRAG&#x27;s graph traversal argument.</em></p>
+<p>A-MEM&#x27;s distinctive claim is that a new note updates the notes it links to, so the network refines itself continuously rather than in a batch. Before building that, establish whether <strong>multi-hop retrieval is a real need here at all</strong>.</p>
+<p>Fixture: a <code>multi_hop</code> case family where the answer requires joining two memories that share no query vocabulary — &quot;which service did the incident that caused the rollback belong to&quot;, answerable only by chaining incident → rollback → service.</p>
+<p>Run it three ways: hybrid (current default), graph mode, and hybrid+graph. <code>bench_replay</code> currently hardcodes <code>mode=&amp;quot;hybrid&amp;quot;</code> and cannot express this — add mode to the config dict.</p>
+<p><strong>Adoption threshold</strong>: if graph mode does not beat hybrid on <code>multi_hop</code> by a clear margin, neither A-MEM-style linking nor typed edges are worth building, and the honest move is to retire graph mode and reclaim the O(k²) per-write cost. If it does, this is the evidence that justifies the typed-edge work.</p>
+<p>This probe decides the graph&#x27;s fate. Do it before any entity-resolution work.</p>
+<h3>P3 — Index churn across rebuilds</h3>
+<p><em>Tests: ACE&#x27;s context-collapse claim, against <code>build_index</code>.</em></p>
+<p>ACE&#x27;s argument is that rewriting a context wholesale on every update erodes detail, and that incremental itemized updates avoid it. <code>build_index</code> (<code>core.py:5637</code>) rebuilds wholesale every time, at 60 lines against ~5000 eligible memories — under 2% of the corpus.</p>
+<p>Probe: snapshot the DB, rebuild the index N times while adding memories between rebuilds, and measure <strong>retention</strong> — what fraction of tier-1 entries present in build <em>k</em> survive into build <em>k+1</em>. Also record the churn rate for entries that have not changed.</p>
+<p><strong>Adoption threshold</strong>: if retention is high, the wholesale rebuild is fine and ACE&#x27;s concern does not apply at this budget — record that and close it. If tier-1 entries are churning out because tier-2 scores fluctuate, that is context collapse in the literal sense and incremental updates are justified.</p>
+<p><strong>Note the footer bug this will surface</strong>: the index&#x27;s &quot;Demoted&quot; count is <code>excluded_count + demoted_from_cap</code> (<code>core.py:5819</code>) — mostly budget overflow, not a lifecycle state. It reads as ~4500 demoted memories and is nothing of the kind. Fix the label while you are in there.</p>
+<h3>P4 — Brevity bias: does the summary carry the answer?</h3>
+<p><em>Tests: ACE&#x27;s brevity-bias failure mode, on three surfaces at once.</em></p>
+<p><code>tests/bench_consolidate.py</code> already measures fact retention through a merge. The same question applies to every other place this service compresses:</p>
+<table><thead><tr><th>Surface</th><th>Budget</th><th>Probe</th></tr></thead><tbody><tr><td>index line</td><td>80-char preview (<code>core.py:5765</code>)</td><td>can the entry be identified from the preview alone?</td></tr><tr><td>hook injection</td><td>~200-char summary line</td><td>is the actionable part inside the truncation?</td></tr><tr><td>document summary</td><td>500 chars, the only embedded text</td><td>already proven lossy — <code>test_doc_body_semantic_recall</code></td></tr><tr><td>embedding input</td><td>512 tokens, hard truncation</td><td>what fraction of stored memories exceed it?</td></tr></tbody></table>
+<p>The last one is a one-line query and worth running immediately: if a meaningful share of memories are being silently clipped at 512 tokens, that is a live recall bug, not a design tradeoff.</p>
+<p><strong>Adoption threshold</strong>: none — this is diagnosis, not a method to adopt. It sizes the problem the other probes assume.</p>
+<h3>P5 — Injection diversity, simulated offline</h3>
+<p><em>Tests: the finding that retrieval score inverts as a usefulness predictor.</em></p>
+<p>The measurement in <code>real-usage-report.md</code> §3 says a memory scoring ≥0.70 has a 0.0% observed reuse rate because it mostly restates the prompt. The proposed fix is a novelty term on the injection decision — but that is one measurement on n=42, so simulate before shipping.</p>
+<p>Probe, entirely offline against data already on disk: for each of the 202 recorded real injections, recompute the five-line selection under (a) the current top-5 by score and (b) an MMR-style selection trading score against dissimilarity to the prompt and to already-selected lines. Then compare, on the same transcripts:</p>
+<ul>
+<li>mean pairwise similarity among the selected five (redundancy)</li>
+<li>mean similarity to the prompt (novelty)</li>
+<li>projected reuse, using the per-memory reuse already computed by <code>session_analytics.py</code></li>
+</ul>
+<p><strong>Adoption threshold</strong>: MMR selection must raise projected reuse on the recorded injections. If it only reduces redundancy without moving reuse, it is a metric that improved and a system that did not.</p>
+<p><strong>Honest limit</strong>: this reuses the same 202 injections that produced the hypothesis, so it can confirm internal consistency but cannot validate. A second measurement window is still required before changing the hook.</p>
+<h3>Probe summary</h3>
+<table><thead><tr><th>Probe</th><th>Tests</th><th>Decides</th></tr></thead><tbody><tr><td>P1</td><td>bi-temporal, conflict detection</td><td>whether the update path is built as proposed</td></tr><tr><td>P2</td><td>write-time linking, graph traversal</td><td>whether the graph lives or is retired</td></tr><tr><td>P3</td><td>wholesale index rebuild</td><td>whether incremental index updates are needed</td></tr><tr><td>P4</td><td>compression budgets</td><td>sizes the problem; no adoption decision</td></tr><tr><td>P5</td><td>injection diversity</td><td>whether a novelty term ships</td></tr></tbody></table>
+<p>All five write committed JSON into <code>benchmarks/results/</code>, same convention as the existing baselines, so the decision and the evidence stay together.</p>
+<h2>Explicitly not proposed</h2>
+<table><thead><tr><th></th><th>Why</th></tr></thead><tbody><tr><td>Postgres / Neo4j migration</td><td>Forfeits local-first — the property no hosted competitor matches — to solve nothing currently measured.</td></tr><tr><td>Mem0 / Zep as a backend</td><td>Same, plus a network round trip inside a hook with a 4 s timeout.</td></tr><tr><td><code>weighted_best</code> → RRF</td><td>RRF measures <strong>16.1pp worse MRR</strong> here (0.765 vs 0.970, n=200).</td></tr><tr><td>Cross-encoder rerank on by default</td><td>+1.3pp for 714 ms p50 cold, against +4.4pp at 6 ms from <code>weighted_best</code>. Retiring it is the more defensible change.</td></tr><tr><td><strong>LLM-assisted cluster merge</strong></td><td>The stated gate was &quot;only if extractive merge loses facts.&quot; Measured: <code>mmr_union</code> retains 100%. The gate did not open. Revisit only if 1.1&#x27;s coherence check fails.</td></tr><tr><td>Porting LoCoMo / LongMemEval</td><td>Conversational shape, and increasingly measures context length rather than memory quality.</td></tr></tbody></table>
+<h2>Suggested order</h2>
+<p><code>1.2 (log zero-result queries)</code> → <code>1.1 (default strategy)</code> → <code>1.3 (recall_count)</code> → <code>2.1 (chunking)</code> → <code>2.2 (update path)</code> → <code>3.3 (bound CSLS)</code> → <code>2.3 (injection mix, after a second measurement window)</code> → <code>3.2 (decide the graph&amp;#x27;s fate)</code>.</p>
+<p>1.2 is first because it is the only item that could reorder the rest.</p>
+</body>
+</html>

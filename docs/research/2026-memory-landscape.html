@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM agent memory in 2026 — what the field does, and what this service does</title>
+<style>
+:root { color-scheme: light dark; }
+body { max-width: 52rem; margin: 3rem auto; padding: 0 1.5rem;
+       font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       color: #1a1a1a; background: #fff; }
+@media (prefers-color-scheme: dark) {
+  body { color: #ddd; background: #16181c; }
+  code, pre { background: #23262c !important; }
+  th { background: #23262c !important; }
+  td, th { border-color: #333 !important; }
+  blockquote { border-color: #444 !important; color: #aaa !important; }
+  a { color: #7aa2f7 !important; }
+  h1, h2 { border-color: #2a2d33 !important; }
+}
+h1 { font-size: 1.9rem; border-bottom: 2px solid #eee; padding-bottom: .4rem; }
+h2 { font-size: 1.4rem; margin-top: 2.5rem; border-bottom: 1px solid #eee;
+     padding-bottom: .3rem; }
+h3 { font-size: 1.15rem; margin-top: 1.8rem; }
+code { background: #f3f4f6; padding: .12em .35em; border-radius: 3px;
+       font-size: .88em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre { background: #f3f4f6; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+pre code { background: none; padding: 0; font-size: .85em; }
+table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; font-size: .92em; }
+th, td { border: 1px solid #ddd; padding: .45rem .7rem; text-align: left;
+         vertical-align: top; }
+th { background: #f6f7f9; font-weight: 600; }
+blockquote { border-left: 3px solid #ddd; margin: 1rem 0; padding: .1rem 1rem;
+             color: #666; }
+hr { border: none; border-top: 1px solid #ddd; margin: 2.5rem 0; }
+a { color: #0b57d0; }
+li { margin: .25rem 0; }
+</style>
+</head>
+<body>
+<h1>LLM agent memory in 2026 — what the field does, and what this service does</h1>
+<p>A practitioner&#x27;s survey of agent-memory research and shipping systems as of September 2026, read specifically against this repository. The goal is not completeness; it is a keep / steal / skip decision on each idea, backed where possible by numbers measured on this codebase rather than published by a vendor.</p>
+<p>Companion documents:</p>
+<ul>
+<li><code>docs/research/real-usage-report.md</code> — how this service performs in real sessions</li>
+<li><code>benchmarks/results/README.md</code> — retrieval A/B baselines on the production corpus</li>
+</ul>
+<hr>
+<h2>1. The taxonomy everyone converged on</h2>
+<p>Two 2026 surveys — <em>Memory for Autonomous LLM Agents: Mechanisms, Evaluation, and Emerging Frontiers</em> (arXiv:2603.07670) and <em>LLM Agent Memory: A Survey from a Unified Representation Perspective</em> — independently land on the same frame, and it is a genuinely useful one.</p>
+<p><strong>Memory is a write → manage → read loop</strong>, not a store and a search box. Formally the surveys cast memory as the agent&#x27;s belief state over a partially observable world; practically, it means five operations:</p>
+<table><thead><tr><th>Operation</th><th>What it means</th><th>In this repo</th></tr></thead><tbody><tr><td><strong>Store</strong></td><td>admit new information</td><td><code>store()</code>, dedup at SHA256 + semantic ≥0.90</td></tr><tr><td><strong>Retrieve</strong></td><td>surface it when relevant</td><td><code>search()</code>, hybrid + <code>weighted_best</code> fusion</td></tr><tr><td><strong>Update</strong></td><td>supersede what changed</td><td>⚠️ keyword-heuristic only, in <code>dream</code></td></tr><tr><td><strong>Compress</strong></td><td>consolidate the redundant</td><td><code>consolidate()</code>, similarity-only, <strong>loses 38% of facts</strong></td></tr><tr><td><strong>Forget</strong></td><td>drop what is wrong or dead</td><td><code>_dream_active_forget</code>, env-gated, off</td></tr></tbody></table>
+<p>The surveys&#x27; recurring observation is that teams build the first two and skip the last three, and that the skipped three are where quality rots. <strong>This repo matches that pattern exactly.</strong> Store and retrieve are well-built and now well-measured; update is a heuristic, compress is lossy, forget is disabled.</p>
+<p>The other common axis is <strong>episodic / semantic / procedural</strong>. This repo has all three but does not name them: <code>session-archive</code> documents are episodic, typed memories are semantic, and <code>CLAUDE.md</code> is procedural memory in the sense the literature means — a declarative playbook loaded every session. The 2026 consensus is that declarative injection via <code>CLAUDE.md</code> / <code>AGENTS.md</code> is a legitimate and underrated form of procedural memory, not a stopgap.</p>
+<h2>2. Papers worth knowing</h2>
+<p><strong>Surveys and frames</strong></p>
+<ul>
+<li><strong>arXiv:2603.07670</strong> — <em>Memory for Autonomous LLM Agents</em>. The write→manage→read loop, a three-dimensional taxonomy (temporal scope × representational substrate × control policy), and an honest open-problems section: continual consolidation, causally grounded retrieval, learned forgetting. Single-author preprint, not peer-reviewed; cite it as a frame, not as evidence.</li>
+<li><strong>arXiv:2404.13501</strong> — <em>A Survey on the Memory Mechanism of LLM-based Agents</em>. The earlier reference point; introduces the direct/indirect evaluation split.</li>
+</ul>
+<p><strong>Architectures</strong></p>
+<ul>
+<li><strong>MemGPT / Letta</strong> — the OS analogy: tiered context with the agent paging facts in and out through tool calls. The idea that stuck is *the agent manages its own memory*; the cost is adopting a whole runtime.</li>
+<li><strong>A-MEM</strong> (arXiv:2502.12110, NeurIPS 2025) — Zettelkasten-style agentic memory. Each new note is written with structured attributes (context, keywords, tags), linked to relevant existing notes, and **triggers updates to the notes it links to**. That last part is the interesting one: memory that evolves on write rather than accumulating. Reported ~2× over MemGPT/MemoryBank/ReadAgent on multi-hop.</li>
+<li><strong>Mem0</strong> (arXiv:2504.19413) — two-phase pipeline: LLM extraction, then **conflict detection and graph update**. Three scopes (user/session/agent), hybrid vector + graph backend. The conflict-detection step is the piece this repo lacks entirely.</li>
+<li><strong>Zep / Graphiti</strong> — a <strong>bi-temporal</strong> knowledge graph: every fact carries both a valid time (when it was true) and a transaction time (when we learned it). Superseded facts are marked, not deleted, so &quot;what was true on date X&quot; is a real query. The single best answer in the field to the staleness problem.</li>
+<li><strong>ACE</strong> (arXiv:2510.04618) — <em>Agentic Context Engineering</em>. Generator / Reflector / Curator roles evolve a structured &quot;playbook&quot; instead of rewriting a context wholesale. Names two failure modes precisely: <strong>brevity bias</strong> (compressing domain insight into uninformative summaries) and <strong>context collapse</strong> (iterative rewriting eroding detail). Reports +10.6% on agent tasks with no weight updates. Directly relevant to <code>build_index</code> and to <code>consolidate</code>.</li>
+<li><strong>HippoRAG</strong> — hippocampus-inspired indexing; personalized PageRank over a knowledge graph for multi-hop retrieval. The argument for graph traversal over pure similarity, stated in its strongest form.</li>
+</ul>
+<p><strong>The through-line</strong>: what to store, when to retrieve, how to update and what to discard are <em>architecture decisions</em>, and they do not get made correctly by default. A store that only ever appends will quietly serve stale facts forever.</p>
+<h2>3. Benchmarks, and why none of them fit this repo</h2>
+<table><thead><tr><th>Benchmark</th><th>Tests</th><th>Status in 2026</th></tr></thead><tbody><tr><td><strong>LoCoMo</strong> (ACL 2024, arXiv:2402.17753)</td><td>multi-session conversational recall</td><td>Widely reported, increasingly saturated; no explicit knowledge-update scoring</td></tr><tr><td><strong>LongMemEval</strong> (ICLR 2025, arXiv:2410.10813)</td><td>long-term chat memory, incl. updates</td><td>The de facto standard for conversational memory</td></tr><tr><td><strong>LongMemEval-V2</strong> (arXiv:2605.12493)</td><td><strong>web-agent trajectories</strong>, up to 115M tokens</td><td>Moves the format from chat to agent experience</td></tr><tr><td><strong>BEAM</strong> (arXiv:2510.27246)</td><td>architecture comparison at 1M–10M tokens</td><td>Deliberately unsaturated; scores sit well below LoCoMo headlines</td></tr><tr><td><strong>MemoryArena</strong> (arXiv:2602.16313)</td><td>interdependent multi-session <em>tasks</em></td><td>Models near-perfect on LoCoMo drop to ~40–60%</td></tr><tr><td><strong>STATE-Bench</strong> (Microsoft, May 2026)</td><td>state tracking on stateful enterprise tasks</td><td>Relatively neutral source — Microsoft sells no memory product</td></tr></tbody></table>
+<p>Three cautions that matter more than the numbers:</p>
+<ol>
+<li><strong>Vendor self-reports are not cross-comparable.</strong> Mem0, Zep, Supermemory, Hindsight, Emergence and OMEGA all publish LongMemEval or LoCoMo figures on their own harnesses, on different dates, with different judges. Zep&#x27;s founder publicly disputed Mem0&#x27;s LoCoMo methodology. Treat any single-vendor table as a claim, not a measurement.</li>
+<li><strong>The benchmarks were designed for 32k context windows.</strong> With million-token windows, &quot;dump everything into context&quot; now scores competitively on LoCoMo and LongMemEval-S — so they increasingly measure whether the model can read, not whether the memory system retrieves. MemoryArena and BEAM exist because of this.</li>
+<li><strong>None of them is about coding agents.</strong> All are conversational or web-agent. A coding-agent memory service is retrieving decisions, error causes and repo conventions against a codebase that is itself ground truth. There is no public benchmark for that shape.</li>
+</ol>
+<p><strong>Consequence for this repo, and it is the load-bearing one:</strong> porting LoCoMo or LongMemEval here would buy a comparable-looking number and very little information. The right substitutes were built instead — a golden set on the production corpus (<code>tests/build_real_corpus.py</code>, <code>benchmarks/results/</code>) and real-session measurement (<code>benchmarks/session_analytics.py</code>). Keep it that way.</p>
+<h2>4. Systems matrix</h2>
+<table><thead><tr><th>System</th><th>Storage</th><th>Retrieval</th><th>Update / conflict</th><th>Consolidation</th><th>Local-only</th><th>Notes</th></tr></thead><tbody><tr><td><strong>this repo</strong></td><td>SQLite + sqlite-vec (brute force) + FTS5</td><td>hybrid, weighted sum + CSLS</td><td>⚠️ keyword heuristic</td><td>similarity-only, no LLM</td><td>✅ fully</td><td>6.7k memories, 6 ms p50</td></tr><tr><td><strong>gbrain</strong></td><td>markdown in git → Postgres/pgvector (PGLite local)</td><td>HNSW + tsvector + RRF + reranker</td><td>timeline + compiled &quot;truth&quot; header per page</td><td>nightly dream cycle</td><td>❌ needs OpenAI embeddings, hosted reranker</td><td>typed graph edges, ~29k★</td></tr><tr><td><strong>Mem0</strong></td><td>vector + light graph + KV</td><td>hybrid, semantic + BM25 + entity</td><td>✅ LLM conflict detection</td><td>extraction-time</td><td>partial (self-host option)</td><td>widest adoption</td></tr><tr><td><strong>Zep / Graphiti</strong></td><td>temporal knowledge graph (Neo4j/Kuzu/Neptune)</td><td>embeddings + BM25 + traversal</td><td>✅ <strong>bi-temporal</strong>, best in class</td><td>episode-based</td><td>Graphiti yes, Zep Cloud no</td><td>Apache-2.0 core</td></tr><tr><td><strong>Letta (MemGPT)</strong></td><td>Postgres/SQLite, agent-editable blocks</td><td>agent-driven paging</td><td>agent rewrites its own memory</td><td>agent-driven</td><td>✅</td><td>you adopt the runtime</td></tr><tr><td><strong>cognee</strong></td><td>knowledge graph + vector</td><td>multiple modes</td><td>✅ re-weights on correction</td><td>ECL pipeline</td><td>✅ embedded stores</td><td>claims 79% BEAM@100k</td></tr><tr><td><strong>Hindsight</strong></td><td>Postgres + pgvector</td><td>multi-strategy + cross-encoder</td><td>entity resolution at write time</td><td>LLM consolidation</td><td>✅ Docker</td><td>most explicit about consolidation</td></tr><tr><td><strong>claude-mem</strong></td><td>SQLite + FTS5 + Chroma</td><td>hybrid, causal-graph walk</td><td>—</td><td>AI-compressed observations</td><td>✅</td><td>closest peer in the Claude Code niche</td></tr><tr><td><strong>Supermemory</strong></td><td>managed context engine</td><td>proprietary</td><td>—</td><td>—</td><td>❌ (local binary, closed engine)</td><td>SOTA claims on LongMemEval-S</td></tr><tr><td><strong>Neural Memory</strong></td><td>graph, spreading activation</td><td>traversal, no embeddings in free tier</td><td>decay + reinforcement</td><td>neuroscience-inspired</td><td>✅</td><td>FTS5-only until paid tier</td></tr></tbody></table>
+<h3>gbrain, in more detail</h3>
+<p>It is the closest philosophical neighbour to this repo and the most useful single comparison, so it is worth being precise about where the two agree and differ.</p>
+<p><strong>Convergent, independently:</strong> a nightly &quot;dream cycle&quot; that enriches and consolidates; entity extraction and link generation at write time <strong>without LLM calls</strong>; hybrid keyword + vector retrieval; a health/doctor command; an MCP surface generated alongside a CLI. Two designs arriving at the same shape from different directions is reasonable evidence the shape is right.</p>
+<p><strong>Where gbrain is ahead:</strong></p>
+<ul>
+<li><strong>Markdown in git is the system of record</strong>, with Postgres as a rebuildable index. You can <code>git diff</code> what the agent learned overnight, branch the brain, review writes line by line, and rebuild the DB if it is lost. This repo&#x27;s SQLite file <em>is</em> the source of truth — there is no diff, no branch, no human review surface, and no rebuild path. This is the single biggest structural difference and it is not in this repo&#x27;s favour.</li>
+<li><strong>Typed graph edges</strong> (<code>works_at</code>, <code>founded</code>, <code>invested_in</code>, <code>attended</code>) with multi-hop traversal, versus 19 886 <code>co_occurrence</code> edges here — one edge type that largely re-derives what cosine already found. gbrain reports +31.4 P@5 from its graph layer over vector-only (its own benchmark, so treat as directional).</li>
+<li><strong>Real chunking</strong> of markdown before embedding. This repo truncates at 512 tokens and never embeds document bodies at all.</li>
+<li>A compiled &quot;truth&quot; header plus an <strong>append-only timeline</strong> per page — a lightweight bi-temporal model that keeps the current answer and its history distinct.</li>
+</ul>
+<p><strong>Where this repo is ahead:</strong></p>
+<ul>
+<li><strong>Genuinely local.</strong> gbrain needs OpenAI embeddings and a hosted reranker (Voyage <code>rerank-2.5</code>, with a deprecated ZeroEntropy fallback whose API sunsets 2026-09-04 — an external dependency with an expiry date). This repo runs MLX INT8 embeddings on-device with no API key and no network.</li>
+<li><strong>Measured fusion.</strong> gbrain uses RRF. On this repo&#x27;s production corpus RRF scores <strong>16.1pp worse MRR</strong> than the shipping additive-weighted + CSLS path (0.765 vs 0.970, n=200, <code>benchmarks/results/README.md</code>). RRF is the textbook default; here it is measurably the wrong one. Corpus-specific, but measured.</li>
+<li><strong>Injection safety.</strong> Nonced fence tags, an <code>injection_suspicious</code> filter on every read path, and verbatim-evidence grounding in the extractor. A 2026 study found &gt;90% of tested agents vulnerable to memory poisoning, with a 100% relapse rate when teams tried to fix it by correcting the agent in conversation. This is a real and under-served axis, and this repo is ahead of most of the field on it.</li>
+</ul>
+<h2>5. Verdict — keep, steal, skip</h2>
+<h3>Keep</h3>
+<table><thead><tr><th>Thing</th><th>Why</th></tr></thead><tbody><tr><td><code>weighted_best</code> fusion (additive + CSLS)</td><td>0.970 MRR vs RRF&#x27;s 0.765 on 200 production queries. The field&#x27;s default is worse here.</td></tr><tr><td>Local-first, no API key</td><td>The one property no hosted competitor can match, and gbrain&#x27;s hosted-reranker sunset shows the cost of giving it up.</td></tr><tr><td>Untrusted-content fencing</td><td>Ahead of the field on an axis the field mostly ignores.</td></tr><tr><td>Deterministic <code>dream</code></td><td>2.6 s, backgrounded, no spend. LLM-based consolidation would be slower, costlier and — per §6 below — is not currently needed for fact retention.</td></tr><tr><td>No LoCoMo/LongMemEval port</td><td>They measure a different shape of problem. The corpus-specific golden set is the right substitute.</td></tr></tbody></table>
+<h3>Steal</h3>
+<table><thead><tr><th>Idea</th><th>From</th><th>Why now</th></tr></thead><tbody><tr><td><strong>Bi-temporal facts</strong></td><td>Zep/Graphiti</td><td><code>memory_graph</code> already has <code>valid_from</code>/<code>valid_to</code> and they are unused. This is wiring, not schema work.</td></tr><tr><td><strong>Conflict detection on write</strong></td><td>Mem0, cognee</td><td>Today a changed fact silently coexists with its replacement unless it happens to contain the word &quot;instead&quot;. <code>stale_fact</code> cases in <code>benchmarks/corpus.py</code> pin this.</td></tr><tr><td><strong>Entity resolution at write time</strong></td><td>Hindsight</td><td>Resolving surface forms at query time is expensive and unreliable; 2 293 entities already exist to seed an alias table.</td></tr><tr><td><strong>Typed edges</strong></td><td>gbrain, Neural Memory</td><td>One <code>co_occurrence</code> type mostly re-derives cosine. Typed edges are what make traversal earn its cost.</td></tr><tr><td><strong>Chunking</strong></td><td>everyone</td><td>1 104 documents are reachable only via a 500-char summary. <code>test_doc_body_semantic_recall</code> is an <code>xfail</code> proving the gap.</td></tr><tr><td><strong>Markdown export / git mirror</strong></td><td>gbrain</td><td>Not a migration — an <em>export</em>. A diffable mirror of what the agent wrote would make review possible without giving up SQLite.</td></tr><tr><td><strong>Incremental itemized index updates</strong></td><td>ACE</td><td><code>build_index</code> rebuilds wholesale; ACE&#x27;s argument against exactly that is context collapse.</td></tr></tbody></table>
+<h3>Skip</h3>
+<table><thead><tr><th>Idea</th><th>Why not</th></tr></thead><tbody><tr><td>Migrating to Postgres / Neo4j</td><td>Forfeits local-first, the main advantage, to solve a problem not yet measured.</td></tr><tr><td>Adopting Mem0 / Zep as a backend</td><td>Same, plus a network dependency in a hook with a 4 s timeout.</td></tr><tr><td>Replacing <code>weighted_best</code> with RRF</td><td>Contradicted by a measurement in this repo.</td></tr><tr><td>Porting LoCoMo / LongMemEval</td><td>Wrong shape (conversational), and increasingly measures context length rather than memory.</td></tr><tr><td>Cross-encoder rerank on by default</td><td>+1.3pp MRR for a 714 ms p50 cold, versus <code>weighted_best</code>&#x27;s +4.4pp at 6 ms. Retiring it is more defensible than enabling it.</td></tr><tr><td>LLM-based cluster merge</td><td>Gated on evidence that extractive merge loses facts. It does not — see §6.</td></tr></tbody></table>
+<h2>6. Where the literature and this repo&#x27;s own measurements disagree</h2>
+<p>Worth stating plainly, because these are the places where following the field would have made things worse.</p>
+<ol>
+<li><strong>RRF is the field default and is 16pp worse here.</strong> Reciprocal Rank Fusion is what gbrain, Hindsight and most hybrid stacks use. On this corpus the additive weighted sum plus CSLS hubness correction wins decisively. Measure before adopting a default.</li>
+<li><strong>Cross-encoder reranking is near-universal and does not pay here.</strong> The literature treats a reranker as a straightforward quality win. Measured: +1.3pp for 120× the latency, against a cheaper path that gives +4.4pp.</li>
+<li>**The consolidation literature argues for LLM-assisted merging. The measured problem is the default, not the method.** <code>tests/bench_consolidate.py</code>: the shipping <code>keep_higher_recall</code> strategy retains 62% of unique facts, while the existing extractive <code>mmr_union</code> retains 100% at the same surviving-memory count. There is no measured case for an LLM here — there is a case for changing one default.</li>
+<li><strong>Retrieval score does not predict usefulness, and inverts at the top.</strong> Measured over 648 injected memories: the ≥0.70 score band has a 0.0% observed reuse rate while the ≥0.60 band has 22.2%. High similarity to the prompt means low informativeness — the agent already knew it. No paper surveyed here frames the injection decision this way; they optimise retrieval score and stop. See <code>docs/research/real-usage-report.md</code> §3 for the method and its limits.</li>
+</ol>
+<hr>
+<h2>Sources</h2>
+<p>Surveys and papers: arXiv:2603.07670; arXiv:2404.13501; A-MEM arXiv:2502.12110 (NeurIPS 2025); Mem0 arXiv:2504.19413; ACE arXiv:2510.04618; LoCoMo arXiv:2402.17753 (ACL 2024); LongMemEval arXiv:2410.10813 (ICLR 2025); LongMemEval-V2 arXiv:2605.12493; BEAM arXiv:2510.27246; MemoryArena arXiv:2602.16313; MemoryAgentBench arXiv:2507.05257; STATE-Bench (Microsoft, May 2026); ICLR 2026 Workshop on Memory for LLM-Based Agentic Systems.</p>
+<p>Systems: github.com/garrytan/gbrain; mem0.ai; getzep.com and the Graphiti repo; letta.com; cognee.ai; hindsight.vectorize.io; supermemory.ai; redis.github.io/agent-memory-server; thedotmack/claude-mem.</p>
+<p>All web sources reviewed 2026-09-03. Vendor benchmark figures are quoted as vendor claims and are not comparable across harnesses.</p>
+</body>
+</html>
