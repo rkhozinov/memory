@@ -361,6 +361,15 @@ def cmd_admin_cleanup(args, store: MemoryStore) -> None:
     _json_out(store.cleanup())
 
 
+def cmd_admin_reindex_chunks(args, store: MemoryStore) -> None:
+    _json_out(
+        store.reindex_doc_chunks(
+            doc_types=_parse_tags(args.doc_types) or None,
+            limit=args.limit or None,
+        )
+    )
+
+
 def cmd_admin_consolidate(args, store: MemoryStore) -> None:
     exclude = _parse_tags(args.exclude_types) or []
     result = store.consolidate(
@@ -614,6 +623,7 @@ _DOC_DISPATCH = {
 
 _ADMIN_DISPATCH = {
     "cleanup": cmd_admin_cleanup,
+    "reindex-chunks": cmd_admin_reindex_chunks,
     "consolidate": cmd_admin_consolidate,
     "clusters": cmd_admin_clusters,
     "decay": cmd_admin_decay,
@@ -809,6 +819,19 @@ def _build_parser() -> argparse.ArgumentParser:
     admin_sub = admin_parser.add_subparsers(dest="admin_command")
 
     admin_sub.add_parser("cleanup", help="Remove exact duplicates")
+
+    p = admin_sub.add_parser(
+        "reindex-chunks",
+        help="(Re)build document body chunk embeddings. Run once after upgrading; "
+        "store_doc and update_doc keep them current afterwards.",
+    )
+    p.add_argument(
+        "--doc-types",
+        default=None,
+        help="Comma-separated doc_types to limit the rebuild to. Conversation dumps "
+        "(session-archive, transcript, session) are excluded regardless.",
+    )
+    p.add_argument("--limit", type=int, default=0, help="Cap documents processed (0 = all).")
 
     p = admin_sub.add_parser("consolidate", help="Merge near-duplicates")
     p.add_argument("--threshold", default=0.92, type=float)

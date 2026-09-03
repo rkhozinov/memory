@@ -52,6 +52,59 @@ _IMPORTANCE_BY_TYPE: dict[str, float] = {
     "note": 0.4,
 }
 
+# --- Document chunking ---
+# Which document types get their bodies chunked and embedded. An exclude list
+# rather than an include list, so a new doc_type is chunked by default.
+#
+# The exclusions are raw conversation dumps: 683 of 1081 documents, carrying
+# ~40 MB of the 56.5 MB of body text. `auto_archive_pending` was deliberately
+# unwired from SessionEnd because it produced a searchable pile of conversation
+# rather than facts (hooks/memory-session-end.sh). Embedding them would reinstate
+# exactly what that decision rejected, at roughly 80k vectors.
+UNCHUNKED_DOC_TYPES = frozenset({"session-archive", "transcript", "session"})
+
+# ~512 tokens at the usual ~4 chars/token, with enough overlap that a fact
+# straddling a boundary survives in one piece.
+CHUNK_CHARS = int(os.environ.get("MEMORY_CHUNK_CHARS", "2000"))
+CHUNK_OVERLAP = int(os.environ.get("MEMORY_CHUNK_OVERLAP", "200"))
+# A ceiling so one pathological document cannot dominate the vector table.
+MAX_CHUNKS_PER_DOC = int(os.environ.get("MEMORY_MAX_CHUNKS_PER_DOC", "40"))
+
+
+def chunk_text(body: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
+    """Split into overlapping windows, preferring a paragraph or line boundary.
+
+    Boundary-seeking is worth the few lines: cutting mid-sentence puts half a
+    fact in each of two chunks and the embedding of neither matches a query for
+    the whole thing.
+    """
+    body = (body or "").strip()
+    if not body:
+        return []
+    if len(body) <= size:
+        return [body]
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(body) and len(chunks) < MAX_CHUNKS_PER_DOC:
+        end = min(start + size, len(body))
+        if end < len(body):
+            # Look for a break in the last quarter of the window.
+            window = body[start + (size * 3 // 4) : end]
+            for sep in ("\n\n", "\n", ". "):
+                idx = window.rfind(sep)
+                if idx != -1:
+                    end = start + (size * 3 // 4) + idx + len(sep)
+                    break
+        piece = body[start:end].strip()
+        if piece:
+            chunks.append(piece)
+        if end >= len(body):
+            break
+        start = max(end - overlap, start + 1)
+    return chunks
+
+
 # --- Composite scoring defaults ---
 DEFAULT_SCORING_WEIGHTS = (0.8, 0.1, 0.1)  # similarity, importance, recency
 MIN_SIMILARITY_THRESHOLD = 0.45  # filter out semantically irrelevant results
@@ -1008,6 +1061,26 @@ class MemoryStore:
                 title, body, content='documents', content_rowid='id',
                 tokenize='porter ascii'
             );
+            """
+        )
+
+        # Document bodies are chunked and embedded separately from the summary.
+        # Without this a document is only semantically reachable through its
+        # summary — measured at 0.65% of body text on the production corpus, with
+        # a fact stated verbatim in a body ranking 5th of 5 behind an unrelated
+        # document. Chunk rowid is the vec0 rowid; text is kept so a hit can be
+        # explained without re-chunking.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                doc_id INTEGER NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                text TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_chunk_doc ON document_chunks(doc_id);
+            CREATE VIRTUAL TABLE IF NOT EXISTS document_chunk_embeddings
+                USING vec0(chunk_embedding FLOAT[768] distance_metric=cosine);
             """
         )
 
@@ -5068,6 +5141,8 @@ class MemoryStore:
                 (doc_id, title, body),
             )
 
+            self._index_doc_chunks(conn, doc_id, doc_type, body)
+
             duration_ms = (time.time() - start) * 1000
             self._track_event(
                 conn,
@@ -5086,6 +5161,82 @@ class MemoryStore:
             "status": "stored",
             "message": "Document stored successfully",
         }
+
+    def reindex_doc_chunks(self, doc_types: list[str] | None = None, limit: int | None = None) -> dict:
+        """(Re)build body chunks for existing documents. Safe to re-run.
+
+        Needed once after the chunk tables are introduced; after that `store_doc`
+        and `update_doc` keep them current.
+        """
+        conn = self._begin_immediate()
+        try:
+            sql = "SELECT id, doc_type, body FROM documents WHERE deleted_at IS NULL"
+            params: list = []
+            if doc_types:
+                sql += f" AND doc_type IN ({','.join('?' * len(doc_types))})"
+                params.extend(doc_types)
+            sql += " ORDER BY id"
+            if limit:
+                sql += " LIMIT ?"
+                params.append(limit)
+
+            docs = 0
+            chunks = 0
+            skipped = 0
+            for row in conn.execute(sql, params).fetchall():
+                n = self._index_doc_chunks(conn, row["id"], row["doc_type"], row["body"])
+                if n:
+                    docs += 1
+                    chunks += n
+                else:
+                    skipped += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+        return {
+            "documents_indexed": docs,
+            "chunks_written": chunks,
+            "skipped": skipped,
+            "excluded_types": sorted(UNCHUNKED_DOC_TYPES),
+        }
+
+    def _index_doc_chunks(self, conn: sqlite3.Connection, doc_id: int, doc_type: str, body: str) -> int:
+        """Chunk a document body and embed each chunk. Returns the chunk count.
+
+        Idempotent: existing chunks for the doc are cleared first, so this doubles
+        as the re-index path after an update.
+        """
+        old_ids = [r["id"] for r in conn.execute("SELECT id FROM document_chunks WHERE doc_id = ?", (doc_id,))]
+        if old_ids:
+            ph = ",".join("?" * len(old_ids))
+            conn.execute(f"DELETE FROM document_chunk_embeddings WHERE rowid IN ({ph})", old_ids)
+            conn.execute("DELETE FROM document_chunks WHERE doc_id = ?", (doc_id,))
+
+        if doc_type in UNCHUNKED_DOC_TYPES:
+            return 0
+        # Every chunked doc gets at least one chunk vector, including short ones.
+        # "The summary already covers it" is exactly the assumption that produced
+        # the gap: the summary is a separate, hand-written 500-char text, not a
+        # prefix of the body. A body that happens to resemble its summary just
+        # yields a near-duplicate vector, which the per-document max collapses.
+        chunks = chunk_text(body)
+        if not chunks:
+            return 0
+
+        from .embeddings import get_model
+
+        vectors = get_model().embed_doc_batch(chunks)
+        for i, (text, vec) in enumerate(zip(chunks, vectors, strict=True)):
+            cur = conn.execute(
+                "INSERT INTO document_chunks (doc_id, chunk_index, text) VALUES (?, ?, ?)",
+                (doc_id, i, text),
+            )
+            conn.execute(
+                "INSERT INTO document_chunk_embeddings (rowid, chunk_embedding) VALUES (?, ?)",
+                (cur.lastrowid, _serialize_f32(vec)),
+            )
+        return len(chunks)
 
     def get_doc(self, content_hash: str) -> dict:
         """Retrieve a single document by exact content hash or unique prefix."""
@@ -5287,9 +5438,71 @@ class MemoryStore:
             d["recall_count"] = row.get("recall_count", 0) or 0
             d["last_recalled_at"] = row.get("last_recalled_at")
             d["score"] = similarity
+            d["matched"] = "summary"
             results.append(d)
 
+        chunk_hits = self._search_doc_chunks(conn, embedding, fetch_limit)
+        by_hash = {r["content_hash"]: r for r in results}
+        for hit in chunk_hits:
+            existing = by_hash.get(hit["content_hash"])
+            # A document can match on both its summary and a chunk. Keep the
+            # better of the two rather than returning it twice.
+            if existing is None:
+                by_hash[hit["content_hash"]] = hit
+                results.append(hit)
+            elif hit["similarity"] > existing["similarity"]:
+                existing.update(
+                    similarity=hit["similarity"],
+                    score=hit["similarity"],
+                    matched=hit["matched"],
+                    matched_chunk=hit.get("matched_chunk"),
+                )
+
+        results.sort(key=lambda r: -r["score"])
         return results
+
+    def _search_doc_chunks(self, conn: sqlite3.Connection, embedding, fetch_limit: int) -> list[dict]:
+        """Nearest chunks, collapsed to one hit per parent document (best chunk wins)."""
+        rows = conn.execute(
+            """
+            SELECT e.rowid, e.distance
+            FROM document_chunk_embeddings e
+            WHERE e.chunk_embedding MATCH ?
+            ORDER BY e.distance
+            LIMIT ?
+            """,
+            (_serialize_f32(embedding), fetch_limit),
+        ).fetchall()
+        if not rows:
+            return []
+
+        ids = [r["rowid"] for r in rows]
+        dist = {r["rowid"]: r["distance"] for r in rows}
+        ph = ",".join("?" * len(ids))
+        chunk_rows = conn.execute(
+            f"SELECT c.id, c.doc_id, c.chunk_index, d.* FROM document_chunks c "
+            f"JOIN documents d ON d.id = c.doc_id "
+            f"WHERE c.id IN ({ph}) AND d.deleted_at IS NULL",
+            ids,
+        ).fetchall()
+
+        best: dict[int, dict] = {}
+        for row in chunk_rows:
+            rd = dict(row)
+            sim = round(1.0 - dist.get(rd["id"], 1.0), 4)
+            prev = best.get(rd["doc_id"])
+            if prev is not None and prev["similarity"] >= sim:
+                continue
+            doc = Document.from_row(rd)
+            d = doc.to_dict()
+            d["similarity"] = sim
+            d["score"] = sim
+            d["recall_count"] = rd.get("recall_count", 0) or 0
+            d["last_recalled_at"] = rd.get("last_recalled_at")
+            d["matched"] = "chunk"
+            d["matched_chunk"] = rd["chunk_index"]
+            best[rd["doc_id"]] = d
+        return list(best.values())
 
     def _search_docs_fts(
         self,
@@ -5468,6 +5681,14 @@ class MemoryStore:
                 conn.execute(
                     "INSERT INTO document_fts(rowid, title, body) VALUES (?, ?, ?)",
                     (doc_id, new_title, new_body_text),
+                )
+
+            if body_changed:
+                self._index_doc_chunks(
+                    conn,
+                    doc_id,
+                    kwargs.get("doc_type", row_dict["doc_type"]),
+                    kwargs.get("body", row_dict["body"]),
                 )
 
             conn.execute("COMMIT")

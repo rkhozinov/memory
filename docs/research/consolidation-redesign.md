@@ -156,7 +156,7 @@ comparison before turning it on.
 
 ## Tier 2 — measured gap, needs design
 
-### 2.1 Chunk and embed document bodies — selectively
+### 2.1 Chunk and embed document bodies — selectively ✅ DONE
 
 **Measured** (P4, `benchmarks/results/probe-p4-brevity.json`):
 
@@ -190,9 +190,37 @@ straight through the CSLS scaling wall (3.3) as a side effect.
 knowledge, roughly 3 000 chunks. Leave the conversation dumps alone pending a
 separate decision about whether they should exist at all.
 
-Shape: 512-token windows with overlap, chunk rows keyed to the parent document,
-a chunk-level sibling to `document_embeddings`, retrieval returning the parent
-doc deduplicated across its chunks. Flip the xfail when done.
+**Shipped.** `document_chunks` + `document_chunk_embeddings`, 2000-char windows
+with 200-char overlap seeking a paragraph/line/sentence boundary, capped at 40
+chunks per document. `store_doc` and `update_doc` keep them current;
+`memory admin reindex-chunks` backfills.
+
+Backfill on the production corpus: **398 documents, 986 chunks, 683 conversation
+dumps correctly skipped**, 18 seconds, and no measurable growth in a 262 MB DB.
+
+Measured on 60 body-only probes (a sentence from the second half of a body,
+discarded if the summary already covers it):
+
+| | MRR@10 | Recall@10 | Top1 |
+|---|---|---|---|
+| before (summary only) | 0.830 | 0.900 | 0.800 |
+| after (body chunks) | **0.886** | **0.950** | **0.850** |
+
+The baseline is high because `document_fts` already indexes the body, so a
+*verbatim* body query was reachable lexically all along. This probe uses verbatim
+sentences and therefore measures the smaller half of the gain. The half FTS
+structurally cannot serve is paraphrase — `test_doc_body_semantic_recall` went
+from a strict xfail at rank 5 of 5 to passing at rank 1, and is kept as a
+regression test rather than deleted.
+
+Memory retrieval is unchanged at MRR 0.970: chunks live in their own table and
+never enter the memory path.
+
+One design note worth keeping. The first cut skipped documents whose body fits
+in a single chunk, reasoning that the summary already covered them. That is
+precisely the assumption that created the gap — the summary is a separate
+hand-written text, not a prefix of the body — and it left the probe failing.
+Every chunked document now gets at least one chunk vector.
 
 ### 2.2 An explicit update path
 

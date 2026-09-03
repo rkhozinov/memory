@@ -350,15 +350,32 @@ def test_doc_body_lexical_recall(doc_store):
     assert _doc_rank(results) == 1, "FTS should reach body text verbatim"
 
 
-@pytest.mark.xfail(
-    reason="Document bodies are never embedded (core.py:5041) — only the 500-char "
-    "summary is. A paraphrase of a body-only fact has nothing to match: FTS misses "
-    "on vocabulary and the semantic side never saw the body.",
-    strict=True,
-)
 def test_doc_body_semantic_recall(doc_store):
-    """A body-only fact, asked in vocabulary the 500-char summary does not contain."""
-    # The answer is stated verbatim in the body. Measured rank on the current
-    # build: 5 of 5, behind an unrelated database-backup runbook.
+    """A body-only fact, asked in vocabulary the 500-char summary does not contain.
+
+    Was an xfail: before body chunking, only the summary was embedded and this
+    ranked 5 of 5, behind an unrelated database-backup runbook. Kept as a
+    regression test rather than deleted — it is the only thing standing between
+    the chunk index and a silent return to summary-only retrieval.
+    """
     results = doc_store.search_docs("how far behind can the standby fall before the job aborts", limit=5)
     assert _doc_rank(results) == 1, "body-only facts should be semantically reachable"
+
+
+def test_doc_chunks_are_written_and_excluded_by_type(store):
+    """Chunk rows exist for a normal doc, and never for a conversation dump."""
+    store.store_doc(title="Plan doc", body=_DOC_BODY, summary=_DOC_SUMMARY, doc_type="plan")
+    store.store_doc(
+        title="Raw session",
+        body=_DOC_BODY + "\n\nU: and then what?\nA: then this.\n",
+        summary=_DOC_SUMMARY,
+        doc_type="session-archive",
+    )
+    conn = store._get_conn()
+    rows = conn.execute(
+        "SELECT d.doc_type, COUNT(c.id) n FROM documents d "
+        "LEFT JOIN document_chunks c ON c.doc_id = d.id GROUP BY d.doc_type"
+    ).fetchall()
+    counts = {r["doc_type"]: r["n"] for r in rows}
+    assert counts["plan"] > 0
+    assert counts["session-archive"] == 0

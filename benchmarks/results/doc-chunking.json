@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "generated": "2026-09-03",
+    "task": "Chunk and embed document bodies (selective)",
+    "harness": "60 body-only probes: a sentence drawn from the second half of a document body, discarded if >40% of its distinctive tokens already appear in that document's summary"
+  },
+  "backfill": {
+    "documents_indexed": 398,
+    "chunks_written": 986,
+    "skipped_conversation_dumps": 683,
+    "avg_chunk_chars": 1542,
+    "wall_seconds": 18,
+    "db_growth_mb": 0.0,
+    "note": "DB size unchanged to 3 decimal places \u2014 986 vectors is nothing against a 262 MB file. The 80k vectors that chunking the conversation dumps would have added is the number this avoided."
+  },
+  "doc_retrieval": {
+    "before_summary_only": {
+      "mrr@10": 0.83,
+      "recall@10": 0.9,
+      "top1": 0.8
+    },
+    "after_body_chunks": {
+      "mrr@10": 0.886,
+      "recall@10": 0.95,
+      "top1": 0.85
+    },
+    "delta_pp": {
+      "mrr": 5.6,
+      "recall": 5.0,
+      "top1": 5.0
+    },
+    "why_the_baseline_is_already_high": "document_fts indexes the body, so a VERBATIM body query was already reachable lexically. This probe uses verbatim sentences and so measures the smaller half of the gain. The half FTS structurally cannot serve is paraphrase \u2014 that is what test_doc_body_semantic_recall covers, and it went from a strict xfail (rank 5 of 5) to passing at rank 1."
+  },
+  "memory_search_unaffected": {
+    "mrr@10": 0.97,
+    "note": "identical to baseline; chunks live in their own table and never enter memory retrieval"
+  }
+}
