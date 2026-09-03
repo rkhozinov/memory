@@ -481,6 +481,40 @@ ACE's concern does not apply at this budget — record that and close it. If tie
 entries are churning out because tier-2 scores fluctuate, that is context collapse
 in the literal sense and incremental updates are justified.
 
+**RUN, 2026-09-03** (`benchmarks/results/probe-p3-index-churn.json`). Eight
+rebuilds, 25 memories added between each:
+
+| | |
+|---|---|
+| mean retention | **100.0%** |
+| worst round | 100.0% |
+| mean position shift | 0.00 places |
+
+So context collapse does not happen. **But that perfect stability is not health,
+it is ossification** — and the follow-up is the actual finding. Storing a fresh,
+high-importance, correctly-typed, correctly-tagged `decision` and rebuilding does
+**not** put it in the index. The index is a fixed set of 32 entries that new
+knowledge cannot enter.
+
+Two causes, both fixable and neither is what ACE describes:
+
+1. **The token cap binds, not the line cap.** The hook passes `--max-lines 60
+   --max-tokens 1200` and gets 32 lines. At ~150 chars per line the token budget
+   is exhausted at 32 entries, so the 60 never binds. It reads like the
+   constraint and is not.
+2. **Tier 1 has no ranking.** 1 447 `decision`/`reference` memories are tier-1
+   eligible and compete for ~32 slots in *unordered curation order*
+   (`core.py:5718-5728`). `--tags` stable-sorts in-scope entries to the front but
+   does not rank within them. A new important decision queues behind 1 447 others
+   with no mechanism to get ahead of any of them. Tier 2 *does* have a score;
+   tier 1, the higher-priority tier, does not.
+
+**Revised conclusion.** ACE's argument lands, but not as stated. The failure is
+not collapse through repeated rewriting — it is ossification through unranked
+wholesale selection. Incremental itemized updates would not fix it. Ranking
+tier 1 would, and raising the token budget to make the line cap mean what it says
+is a one-line change worth doing first.
+
 **Note the footer bug this will surface**: the index's "Demoted" count is
 `excluded_count + demoted_from_cap` (`core.py:5819`) — mostly budget overflow, not
 a lifecycle state. It reads as ~4500 demoted memories and is nothing of the kind.

@@ -64,6 +64,13 @@ allowed-confusables = ["×"]
 "src/memory/mlx_model.py" = ["A001", "E501", "RUF005"]  # vendored from mlx_embeddings
 "src/memory/embeddings.py" = ["S608", "S310"]  # parameterized SQL + known URL downloads
 "src/memory/provenance.py" = ["S603", "S607"]  # git from PATH, fixed argv, no shell
+# Analysis scripts, not shipped code. f-string SQL is a generated run of "?"
+# placeholders with bound params (S608); random is corpus sampling, not crypto
+# (S311); a transcript that will not parse is skipped deliberately (S112).
+"benchmarks/session_analytics.py" = ["S608", "S311", "S112", "N806"]
+"benchmarks/probe_p3_index_churn.py" = ["S311"]
+"benchmarks/probe_p5_injection_diversity.py" = ["S608", "S311", "BLE001"]
+"tests/bench_probe_p1.py" = ["S608", "S311"]
 
 [tool.ruff.format]
 quote-style = "double"

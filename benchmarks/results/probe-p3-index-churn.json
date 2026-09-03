@@ -1,0 +1,83 @@
+{
+  "rounds": 8,
+  "adds_per_round": 25,
+  "scope": "project:memory",
+  "index_size": 32,
+  "mean_retention": 1.0,
+  "min_retention": 1.0,
+  "mean_position_shift": 0.0,
+  "per_round": [
+    {
+      "round": 1,
+      "size": 32,
+      "retained": 1.0,
+      "dropped": 0,
+      "mean_position_shift": 0.0
+    },
+    {
+      "round": 2,
+      "size": 32,
+      "retained": 1.0,
+      "dropped": 0,
+      "mean_position_shift": 0.0
+    },
+    {
+      "round": 3,
+      "size": 32,
+      "retained": 1.0,
+      "dropped": 0,
+      "mean_position_shift": 0.0
+    },
+    {
+      "round": 4,
+      "size": 32,
+      "retained": 1.0,
+      "dropped": 0,
+      "mean_position_shift": 0.0
+    },
+    {
+      "round": 5,
+      "size": 32,
+      "retained": 1.0,
+      "dropped": 0,
+      "mean_position_shift": 0.0
+    },
+    {
+      "round": 6,
+      "size": 32,
+      "retained": 1.0,
+      "dropped": 0,
+      "mean_position_shift": 0.0
+    },
+    {
+      "round": 7,
+      "size": 32,
+      "retained": 1.0,
+      "dropped": 0,
+      "mean_position_shift": 0.0
+    },
+    {
+      "round": 8,
+      "size": 32,
+      "retained": 1.0,
+      "dropped": 0,
+      "mean_position_shift": 0.0
+    }
+  ],
+  "_meta": {
+    "generated": "2026-09-03",
+    "probe": "P3 \u2014 does rebuilding the index wholesale erode it?",
+    "surface_result": "100% retention, zero position drift, across 8 rebuilds with 200 memories added between them. ACE's context-collapse concern does not apply to build_index at this budget.",
+    "the_real_finding": "That perfect stability is not health, it is ossification. Follow-up: storing a fresh, high-importance, correctly-typed and correctly-tagged `decision` and rebuilding does NOT put it in the index. The index is a fixed set of 32 entries that new knowledge cannot enter.",
+    "two_causes": {
+      "token_cap_binds_not_line_cap": "The hook passes --max-lines 60 --max-tokens 1200. The index comes out at 32 lines. At ~150 chars/line the 1200-token budget is exhausted at 32 entries, so the line cap never binds and the 60 is misleading \u2014 it reads like the constraint and is not.",
+      "tier_1_has_no_ranking": "1447 decision/reference memories are tier-1 eligible and compete for ~32 slots on unordered curation order (core.py:5718-5728). --tags only stable-sorts in-scope entries to the front; it does not rank within them. A new important decision queues behind 1447 others with no mechanism to rank ahead of any of them. Tier 2 does have a score; tier 1, the higher-priority tier, does not."
+    },
+    "revised_conclusion": "ACE's argument still lands, but not as stated. The failure here is not collapse through repeated rewriting \u2014 it is ossification through unranked wholesale selection. Incremental itemized updates would not fix it either; ranking tier 1 would.",
+    "eligible_pools": {
+      "tier1_decision_reference": 1447,
+      "tier2_learning_pattern_error": 3554,
+      "tier3_todo": 50
+    }
+  }
+}

@@ -42,7 +42,7 @@ import sqlite3
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -62,19 +62,41 @@ TOKEN_RE = re.compile(r"[A-Za-z0-9_./-]{8,}")
 # Words that clear the length bar but carry no attribution signal — they show up
 # in any technical conversation regardless of what was injected.
 STOPWORDS = frozenset(
-    """
-    something everything different following particular important interesting
-    understand understanding implementation configuration information available
-    currently probably actually basically essentially specifically additional
-    representing containing including regarding therefore otherwise
-    """.split()
+    [
+        "actually",
+        "additional",
+        "available",
+        "basically",
+        "configuration",
+        "containing",
+        "currently",
+        "different",
+        "essentially",
+        "everything",
+        "following",
+        "implementation",
+        "important",
+        "including",
+        "information",
+        "interesting",
+        "otherwise",
+        "particular",
+        "probably",
+        "regarding",
+        "representing",
+        "something",
+        "specifically",
+        "therefore",
+        "understand",
+        "understanding",
+    ]
 )
 
 MEMORY_CLI_RE = re.compile(r"\bmemory\s+(store|add|search|find|get|delete|rm|forget|update|doc|admin|health)\b")
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +196,7 @@ def mechanical_rates(db: Path) -> dict:
 
     def _ts(v):
         try:
-            return datetime.fromtimestamp(float(v), timezone.utc).date().isoformat()
+            return datetime.fromtimestamp(float(v), UTC).date().isoformat()
         except (TypeError, ValueError):
             return str(v)
 
@@ -541,8 +563,8 @@ def analyse(projects_dir: Path, db: Path, max_files: int | None = None) -> dict:
 
     mtimes = [f.stat().st_mtime for f in files if f.exists()]
     window = {
-        "from": datetime.fromtimestamp(min(mtimes), timezone.utc).date().isoformat() if mtimes else None,
-        "to": datetime.fromtimestamp(max(mtimes), timezone.utc).date().isoformat() if mtimes else None,
+        "from": datetime.fromtimestamp(min(mtimes), UTC).date().isoformat() if mtimes else None,
+        "to": datetime.fromtimestamp(max(mtimes), UTC).date().isoformat() if mtimes else None,
     }
 
     per_memory: list[dict] = []

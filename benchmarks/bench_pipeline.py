@@ -30,13 +30,11 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-
 from corpus import ALL_TEST_CASES, CORPUS, TestCase
 
 # ---------------------------------------------------------------------------
@@ -755,10 +753,10 @@ def print_report(
             print(f"\n  Current production (e5-small-v2 hybrid): MRR={current_hyb_mrr:.3f}")
             if best_sem_mrr >= current_hyb_mrr:
                 print(f"  ** {best_sem} semantic-only MATCHES OR BEATS current hybrid **")
-                print(f"     -> FTS can potentially be removed with this model")
+                print("     -> FTS can potentially be removed with this model")
             else:
                 print(f"  Best semantic-only ({best_sem_mrr:.3f}) still trails current hybrid ({current_hyb_mrr:.3f})")
-                print(f"     -> FTS still adds value, keep hybrid")
+                print("     -> FTS still adds value, keep hybrid")
 
 
 # ---------------------------------------------------------------------------
@@ -784,7 +782,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    global _BACKEND  # noqa: PLW0603
+    global _BACKEND
     _BACKEND = args.backend
 
     if args.models and "all" in args.models:

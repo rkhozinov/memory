@@ -209,7 +209,7 @@ def probe_false_positive_rate(db: str, threshold: float = 0.90, sample: int = 40
         r["rowid"]: np.frombuffer(r["content_embedding"], dtype=np.float32)
         # ph is a generated run of "?" placeholders, not user input; ids are bound.
         for r in conn.execute(
-            f"SELECT rowid, content_embedding FROM memory_embeddings WHERE rowid IN ({ph})",  # noqa: S608
+            f"SELECT rowid, content_embedding FROM memory_embeddings WHERE rowid IN ({ph})",
             ids,
         )
     }

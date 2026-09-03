@@ -111,7 +111,7 @@ def run(projects_dir: Path, lambdas: tuple[float, ...], db: str | None = None) -
                 )
             except TypeError:
                 pool = store.search(inj.prompt[:512], mode="hybrid", limit=POOL_SIZE, track_recall=False)
-            except Exception:
+            except Exception:  # noqa: S112 — a query the current DB cannot serve is skipped
                 continue
             cands = []
             for r in pool:
