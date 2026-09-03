@@ -357,7 +357,7 @@ def test_cli_admin_index_writes_to_file(cli_env, tmp_path):
     content = out_file.read_text()
     assert "# Memory Index" in content
     assert "## Decisions" in content
-    assert "## Demoted" in content
+    assert "## Not shown here" in content
 
 
 def test_cli_admin_index_stdout_is_markdown(cli_env):

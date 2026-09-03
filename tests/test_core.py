@@ -1984,7 +1984,7 @@ def test_build_index_returns_nonempty_string_with_required_sections(store):
     assert "## References" in idx
     assert "## Learnings / Patterns / Errors" in idx
     assert "## Active TODOs" in idx
-    assert "## Demoted (search-only; not auto-loaded)" in idx
+    assert "## Not shown here (search-only)" in idx
 
 
 def test_build_index_excludes_demoted_metadata(store):
@@ -2038,9 +2038,13 @@ def test_build_index_tags_scope_wins_the_cap(store):
     assert "Unrelated decision number" not in idx
     assert "**Scoped to:** project:mine" in idx
 
-    # Without the scope, the same cap is won by whichever project is largest.
+    # Without the scope, the cap is won on rank rather than on scope. This used
+    # to assert the opposite — that the last-stored entry loses — but that was
+    # tier 1 having no score at all and emitting in query order, which is exactly
+    # the ossification this ordering fixed. The contract now is only that scope
+    # still beats rank, which the assertions above already cover.
     unscoped = store.build_index(max_lines=1, max_tokens=400)
-    assert "Scoped decision about the thing at hand" not in unscoped
+    assert unscoped.count("- `") == 1
 
 
 def test_build_index_tags_prioritise_rather_than_filter(store):
@@ -2067,12 +2071,12 @@ def test_build_index_respects_max_lines_cap_with_demoted_footer(store):
     assert len(content_lines) <= 5
 
     # Demoted section must mention excluded entries
-    assert "## Demoted (search-only; not auto-loaded)" in idx
+    assert "## Not shown here (search-only)" in idx
     # Footer line must reference a positive count
     import re as _re
 
-    match = _re.search(r"\*(\d+)\* entries available", idx)
-    assert match, "Demoted footer should show count"
+    match = _re.search(r"\*(\d+)\* eligible entries did not fit", idx)
+    assert match, "overflow footer should show a count"
     demoted_count = int(match.group(1))
     assert demoted_count > 0
 
@@ -2098,3 +2102,41 @@ def test_build_index_todo_keeps_pending_and_blocked_drops_done(store):
     assert "Set up monitoring alerts" in idx
     assert "Awaiting vendor access for SSO" in idx
     assert "Rotate API keys in production" not in idx
+
+
+def test_build_index_tier1_is_ranked_not_first_come(store):
+    """A new high-importance decision must be able to enter a full index.
+
+    Tier 1 had no score: decision/reference entries were emitted in query order,
+    so with ~1400 eligible memories and ~32 slots whichever landed first stayed
+    forever. Measured before the fix: 100% index retention across 8 rebuilds and
+    200 new memories, and a freshly stored high-importance decision never
+    appeared. That is ossification, not stability.
+    """
+    for i in range(40):
+        store.store(
+            f"Older decision {i}: the deploy step validates the manifest before applying it",
+            memory_type="decision",
+            tags=["project:idx", "svc:deploy"],
+            importance=0.6,
+        )
+    before = store.build_index(max_lines=20, max_tokens=100_000, tags=["project:idx"])
+    assert before.count("- `") == 20, "index should be full, otherwise this proves nothing"
+
+    fresh = store.store(
+        "IMPORTANT: the release pipeline must sign artifacts before publish",
+        memory_type="decision",
+        tags=["project:idx", "svc:release"],
+        importance=0.9,
+    )
+    after = store.build_index(max_lines=20, max_tokens=100_000, tags=["project:idx"])
+    assert fresh["content_hash"][:12] in after, "a new high-importance decision must be able to enter"
+    assert after.count("- `") == 20, "and it must displace one, not grow the index"
+
+
+def test_build_index_low_value_types_still_excluded(store):
+    """Ranking tier 1 must not open the index to note/observation."""
+    store.store("a passing observation of no consequence", memory_type="observation", tags=["project:idx"])
+    noise = store.store("just a note", memory_type="note", tags=["project:idx"])
+    idx = store.build_index(max_lines=20, max_tokens=100_000, tags=["project:idx"])
+    assert noise["content_hash"][:12] not in idx

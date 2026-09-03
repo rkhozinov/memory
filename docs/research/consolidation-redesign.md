@@ -512,8 +512,31 @@ Two causes, both fixable and neither is what ACE describes:
 **Revised conclusion.** ACE's argument lands, but not as stated. The failure is
 not collapse through repeated rewriting — it is ossification through unranked
 wholesale selection. Incremental itemized updates would not fix it. Ranking
-tier 1 would, and raising the token budget to make the line cap mean what it says
-is a one-line change worth doing first.
+tier 1 does.
+
+**FIXED, same day** (`benchmarks/results/probe-p3-index-churn-after-fix.json`).
+Tier 1 now scores `auto_mult · recency · importance · (1 + log1p(recall_count))`
+and sorts by it, mirroring tier 2.
+
+| | before | after |
+|---|---|---|
+| mean retention | 100.0% | 80.2% |
+| mean position shift | 0.00 | 6.88 |
+| new high-importance decision enters | **no** | **yes, at rank 1** |
+| low-value observation enters | no | no |
+
+Retention *falling* is the fix working: 100% was ossification. A fresh decision
+now displaces exactly one entry rather than being locked out. Watch this number —
+if it collapses toward zero the tier-1 score has become too volatile and the
+index will thrash between sessions.
+
+Two smaller things fixed alongside. The `--max-lines 60 / --max-tokens 1200`
+pair is now documented in `hooks/lib/hooklib.sh` as what it actually is: only the
+token cap binds, at ~32 lines, and the line cap is a safety valve against
+pathologically short entries. And the footer that read `## Demoted (search-only)`
+with a count near 4 500 — which is budget overflow, not a lifecycle state, and
+which this research misread as one — now reads `## Not shown here (search-only)`
+and says the entries did not fit the budget.
 
 **Note the footer bug this will surface**: the index's "Demoted" count is
 `excluded_count + demoted_from_cap` (`core.py:5819`) — mostly budget overflow, not

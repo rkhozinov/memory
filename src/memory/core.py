@@ -5940,6 +5940,13 @@ class MemoryStore:
                 # Top tier only if has at least one non-source:auto tag
                 has_curated_tag = any(t != "source:auto" for t in tags)
                 if has_curated_tag:
+                    # Tier 1 needs a score for the same reason tier 2 does: 1447
+                    # memories are eligible and roughly 32 slots exist. Without one
+                    # they were emitted in query order, so whichever entries landed
+                    # first stayed forever and a newly stored decision could never
+                    # enter the index at all — measured, not hypothetical.
+                    recency = compute_recency(created_at)
+                    entry["score"] = auto_mult * recency * imp * (1.0 + math.log1p(rc))
                     tier1.append(entry)
                 else:
                     # Falls to tier 2 scoring (no human curation)
@@ -5970,12 +5977,13 @@ class MemoryStore:
             # Everything else (note, observation, etc.) is excluded from index
             # but not counted as "demoted" (they're tier-4 / not curated)
 
-        # Sort tier2 by score descending
+        # Sort tier1 and tier2 by score descending
+        tier1.sort(key=lambda e: e.get("score", 0.0), reverse=True)
         tier2.sort(key=lambda e: e.get("score", 0.0), reverse=True)
 
         # Float in-scope entries to the front of every tier. Python's sort is
         # stable, so this reorders across the scope boundary and leaves the
-        # existing ordering (curation order, then score) untouched within it.
+        # score ordering untouched within it.
         if scope:
             for tier in (tier1, tier2, tier3):
                 tier.sort(key=lambda e: not e["in_scope"])
@@ -6069,10 +6077,11 @@ class MemoryStore:
                 lines.append("*none*")
             lines.append("")
 
-        lines.append("## Demoted (search-only; not auto-loaded)")
+        lines.append("## Not shown here (search-only)")
         lines.append(
-            f"*{total_demoted}* entries available via `memory search` or "
-            "`memory get <hash>` but excluded from this index."
+            f"*{total_demoted}* eligible entries did not fit this index's budget. "
+            "They are not demoted or deleted — reach them with `memory search` or "
+            "`memory get <hash>`."
         )
 
         return "\n".join(lines) + "\n"

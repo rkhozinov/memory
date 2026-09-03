@@ -1,0 +1,84 @@
+{
+  "rounds": 8,
+  "adds_per_round": 25,
+  "scope": "project:memory",
+  "index_size": 33,
+  "mean_retention": 0.8016369047619047,
+  "min_retention": 0.6666666666666666,
+  "mean_position_shift": 6.879935064935065,
+  "per_round": [
+    {
+      "round": 1,
+      "size": 33,
+      "retained": 0.875,
+      "dropped": 4,
+      "mean_position_shift": 4.428571428571429
+    },
+    {
+      "round": 2,
+      "size": 34,
+      "retained": 0.6666666666666666,
+      "dropped": 11,
+      "mean_position_shift": 11.090909090909092
+    },
+    {
+      "round": 3,
+      "size": 34,
+      "retained": 0.7352941176470589,
+      "dropped": 9,
+      "mean_position_shift": 8.52
+    },
+    {
+      "round": 4,
+      "size": 35,
+      "retained": 0.7647058823529411,
+      "dropped": 8,
+      "mean_position_shift": 9.0
+    },
+    {
+      "round": 5,
+      "size": 35,
+      "retained": 0.8857142857142857,
+      "dropped": 4,
+      "mean_position_shift": 4.0
+    },
+    {
+      "round": 6,
+      "size": 35,
+      "retained": 0.7714285714285715,
+      "dropped": 8,
+      "mean_position_shift": 8.0
+    },
+    {
+      "round": 7,
+      "size": 35,
+      "retained": 0.9142857142857143,
+      "dropped": 3,
+      "mean_position_shift": 3.0
+    },
+    {
+      "round": 8,
+      "size": 35,
+      "retained": 0.8,
+      "dropped": 7,
+      "mean_position_shift": 7.0
+    }
+  ],
+  "_meta": {
+    "probe": "P3 re-run AFTER ranking tier 1",
+    "before": {
+      "mean_retention": 1.0,
+      "min_retention": 1.0,
+      "mean_position_shift": 0.0,
+      "new_high_importance_decision_enters_index": false
+    },
+    "after": {
+      "mean_retention": 0.8016369047619047,
+      "min_retention": 0.6666666666666666,
+      "mean_position_shift": 6.879935064935065,
+      "new_high_importance_decision_enters_index": true
+    },
+    "reading": "100% retention was ossification, not stability. Retention SHOULD fall once new memories can displace old ones \u2014 that is the fix working. A fresh high-importance decision now enters at rank 1 and displaces exactly one entry; a low-value observation still stays out.",
+    "watch": "If retention ever collapses toward zero the tier-1 score has become too volatile and the index will thrash between sessions. 80% over 8 rounds with 25 adds each is the current operating point."
+  }
+}

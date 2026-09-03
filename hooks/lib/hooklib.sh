@@ -111,8 +111,13 @@ mem_index_marker() {
 #
 # The caps matter: the default 200 lines / 4000 tokens produced a 17KB file, so
 # every session paid ~4.2k tokens for a catalog that is mostly about other
-# projects. 60 lines / 1200 tokens keeps the hashes (and therefore the
-# `memory get <hash>` drill-down) at roughly a third of the cost.
+# projects. 1200 tokens keeps the hashes (and therefore the `memory get <hash>`
+# drill-down) at roughly a third of the cost.
+#
+# Only the TOKEN cap binds. At ~150 chars per entry the 1200-token budget is
+# exhausted at ~32 lines, so --max-lines 60 never takes effect; it is a safety
+# valve against pathologically short entries, not the operative limit. Change
+# --max-tokens to change the size of the index.
 mem_rebuild_index() {
   local out marker total tag
   out="$(mem_index_file)"
