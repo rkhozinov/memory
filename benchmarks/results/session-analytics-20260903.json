@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "generated": "2026-09-03T08:43:47+00:00",
+    "generated": "2026-09-03T09:20:50+00:00",
     "projects_dir": "/Users/rkhozinov/.claude/projects",
-    "transcript_files_scanned": 821,
-    "transcript_files_with_signal": 239,
+    "transcript_files_scanned": 825,
+    "transcript_files_with_signal": 240,
     "transcript_mtime_window": {
       "from": "2026-07-28",
       "to": "2026-09-03"
@@ -20,7 +20,7 @@
     ]
   },
   "mechanical": {
-    "events_total": 29263,
+    "events_total": 29267,
     "span": {
       "from": "2026-02-20",
       "to": "2026-09-03"
@@ -28,35 +28,35 @@
     "by_operation": [
       {
         "operation": "search",
-        "n": 19856,
-        "avg_results": 4.174204270749396,
-        "avg_ms": 293.01171983373825,
+        "n": 19857,
+        "avg_results": 4.17424585788387,
+        "avg_ms": 293.06463887397695,
         "zero_results": 2653,
-        "avg_top_sim": 0.7094752403846154
+        "avg_top_sim": 0.7094639795978191
       },
       {
         "operation": "store",
-        "n": 7466,
+        "n": 7467,
         "avg_results": null,
-        "avg_ms": 176.13689886032338,
+        "avg_ms": 176.28886646354024,
         "zero_results": 0,
         "avg_top_sim": null
       },
       {
         "operation": "doc_store",
-        "n": 1157,
+        "n": 1158,
         "avg_results": null,
-        "avg_ms": 612.0956807478606,
+        "avg_ms": 612.4481878955953,
         "zero_results": 0,
         "avg_top_sim": null
       },
       {
         "operation": "doc_search",
-        "n": 382,
-        "avg_results": 4.856020942408377,
+        "n": 383,
+        "avg_results": 4.859007832898173,
         "avg_ms": null,
         "zero_results": 0,
-        "avg_top_sim": 0.7139657068062827
+        "avg_top_sim": 0.7147125326370757
       },
       {
         "operation": "delete",
@@ -107,8 +107,8 @@
         "avg_top_sim": null
       }
     ],
-    "search_zero_result_rate": 0.13109002865895839,
-    "search_total": 20238,
+    "search_zero_result_rate": 0.13107707509881422,
+    "search_total": 20240,
     "zero_result_split": {
       "total_zero": 2653,
       "empty_query": 1403,
@@ -124,9 +124,9 @@
       },
       {
         "search_mode": "hybrid",
-        "n": 8663,
+        "n": 8664,
         "zero": 1880,
-        "zero_pct": 0.21701489091538728
+        "zero_pct": 0.2169898430286242
       },
       {
         "search_mode": "exact",
@@ -136,7 +136,7 @@
       },
       {
         "search_mode": "auto",
-        "n": 380,
+        "n": 381,
         "zero": 0,
         "zero_pct": 0.0
       },
@@ -158,8 +158,8 @@
       "distinct": 469,
       "repeat_ratio": 0.6248
     },
-    "store_total": 8623,
-    "store_dedup_used": 6185,
+    "store_total": 8625,
+    "store_dedup_used": 6186,
     "store_duplicate_caught": 847
   },
   "coverage": {
@@ -178,9 +178,9 @@
       }
     ],
     "bulk_recall_contaminated": 2151,
-    "memories_live": 5882,
-    "never_recalled": 2143,
-    "never_recalled_pct": 0.36433185991159467,
+    "memories_live": 5883,
+    "never_recalled": 2144,
+    "never_recalled_pct": 0.36443991160972294,
     "by_type": [
       {
         "memory_type": "learning",
@@ -212,10 +212,10 @@
       },
       {
         "memory_type": "decision",
-        "n": 706,
-        "never_recalled": 227,
-        "avg_recalls": 40.21813031161473,
-        "never_recalled_pct": 0.32152974504249293
+        "n": 707,
+        "never_recalled": 228,
+        "avg_recalls": 40.16124469589816,
+        "never_recalled_pct": 0.32248939179632247
       },
       {
         "memory_type": "observation",
@@ -284,9 +284,9 @@
     "by_age": [
       {
         "age_bucket": "0-7d",
-        "n": 350,
-        "never_recalled": 274,
-        "never_recalled_pct": 0.7828571428571428
+        "n": 344,
+        "never_recalled": 268,
+        "never_recalled_pct": 0.7790697674418605
       },
       {
         "age_bucket": "30-90d",
@@ -296,9 +296,9 @@
       },
       {
         "age_bucket": "7-30d",
-        "n": 1447,
-        "never_recalled": 1114,
-        "never_recalled_pct": 0.7698686938493434
+        "n": 1454,
+        "never_recalled": 1121,
+        "never_recalled_pct": 0.7709766162310867
       },
       {
         "age_bucket": "90d+",
@@ -310,7 +310,7 @@
     "never_recalled_tag_prefixes": [
       [
         "project",
-        2078
+        2079
       ],
       [
         "tool",
@@ -318,7 +318,7 @@
       ],
       [
         "svc",
-        972
+        973
       ],
       [
         "cloud",
@@ -371,20 +371,20 @@
     ]
   },
   "injection": {
-    "injections": 203,
-    "memories_injected": 662,
-    "memories_scorable": 653,
-    "used_rate": 0.15160796324655437,
-    "used_rate_strict": 0.019908116385911178,
-    "mean_tokens": 5.390505359877489,
-    "mean_tokens_strict": 3.8545176110260337,
-    "mean_reused": 0.6339969372128637,
+    "injections": 204,
+    "memories_injected": 663,
+    "memories_scorable": 654,
+    "used_rate": 0.15137614678899083,
+    "used_rate_strict": 0.019877675840978593,
+    "mean_tokens": 5.386850152905199,
+    "mean_tokens_strict": 3.837920489296636,
+    "mean_reused": 0.6345565749235474,
     "by_type": [
       {
         "type": "learning",
-        "n": 170,
-        "used_rate": 0.18235294117647058,
-        "used_rate_strict": 0.047058823529411764
+        "n": 171,
+        "used_rate": 0.18128654970760233,
+        "used_rate_strict": 0.04678362573099415
       },
       {
         "type": "reference",
@@ -461,21 +461,21 @@
     },
     {
       "bucket": ">=0.5",
-      "n": 319,
-      "used_rate": 0.13479623824451412,
-      "used_rate_strict": 0.0219435736677116,
-      "mean_reused_tokens": 0.5893416927899686
+      "n": 320,
+      "used_rate": 0.134375,
+      "used_rate_strict": 0.021875,
+      "mean_reused_tokens": 0.590625
     }
   ],
   "surface": {
     "cli_calls": [
       [
         "store",
-        376
+        377
       ],
       [
         "search",
-        243
+        247
       ],
       [
         "get",
@@ -483,18 +483,22 @@
       ],
       [
         "doc",
-        143
+        145
       ],
       [
         "add",
         29
       ],
       [
+        "admin",
+        7
+      ],
+      [
         "update",
         7
       ],
       [
-        "admin",
+        "find",
         3
       ],
       [
@@ -504,10 +508,6 @@
       [
         "delete",
         3
-      ],
-      [
-        "find",
-        2
       ],
       [
         "forget",
@@ -524,7 +524,7 @@
         32
       ]
     ],
-    "sessions_with_cli": 159,
+    "sessions_with_cli": 160,
     "sessions_with_skill": 67
   }
 }

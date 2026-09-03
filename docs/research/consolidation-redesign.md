@@ -539,6 +539,40 @@ prompt and to already-selected lines. Then compare, on the same transcripts:
 injections. If it only reduces redundancy without moving reuse, it is a metric
 that improved and a system that did not.
 
+**RUN, 2026-09-03 — REFUTED** (`benchmarks/results/probe-p5-injection-diversity.json`).
+185 real injections, candidate pools of 20:
+
+| selector | useful-line rate | redundancy |
+|---|---|---|
+| **current: top-5 by score** | **22.3%** | 0.053 |
+| MMR λ=0.9 | 20.9% | 0.023 |
+| MMR λ=0.7 | 16.8% | 0.008 |
+| MMR λ=0.5 | 15.8% | 0.007 |
+| MMR λ=0.3 | 15.1% | 0.006 |
+| *oracle (pick what turned out useful)* | *40.5%* | *0.040* |
+
+MMR is **monotonically worse**, and the more diversity is weighted the worse it
+gets. Redundancy fell exactly as designed while the useful rate fell with it —
+precisely the failure the threshold was written to catch.
+
+**This also corrects the finding that motivated it.** `real-usage-report.md` §3
+showed the ≥0.70 score *band* had 0% reuse and read that as "score does not
+predict usefulness". P5 shows that within a candidate *pool*, score predicts
+usefulness better than novelty does. Those are different questions and the
+earlier write-up conflated them: across injections a high band score means the
+memory restated the prompt; within one injection the highest-scoring candidates
+are still the best available.
+
+**Headroom is real but the lever is not this one.** The oracle reaches 40.5%
+against the current 22.3%. A better selector exists. It is not MMR over lexical
+overlap, and 2.3 below should not be built on the novelty argument.
+
+Note the first cut of this probe returned every selector tied at 100%, oracle
+included. The transcript records only the five lines injected, never the pool it
+chose from — with five candidates and five slots there is nothing to select. The
+pools here are reconstructed by re-running retrieval with the original prompt,
+which makes them directional rather than a replay.
+
 **Honest limit**: this reuses the same 202 injections that produced the
 hypothesis, so it can confirm internal consistency but cannot validate. A second
 measurement window is still required before changing the hook.

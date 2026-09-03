@@ -1,0 +1,52 @@
+{
+  "episodes_available": 185,
+  "current_top_k_by_score": {
+    "episodes": 185,
+    "lines_selected": 925,
+    "useful_line_rate": 0.2227027027027027,
+    "mean_redundancy": 0.05307999450182113
+  },
+  "mmr_lambda_0.9": {
+    "episodes": 185,
+    "lines_selected": 925,
+    "useful_line_rate": 0.20864864864864865,
+    "mean_redundancy": 0.02312027060324274
+  },
+  "mmr_lambda_0.7": {
+    "episodes": 185,
+    "lines_selected": 925,
+    "useful_line_rate": 0.16756756756756758,
+    "mean_redundancy": 0.007709286847831739
+  },
+  "mmr_lambda_0.5": {
+    "episodes": 185,
+    "lines_selected": 925,
+    "useful_line_rate": 0.15783783783783784,
+    "mean_redundancy": 0.0065338601956249015
+  },
+  "mmr_lambda_0.3": {
+    "episodes": 185,
+    "lines_selected": 925,
+    "useful_line_rate": 0.15135135135135136,
+    "mean_redundancy": 0.00633490510270696
+  },
+  "oracle": {
+    "episodes": 185,
+    "lines_selected": 925,
+    "useful_line_rate": 0.40540540540540543,
+    "mean_redundancy": 0.04049070845665273
+  },
+  "_meta": {
+    "generated": "2026-09-03",
+    "probe": "P5 \u2014 would a diversity term improve what the hook injects?",
+    "verdict": "REFUTED. MMR is monotonically worse than plain top-k-by-score.",
+    "reading": "Redundancy fell exactly as designed (0.053 -> 0.006) while the useful-line rate fell with it (22.3% -> 15.1%). That is the failure the adoption threshold was written to catch: a metric that improved and a system that did not.",
+    "correction": "This also narrows the finding that motivated it. real-usage-report \u00a73 showed the >=0.70 score BAND had 0% reuse and read that as 'score does not predict usefulness'. P5 shows that within a candidate POOL, score predicts usefulness better than novelty does. Those are different questions and the earlier write-up conflated them. Across injections, a high band score means the memory restated the prompt. Within one injection, the highest-scoring candidates are still the best available.",
+    "headroom": "The oracle reaches 40.5% against the current 22.3%, so ~18pp of headroom exists and a better selector is possible. It is not MMR over lexical overlap.",
+    "method_limits": [
+      "Pools are RECONSTRUCTED by re-running retrieval against today's DB with the original prompt, because the transcript records only the five lines injected, never the pool. The corpus has changed since; memories written after an injection are ones the hook could never have picked.",
+      "Same injections that produced the hypothesis: consistency, not validation.",
+      "'Useful' is >=2 distinctive tokens reappearing in later assistant text \u2014 token overlap, not comprehension."
+    ]
+  }
+}

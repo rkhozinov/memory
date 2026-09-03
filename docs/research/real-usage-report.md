@@ -123,6 +123,15 @@ MRR on the production corpus (`benchmarks/results/README.md`). It finds the righ
 thing. The question this table raises is whether "the closest thing" is what the
 injection slot should be spent on.
 
+**Correction, added after probe P5.** The paragraph above is about score *bands
+across* injections. It does not license the conclusion that a novelty term would
+help *within* one injection — and P5 measured that directly and refuted it. MMR
+selection over a reconstructed 20-candidate pool is monotonically worse than
+plain top-5-by-score (22.3% → 15.1% as diversity weight rises), even as
+redundancy falls exactly as designed. Within a pool, score still predicts
+usefulness better than novelty does. See
+`docs/research/consolidation-redesign.md` §P5.
+
 Practical consequence: raising `--min-score` would make things worse, not better.
 The hook's own comment already notes ~96% of prompts clear 0.5, i.e. the
 threshold is near-inert. These numbers say leave it inert — the useful band is

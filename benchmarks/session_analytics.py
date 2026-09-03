@@ -299,6 +299,10 @@ class Injection:
     timestamp: str
     duration_ms: int | None
     memories: list[dict] = field(default_factory=list)  # hash, type, score, preview
+    # The prompt that triggered this injection. Needed to reconstruct the
+    # candidate pool the hook chose from — the transcript records only the five
+    # lines it picked, never the pool.
+    prompt: str = ""
 
 
 @dataclass
@@ -346,6 +350,7 @@ def scan_transcript(path: Path) -> SessionScan | None:
     project = path.parent.name
     scan = SessionScan(session=path.stem, project=project)
     saw_anything = False
+    last_prompt = ""
 
     with path.open(errors="replace") as fh:
         for line in fh:
@@ -369,6 +374,9 @@ def scan_transcript(path: Path) -> SessionScan | None:
             ts = rec.get("timestamp", "")
 
             if rtype == "attachment":
+                _att = rec.get("attachment") or {}
+                if _att.get("prompt"):
+                    last_prompt = str(_att["prompt"])
                 att = rec.get("attachment") or {}
                 stdout = att.get("stdout") or ""
                 if str(att.get("type", "")).startswith("hook") and "<memory_context" in stdout:
@@ -381,6 +389,7 @@ def scan_transcript(path: Path) -> SessionScan | None:
                                 timestamp=ts,
                                 duration_ms=att.get("durationMs"),
                                 memories=mems,
+                                prompt=last_prompt,
                             )
                         )
                         saw_anything = True
@@ -399,6 +408,7 @@ def scan_transcript(path: Path) -> SessionScan | None:
                 # before or after the injection.
                 toks: set[str] = set()
                 if isinstance(content, str):
+                    last_prompt = content
                     toks |= _tokens(content)
                 elif isinstance(content, list):
                     for b in content:
