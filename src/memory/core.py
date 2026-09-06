@@ -5959,16 +5959,21 @@ class MemoryStore:
                     "content_hash": rows[0]["content_hash"],
                 }
 
-            doc_id = rows[0]["id"]
             full_hash = rows[0]["content_hash"]
 
-            # Soft-delete
-            conn.execute(
-                "UPDATE documents SET deleted_at = ? WHERE id = ?",
-                (time.time(), doc_id),
-            )
-            # Hard-delete embedding
-            conn.execute("DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,))
+            # Rows predating store_doc's dedup check can share one hash. They
+            # are byte-identical by definition, so deleting "the document"
+            # means all of them — and the dry run counted all of them.
+            now = time.time()
+            for row in rows:
+                doc_id = row["id"]
+                # Soft-delete
+                conn.execute(
+                    "UPDATE documents SET deleted_at = ? WHERE id = ?",
+                    (now, doc_id),
+                )
+                # Hard-delete embedding
+                conn.execute("DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,))
 
             duration_ms = (time.time() - start) * 1000
             self._track_event(
@@ -5976,13 +5981,13 @@ class MemoryStore:
                 "doc_delete",
                 duration_ms=duration_ms,
                 content_hash=full_hash,
-                result_count=1,
+                result_count=len(rows),
             )
             conn.execute("COMMIT")
         except BaseException:
             self._rollback_safe(conn)
             raise
-        return {"deleted": 1, "content_hash": full_hash}
+        return {"deleted": len(rows), "content_hash": full_hash}
 
     # --- Export / Import ---
 
