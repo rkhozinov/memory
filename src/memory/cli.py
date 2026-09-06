@@ -305,6 +305,7 @@ def cmd_doc_list(args, store: MemoryStore) -> None:
         page_size=args.page_size,
         tags=_parse_tags(args.tags),
         doc_type=args.doc_type,
+        depth=args.depth,
     )
     _json_out(result)
 
@@ -789,6 +790,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--page-size", default=20, type=int)
     p.add_argument("--tags", "-t", default="")
     p.add_argument("--type", dest="doc_type", default=None)
+    p.add_argument(
+        "--depth",
+        choices=["summary", "full"],
+        default="full",
+        help="summary omits each document's body — a full listing is mostly bodies.",
+    )
 
     p = doc_sub.add_parser("update")
     p.add_argument("content_hash")

@@ -5485,8 +5485,15 @@ class MemoryStore:
         page_size: int = 20,
         tags: list[str] | None = None,
         doc_type: str | None = None,
+        depth: str = "full",
     ) -> dict:
-        """Paginated listing of documents with optional filters."""
+        """Paginated listing of documents with optional filters.
+
+        depth="summary" omits `body` from each record. A listing of 2
+        session-archive docs is 139 KB at full depth, essentially all of it
+        bodies, which makes scanning the doc store cost megabytes to read a
+        handful of fields.
+        """
         conn = self._get_conn()
         offset = (page - 1) * page_size
 
@@ -5512,6 +5519,9 @@ class MemoryStore:
         if tags:
             documents = self._filter_by_tags(documents, tags)
             documents = documents[:page_size]
+
+        if depth == "summary":
+            documents = [{k: v for k, v in d.items() if k != "body"} for d in documents]
 
         return {
             "documents": documents,
