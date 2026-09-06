@@ -547,7 +547,7 @@ def _bucket(score: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def analyse(projects_dir: Path, db: Path, max_files: int | None = None) -> dict:
+def analyse(projects_dir: Path, db: Path, max_files: int | None = None, since: str | None = None) -> dict:
     files = sorted(projects_dir.rglob("*.jsonl"))
     if max_files:
         files = files[:max_files]
@@ -560,6 +560,15 @@ def analyse(projects_dir: Path, db: Path, max_files: int | None = None) -> dict:
             continue
         if s:
             scans.append(s)
+
+    # A second measurement window has to be an INDEPENDENT sample, not a bigger
+    # one: the type-mix hypothesis and the run that tested it shared the same 202
+    # injections. Filtering on the injection's own timestamp (not the file's
+    # mtime, which moves when an old session is merely appended to) is what makes
+    # a later run a genuine replication.
+    if since:
+        for sc in scans:
+            sc.injections = [i for i in sc.injections if i.timestamp and i.timestamp[:10] >= since]
 
     mtimes = [f.stat().st_mtime for f in files if f.exists()]
     window = {
@@ -789,6 +798,11 @@ def main() -> int:
     ap.add_argument("--db", default=None, help="Defaults to the live DB (copied before opening).")
     ap.add_argument("--max-files", type=int, default=None, help="Cap transcripts scanned (smoke runs).")
     ap.add_argument("--json", default=None, help="Write the full result as JSON.")
+    ap.add_argument(
+        "--since",
+        default=None,
+        help="Only count injections timestamped on or after this ISO date (independent replication window).",
+    )
     args = ap.parse_args()
 
     from memory.core import DB_PATH
@@ -803,7 +817,7 @@ def main() -> int:
         # unrecoverable and this script has no business touching it.
         snap = Path(td) / "snapshot.db"
         shutil.copy2(src, snap)
-        result = analyse(Path(args.projects_dir), snap, max_files=args.max_files)
+        result = analyse(Path(args.projects_dir), snap, max_files=args.max_files, since=args.since)
 
     print(render(result))
     if args.json:

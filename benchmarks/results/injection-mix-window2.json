@@ -1,0 +1,40 @@
+{
+  "_meta": {
+    "generated": "2026-09-06",
+    "task": "19/37 — rebalance what the session-start hook injects",
+    "harness": "benchmarks/session_analytics.py --since 2026-09-03",
+    "headline": "The second measurement window does not exist yet. Three days produced 16 injections and 51 scorable memories against window 1's 204 and 654. Nothing shipped.",
+    "note": "Project identifiers are deliberately omitted; only their share is reported."
+  },
+  "why_a_second_window_was_required": {
+    "hypothesis": "decision memories are reused far more than reference yet receive fewer injection slots.",
+    "window_1_evidence": {
+      "decision": {"n": 66, "used_rate": 0.288},
+      "reference": {"n": 110, "used_rate": 0.036},
+      "ratio": 7.9
+    },
+    "problem": "P5 tested the diversity half of this hypothesis by replaying the same 202 injections that generated it. The type-mix half was never tested against an independent sample, and a contrast discovered in a sample is not confirmed by that sample.",
+    "refuted_half": "P5 already killed the diversity/MMR remedy outright — MMR was monotonically worse, 22.3% -> 15.1%. Only the type-mix claim remains open."
+  },
+  "window_2_actual": {
+    "span_days": 3,
+    "injections": 16,
+    "memories_scorable": 51,
+    "used_rate": 0.039,
+    "by_type_n": {"learning": 26, "pattern": 9, "decision": 8, "error": 4, "observation": 2, "note": 1, "reference": 1},
+    "verdict": "decision n=8, reference n=1. A used_rate on n=1 is not a measurement. The overall used_rate also fell from 0.151 to 0.039, which is what three days of noise looks like rather than a real drop."
+  },
+  "one_thing_worth_watching": {
+    "observation": "The injected type mix has moved in exactly the direction the rebalance wanted, without the rebalance. reference fell from 16.6% of injected memories to 2.0%; decision rose from 10.0% to 15.7%.",
+    "plausible_cause": "Task 31 ranked index tier 1 and made the line cap binding, and doc chunking (task 15) moved reference-shaped content into the document store.",
+    "why_it_is_not_a_finding_yet": "n=51. Also worth noting the confound is controlled but not eliminated: one project dominates both windows (77% of window 1, 69% of window 2), so this is not a composition artifact — but three days cannot separate a ranking change from a fortnight's worth of different work.",
+    "consequence": "If it holds, the imbalance this task was written to fix may already have been fixed as a side effect, and shipping a type-mix term now would over-correct."
+  },
+  "when_to_revisit": {
+    "accrual_rate": "~2.7 decision injections/day at the current cadence",
+    "target": "decision n >= 66, matching window 1",
+    "estimated_ready": "2026-10-01",
+    "command": "uv run python benchmarks/session_analytics.py --since 2026-09-03 --json /tmp/window2.json"
+  },
+  "change_made": "benchmarks/session_analytics.py gained --since, which filters on each injection's own timestamp rather than the transcript file's mtime. mtime moves whenever an old session is appended to, so an mtime filter would have silently readmitted window-1 injections into the replication sample."
+}
