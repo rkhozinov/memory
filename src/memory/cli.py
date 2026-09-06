@@ -369,6 +369,7 @@ def cmd_admin_consolidate(args, store: MemoryStore) -> None:
         cluster=args.cluster,
         content_strategy=args.strategy,
         project_scoped=not args.no_project_scope,
+        value_guard=not args.no_value_guard,
     )
     _json_out(result)
 
@@ -830,7 +831,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--strategy",
         choices=["keep_higher_recall", "keep_longer", "concat", "mmr_union"],
-        default="keep_higher_recall",
+        # Was keep_higher_recall, which silently overrode consolidate()'s own
+        # mmr_union default on every CLI call — the legacy strategy retains 62%
+        # of unique facts against mmr_union's 100%.
+        default="mmr_union",
         help=(
             "Content strategy for the survivor. "
             "mmr_union: extractive sentence-level merge via Maximal Marginal "
@@ -842,6 +846,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-project-scope",
         action="store_true",
         help="Allow merges across different project:* tags (default: scoped).",
+    )
+    p.add_argument(
+        "--no-value-guard",
+        action="store_true",
+        help=(
+            "Merge even when members disagree about a concrete value (a port, a "
+            "version, an id). Default is to refuse: on the production store 391 "
+            "of the 396 pairs at 0.85 diverge that way, so merging them deletes "
+            "facts rather than duplicates."
+        ),
     )
 
     p = admin_sub.add_parser("clusters", help="Discover near-duplicate clusters (no mutation)")

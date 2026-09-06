@@ -1,0 +1,61 @@
+{
+  "_meta": {
+    "generated": "2026-09-06",
+    "task": "29/38 — make consolidation safe below the 0.92 threshold",
+    "headline": "IDF-weighted overlap is refuted: the boilerplate it was supposed to down-weight is corpus-RARE (df 27-35 of 5964), so IDF scores it HIGH. The guard that works is one already in the repo — differs_by_value, shipped for write-time dedup. It blocks 391 of 396 pairs at 0.85 and lets genuine restatements through."
+  },
+  "hypothesis_refuted_idf_weighted_overlap": {
+    "claim_under_test": "Tokens appearing across many memories (the boilerplate) get near-zero IDF weight; rare tokens carry the signal.",
+    "why_it_fails": "The boilerplate is not corpus-frequent. The 13-member agent-report cluster shares a template that appears in ~27 memories out of 5964, so its tokens carry idf 5.1-5.4 — among the highest in the vocabulary. IDF measures corpus rarity, not template-ness.",
+    "must_block_cluster_13_members": {"raw_jaccard_median": 0.600, "idf_weighted_median": 0.571},
+    "must_block_cluster_10_members": {"raw_jaccard_median": 0.673, "idf_weighted_median": 0.694},
+    "distinct_clusters_median": {"raw_jaccard_median": 0.15, "idf_weighted_median": 0.15},
+    "verdict": "The inversion the guard was built to fix survives IDF weighting intact. Not implemented."
+  },
+  "second_hypothesis_also_refuted_within_cluster_template_residual": {
+    "idea": "Strip tokens shared by >=80% of a cluster's members, score the residual — genuine duplicates should have little residual, distinct memories a lot.",
+    "must_block_13_member_cluster": 0.326,
+    "must_block_10_member_cluster": 0.191,
+    "must_merge_true_duplicate_trio": 0.467,
+    "verdict": "Also inverted. A long shared template is the majority of each member's text, so it swamps any length-normalized measure. No token-overlap statistic separates these populations on this corpus."
+  },
+  "shipped_value_token_guard": {
+    "mechanism": "differs_by_value(a, b) — already in core.py for write-time dedup (task 30). Refuse the merge when two members disagree about a version, dotted number, kebab/snake symbol, backticked literal or bare count.",
+    "reuse": "No new scoring function. One condition in pairwise mode, one whole-cluster check in cluster mode.",
+    "pairwise_prod_snapshot_n5209": {
+      "0.92_shipping_default": {"guard_on_merges": 0, "blocked": 0, "guard_off_merges": 0},
+      "0.90": {"guard_on_merges": 3, "blocked": 55, "guard_off_merges": 16},
+      "0.88": {"guard_on_merges": 3, "blocked": 185, "guard_off_merges": 51},
+      "0.85": {"guard_on_merges": 5, "blocked": 391, "guard_off_merges": 128}
+    },
+    "cluster_mode_prod_snapshot_at_085": {
+      "clusters_total": 74,
+      "clusters_blocked": 72,
+      "clusters_passed": 2,
+      "memories_saved_from_deletion": 102,
+      "guard_off_merges": 104,
+      "guard_on_merges": 2
+    },
+    "fixture_direction_check": {
+      "no_value_paraphrase_trio": "PASSES (merges) — correct",
+      "diverging_port_pair_6432_vs_7432": "BLOCKED — correct",
+      "three_distinct_facts_on_one_topic": "BLOCKED — correct"
+    },
+    "known_false_pass": {
+      "count": 1,
+      "case": "Two agent-report memories whose only distinguishing tokens are a task title in prose and an agentId. The agentId is bare alphanumeric with no hyphen, underscore or dotted digit, so _VALUE_RE does not capture it and the pair reads as value-identical.",
+      "cost": "Both members are ~95% shared boilerplate; under the mmr_union default both task titles survive the merge. Not worth widening _VALUE_RE for — a looser pattern would start capturing ordinary words."
+    }
+  },
+  "threshold_decision": {
+    "default_left_at": 0.92,
+    "why": "With the guard on, dropping to 0.85 buys 5 merges across 5209 memories. The guard makes a lower threshold SAFE; it does not make it WORTHWHILE. This corpus has no duplicate mass left — consolidation has already eaten it.",
+    "what_changed": "The 149-distinct-memories-destroyed scenario is now unreachable through the shipped defaults, whatever threshold an operator passes."
+  },
+  "incidental_fix": {
+    "what": "CLI --strategy default was keep_higher_recall while consolidate()'s own default is mmr_union.",
+    "effect": "Every `memory admin consolidate` invocation silently overrode the safer default shipped in task 13, reverting to the 62%-fact-retention strategy. Its own help text already said mmr_union was recommended.",
+    "now": "CLI default matches the API default."
+  },
+  "tests": {"total": 469, "new": 6, "file": "tests/test_consolidate_guard.py"}
+}

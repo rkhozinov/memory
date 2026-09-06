@@ -107,6 +107,9 @@ def test_consolidate_cluster_concat_appends_related(store):
         cluster=True,
         content_strategy="concat",
         project_scoped=False,
+        # Unique-fact members by design: asserts the content strategy, not
+        # merge eligibility, so it opts out of the value guard.
+        value_guard=False,
     )
     assert result["consolidated"] == 2
 
@@ -125,6 +128,9 @@ def test_consolidate_cluster_keep_longer(store):
         cluster=True,
         content_strategy="keep_longer",
         project_scoped=False,
+        # Unique-fact members by design: asserts the content strategy, not
+        # merge eligibility, so it opts out of the value guard.
+        value_guard=False,
     )
     assert result["consolidated"] == 1
 
@@ -160,7 +166,15 @@ def test_consolidate_cluster_mmr_union_preserves_unique_facts(store):
     conn.execute("UPDATE memories SET recall_count = 5 WHERE content_hash = ?", (seed[0],))
     conn.commit()
 
-    result = store.consolidate(threshold=0.85, cluster=True, content_strategy="mmr_union", project_scoped=False)
+    # Unique-fact members by design: asserts the content strategy, not merge
+    # eligibility, so it opts out of the value guard.
+    result = store.consolidate(
+        threshold=0.85,
+        cluster=True,
+        content_strategy="mmr_union",
+        project_scoped=False,
+        value_guard=False,
+    )
     assert result["consolidated"] == 2
 
     survivor = conn.execute("SELECT content FROM memories WHERE content_hash = ?", (seed[0],)).fetchone()

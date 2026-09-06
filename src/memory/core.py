@@ -4024,6 +4024,7 @@ class MemoryStore:
         cluster: bool = False,
         content_strategy: str = "mmr_union",
         project_scoped: bool = True,
+        value_guard: bool = True,
     ) -> dict:
         """Merge near-duplicate memories deterministically.
 
@@ -4044,6 +4045,14 @@ class MemoryStore:
 
         exclude_types: memory types to skip (default: ["reference"]).
         Pass empty list to include all types.
+
+        value_guard (default True): refuse to merge anything whose members
+        disagree about a concrete value — a port, a version, an id.  Cosine
+        >= 0.85 does not mean duplicate; on the production store 388 of the 393
+        pairs at that threshold carry diverging value tokens, so merging them
+        deletes facts rather than duplicates.  Same discriminator write-time
+        dedup uses (`differs_by_value`).  Pass False only for benchmarks that
+        deliberately seed unique-fact clusters.
         """
         if exclude_types is None:
             exclude_types = ["reference"]
@@ -4060,11 +4069,12 @@ class MemoryStore:
                 exclude_types=exclude_types,
                 content_strategy=content_strategy,
                 project_scoped=project_scoped,
+                value_guard=value_guard,
             )
 
         # --- Pairwise mode (legacy default) ---
         sql = (
-            "SELECT m.id, m.content_hash, m.recall_count, m.created_at, m.tags, "
+            "SELECT m.id, m.content_hash, m.content, m.recall_count, m.created_at, m.tags, "
             "m.importance, m.confidence, m.memory_type "
             "FROM memories m WHERE m.deleted_at IS NULL"
         )
@@ -4112,6 +4122,7 @@ class MemoryStore:
         # Find pairs above threshold (upper triangle only)
         pairs = []
         merged_ids: set[int] = set()
+        blocked_by_guard = 0
         n = len(valid_rows)
         for i in range(n):
             if valid_rows[i]["id"] in merged_ids:
@@ -4122,6 +4133,9 @@ class MemoryStore:
                 sim = float(sim_matrix[i, j])
                 if sim >= threshold:
                     ri, rj = valid_rows[i], valid_rows[j]
+                    if value_guard and differs_by_value(ri["content"], rj["content"]):
+                        blocked_by_guard += 1
+                        continue
                     # Keep the one with higher recall_count; tie-break by older created_at
                     rc_i = ri.get("recall_count", 0) or 0
                     rc_j = rj.get("recall_count", 0) or 0
@@ -4142,11 +4156,12 @@ class MemoryStore:
             return {
                 "dry_run": True,
                 "would_consolidate": len(pairs),
+                "blocked_by_guard": blocked_by_guard,
                 "pairs": pairs,
             }
 
         if not pairs:
-            return {"consolidated": 0, "pairs": []}
+            return {"consolidated": 0, "blocked_by_guard": blocked_by_guard, "pairs": []}
 
         # Execute merges
         conn.execute("BEGIN IMMEDIATE")
@@ -4198,7 +4213,7 @@ class MemoryStore:
             self._rollback_safe(conn)
             raise
 
-        return {"consolidated": len(pairs), "pairs": pairs}
+        return {"consolidated": len(pairs), "blocked_by_guard": blocked_by_guard, "pairs": pairs}
 
     def _consolidate_clusters(
         self,
@@ -4210,6 +4225,7 @@ class MemoryStore:
         exclude_types: list[str],
         content_strategy: str,
         project_scoped: bool,
+        value_guard: bool = True,
     ) -> dict:
         """Cluster-mode consolidation — merge whole connected components.
 
@@ -4229,6 +4245,18 @@ class MemoryStore:
         )
         clusters = clusters_info["clusters"]
 
+        # A cluster merges as a unit, so one diverging pair condemns the whole
+        # component — half-merging it would still delete a fact.
+        blocked_by_guard = 0
+        if value_guard and clusters:
+            kept = []
+            for c in clusters:
+                if self._cluster_has_diverging_values(conn, c["members"]):
+                    blocked_by_guard += 1
+                else:
+                    kept.append(c)
+            clusters = kept
+
         if dry_run:
             return {
                 "dry_run": True,
@@ -4236,11 +4264,12 @@ class MemoryStore:
                 "threshold": threshold,
                 "n_clusters": len(clusters),
                 "would_consolidate": sum(c["size"] - 1 for c in clusters),
+                "blocked_by_guard": blocked_by_guard,
                 "clusters": clusters,
             }
 
         if not clusters:
-            return {"consolidated": 0, "n_clusters": 0, "clusters": []}
+            return {"consolidated": 0, "n_clusters": 0, "blocked_by_guard": blocked_by_guard, "clusters": []}
 
         consolidated_total = 0
         now = time.time()
@@ -4328,8 +4357,23 @@ class MemoryStore:
             "n_clusters": len(clusters),
             "mode": "cluster",
             "threshold": threshold,
+            "blocked_by_guard": blocked_by_guard,
             "clusters": clusters,
         }
+
+    @staticmethod
+    def _cluster_has_diverging_values(conn: sqlite3.Connection, members: list[dict]) -> bool:
+        """True if any two members disagree about a concrete value."""
+        contents = []
+        for m in members:
+            row = conn.execute("SELECT content FROM memories WHERE content_hash = ?", (m["content_hash"],)).fetchone()
+            if row is not None:
+                contents.append(row["content"])
+        return any(
+            differs_by_value(contents[i], contents[j])
+            for i in range(len(contents))
+            for j in range(i + 1, len(contents))
+        )
 
     @staticmethod
     def _cluster_content(

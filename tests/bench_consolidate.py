@@ -177,6 +177,10 @@ def measure(strategy: str) -> dict:
                 cluster=False,
                 exclude_types=[],
                 project_scoped=True,
+                # Every fixture member carries a distinct value by construction
+                # — that is what fact retention measures. The value guard would
+                # correctly block all of it, leaving nothing to measure.
+                value_guard=False,
             )
         else:
             result = store.consolidate(
@@ -185,6 +189,7 @@ def measure(strategy: str) -> dict:
                 content_strategy=strategy,
                 exclude_types=[],
                 project_scoped=True,
+                value_guard=False,
             )
 
         survivors = _surviving(store)
