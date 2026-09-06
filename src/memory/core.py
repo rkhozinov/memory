@@ -1091,12 +1091,19 @@ class MemoryStore:
                        tokenize='porter ascii');
             """
         )
-        # Backfill existing rows — only if memories table already exists
+        # Backfill existing rows — only if memories table already exists.
+        # OR IGNORE does not dedupe here: memory_fts is a virtual table, so a
+        # repeat insert of the same rowid raises no constraint to ignore and is
+        # simply indexed again. This runs on every store open, so without the
+        # NOT IN guard every `memory` invocation re-indexed the whole corpus.
+        # docsize holds one row per indexed rowid and is empty on a fresh index,
+        # which makes the guard both idempotent and self-healing.
         memories_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'").fetchone()
         if memories_exists:
             conn.execute(
-                "INSERT OR IGNORE INTO memory_fts(rowid, content) "
-                "SELECT id, content FROM memories WHERE deleted_at IS NULL"
+                "INSERT INTO memory_fts(rowid, content) "
+                "SELECT id, content FROM memories WHERE deleted_at IS NULL "
+                "AND id NOT IN (SELECT id FROM memory_fts_docsize)"
             )
 
         self._migrate_documents_tables()
@@ -1166,12 +1173,15 @@ class MemoryStore:
             """
         )
 
-        # Backfill FTS for existing documents
+        # Backfill FTS for existing documents. Same one-time guard as memory_fts
+        # above -- unguarded, this added ~3700 index rows and 15-25 MB per open,
+        # which is what grew the store to 288 MB against 127 MB of live data.
         docs_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'").fetchone()
         if docs_exists:
             conn.execute(
-                "INSERT OR IGNORE INTO document_fts(rowid, title, body) "
-                "SELECT id, title, body FROM documents WHERE deleted_at IS NULL"
+                "INSERT INTO document_fts(rowid, title, body) "
+                "SELECT id, title, body FROM documents WHERE deleted_at IS NULL "
+                "AND id NOT IN (SELECT id FROM document_fts_docsize)"
             )
 
         self._migrate_graph_tables()

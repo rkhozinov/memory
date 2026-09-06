@@ -2181,3 +2181,36 @@ def test_purge_after_delete_does_not_corrupt_fts(store):
     assert store.purge(retention_days=0)["purged"] == 1
     conn = store._get_conn()
     conn.execute("INSERT INTO memory_fts(memory_fts) VALUES('integrity-check')")
+
+
+def test_reopening_the_store_does_not_reindex_fts(store):
+    """Schema init must not re-insert rows already in the FTS index.
+
+    memory_fts/document_fts are virtual tables, so a repeat insert of the same
+    rowid raises no constraint and is indexed again. Because init runs on every
+    open, an unguarded backfill grew the file 135 -> 194 MB over three no-op CLI
+    invocations. docsize holds one row per indexed rowid, so it must stay flat.
+    """
+    store.store("reopen probe about pgbouncer pooling", tags=["test"])
+    store.store_doc(title="reopen doc", summary="s", body="a body about pooling", tags=["test"])
+    conn = store._get_conn()
+
+    def sizes():
+        return (
+            conn.execute("select count(*) from memory_fts_docsize").fetchone()[0],
+            conn.execute("select count(*) from document_fts_docsize").fetchone()[0],
+        )
+
+    before = sizes()
+    for _ in range(3):
+        MemoryStore(db_path=store.db_path)._get_conn()
+    assert sizes() == before
+
+
+def test_backfill_still_repairs_an_empty_fts_index(store):
+    """The guard must not block a genuine rebuild after the index is dropped."""
+    store.store("repair probe about pgbouncer pooling", tags=["test"])
+    conn = store._get_conn()
+    conn.execute("DROP TABLE memory_fts")
+    reopened = MemoryStore(db_path=store.db_path)
+    assert reopened.search("pgbouncer pooling", limit=5), "index was not rebuilt"
