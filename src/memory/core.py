@@ -352,6 +352,50 @@ def differs_by_value(new: str, existing: str) -> bool:
     return bool(a ^ b)
 
 
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+# Frontmatter keys worth mirroring. Embeddings and FTS rows are derived state and
+# have no business in a text mirror.
+_FRONTMATTER_KEYS = (
+    "content_hash",
+    "memory_type",
+    "doc_type",
+    "created_at",
+    "updated_at",
+    "importance",
+    "confidence",
+    "recall_count",
+    "version",
+)
+
+
+def _slug(text: str, limit: int = 60) -> str:
+    return _SLUG_RE.sub("-", text.lower()).strip("-")[:limit] or "untitled"
+
+
+def _markdown_record(record: dict, *, body: str, title: str | None) -> str:
+    """YAML frontmatter followed by the body. Values are scalars or a tag list,
+    so a hand-rolled emitter is enough and keeps PyYAML out of the dependency
+    set."""
+    lines = ["---"]
+    for key in _FRONTMATTER_KEYS:
+        val = record.get(key)
+        if val is None:
+            continue
+        out_key = "type" if key in ("memory_type", "doc_type") else key
+        lines.append(f"{out_key}: {val}")
+    tags = record.get("tags") or []
+    if tags:
+        lines.append("tags:")
+        lines.extend(f"  - {t}" for t in tags)
+    lines.append("---")
+    if title:
+        lines.append(f"\n# {title}")
+    lines.append("")
+    lines.append(body.rstrip())
+    return "\n".join(lines) + "\n"
+
+
 def _promote_exact_matches(results: list[dict], tokens: list[str]) -> list[dict]:
     """Stable-reorder results so any whose content contains an identifier token
     verbatim (case-insensitive) come first, preserving fusion order within each
@@ -5965,6 +6009,57 @@ class MemoryStore:
             result["documents"] = []
 
         return result
+
+    def export_markdown(self, dest: str | Path, include_documents: bool = True) -> dict:
+        """Mirror the store to markdown files on disk — one file per record.
+
+        Memories land in <dest>/memories/<type>/<hash16>.md with YAML
+        frontmatter; documents in <dest>/documents/<slug>-<hash16>.md.  Names are
+        derived from the content hash, so re-running overwrites in place instead
+        of accumulating copies.
+
+        # No pruning: a memory deleted since the last run leaves its file behind.
+        # Delete the directory and re-export if that matters.
+        """
+        dest = Path(dest)
+        payload = self.export_all(include_documents=include_documents)
+
+        written = 0
+        # The documents table has no unique constraint on content_hash, so two
+        # rows can hash identically and land on the same filename. Silently
+        # writing one file for two records would make the mirror lie about its
+        # own completeness; count the clash instead.
+        seen: set[Path] = set()
+        collisions = 0
+        for m in payload["memories"]:
+            h = m["content_hash"]
+            path = dest / "memories" / (m.get("memory_type") or "note") / f"{h[:16]}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path in seen:
+                collisions += 1
+                continue
+            seen.add(path)
+            path.write_text(_markdown_record(m, body=m.get("content", ""), title=None))
+            written += 1
+
+        docs = 0
+        for d in payload.get("documents", []):
+            h = d["content_hash"]
+            path = dest / "documents" / f"{_slug(d.get('title') or 'untitled')}-{h[:16]}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path in seen:
+                collisions += 1
+                continue
+            seen.add(path)
+            path.write_text(_markdown_record(d, body=d.get("body", ""), title=d.get("title")))
+            docs += 1
+
+        return {
+            "dest": str(dest),
+            "memories": written,
+            "documents": docs,
+            "collisions": collisions,
+        }
 
     def import_all(self, data: dict, force: bool = False) -> dict:
         """Import memories and documents from an export dict.

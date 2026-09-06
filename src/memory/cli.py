@@ -474,6 +474,9 @@ def cmd_admin_undelete(args, store: MemoryStore) -> None:
 
 
 def cmd_admin_export(args, store: MemoryStore) -> None:
+    if args.markdown:
+        _json_out(store.export_markdown(args.markdown, include_documents=not args.no_documents))
+        return
     result = store.export_all(include_documents=not args.no_documents)
     if args.output:
         with open(args.output, "w") as f:
@@ -906,9 +909,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p = admin_sub.add_parser("demoted", help="List memories most penalised by demotion ranker")
     p.add_argument("--limit", "-n", default=50, type=_positive_int)
 
-    p = admin_sub.add_parser("export", help="Export to JSON")
+    p = admin_sub.add_parser("export", help="Export to JSON, or to a markdown mirror")
     p.add_argument("--output", "-o", default=None)
     p.add_argument("--no-documents", action="store_true")
+    p.add_argument(
+        "--markdown",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Write a markdown mirror into DIR instead of JSON: one file per "
+            "record, named from its content hash so re-running overwrites in "
+            "place. Does not prune records deleted since the last run."
+        ),
+    )
 
     p = admin_sub.add_parser("import", help="Import from JSON")
     p.add_argument("--file", "-f", dest="file_path", default="-")
