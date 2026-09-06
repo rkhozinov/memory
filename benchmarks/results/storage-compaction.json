@@ -1,0 +1,69 @@
+{
+  "_meta": {
+    "generated": "2026-09-06",
+    "question": "How much space do the raw document bodies take, and should they be compressed?",
+    "answer_in_one_line": "Compression is the wrong first move. 169 MB of the 302 MB file is unreclaimed housekeeping debt that costs 2 seconds and zero risk to remove — four times what compressing every body would save."
+  },
+  "where_the_space_is": {
+    "file_size_mb": 302.4,
+    "live_pages_mb": 192.7,
+    "free_pages_mb": 109.7,
+    "top_objects_mb": {
+      "document_fts_data": 73.9,
+      "documents": 59.7,
+      "memory_embeddings_vector_chunks00": 22.1,
+      "memories": 7.7,
+      "memory_fts_data": 7.4,
+      "document_embeddings_vector_chunks00": 6.3
+    },
+    "raw_body_bytes_mb": 57.8,
+    "archive_family_share": "56.3 MB of 57.8 MB (97.5%) is session-archive / transcript / session"
+  },
+
+  "the_cheap_win_fts5_optimize_plus_vacuum": {
+    "document_fts_data_before_mb": 95.2,
+    "document_fts_data_after_optimize_mb": 21.2,
+    "optimize_ratio": "4.5x",
+    "optimize_seconds": 1.2,
+    "file_after_optimize_and_vacuum_mb": 133.4,
+    "vacuum_seconds": 0.7,
+    "total_saved_mb": 169.0,
+    "total_saved_pct": 56,
+    "safety": {
+      "pragma_integrity_check": "ok",
+      "row_counts": "identical (5972 memories, 1100 documents)",
+      "search_parity": "doc FTS and memory search return identical top-5 hashes on every probe query"
+    },
+    "why_it_had_grown": "FTS5 writes each transaction as a new segment and only merges them on demand. Neither VACUUM nor INSERT INTO <fts>(<fts>) VALUES('optimize') appears anywhere in src/ or hooks/, so segments have accumulated since February and freed pages were never returned to the OS.",
+    "volatility_note": "document_fts_data measured 90.6, 52.8 and 73.9 MB within a few minutes of each other as background writes triggered partial merges. Any single reading of it is a snapshot, not a level."
+  },
+
+  "does_sqlite_have_built_in_compression": {
+    "short_answer": "No. Stock SQLite has no transparent page or column compression.",
+    "options": {
+      "ZIPVFS": "Transparent page-level compression, but it ships only with the commercial SQLite Encryption Extension. Paid licence.",
+      "sqlite-zstd": "Third-party Rust extension, transparent row-level compression. Would have to be loaded by every process that opens the DB — CLI, MCP server, daemon and each hook subprocess. Operational cost is the real price, not the ratio.",
+      "sqlar": "An archive FORMAT that stores compressed files in a table. Not transparent compression of an existing schema.",
+      "application_level": "Compress documents.body yourself before INSERT. No extension needed, works everywhere."
+    }
+  },
+
+  "if_bodies_were_compressed_anyway": {
+    "measured_per_document_ratios": {
+      "zlib_level_6": {"mb": 15.7, "ratio": 3.68, "saves_mb": 42.1, "seconds": 0.7},
+      "zlib_level_9": {"mb": 15.6, "ratio": 3.70, "saves_mb": 42.1, "seconds": 0.8},
+      "lzma": {"mb": 13.9, "ratio": 4.16, "saves_mb": 43.9, "seconds": 4.2},
+      "bz2": {"mb": 14.3, "ratio": 4.04, "saves_mb": 43.4, "seconds": 2.4}
+    },
+    "note": "Each body compressed alone, which is how a column would work — no cross-document dictionary. Transcripts are repetitive English so ~3.7x with plain zlib is expected.",
+    "residual_gain": "Applied AFTER optimize+vacuum, this takes 133.4 MB to roughly 91 MB — still 31%, but no longer the dominant term.",
+    "the_catch": "document_fts is external-content (content='documents', content_rowid='id'), so FTS5 reads documents.body directly. Compressing that column to a BLOB breaks the FTS rebuild path (core.py:1173 populates the index by selecting body out of documents) and any code reading body without decompressing. FTS5 keeps no copy of its own — that is why document_fts has no _content shadow table — so the index cannot be rebuilt from itself."
+  },
+
+  "recommended_order": [
+    "1. FTS5 optimize on both indexes, then VACUUM. 169 MB, ~2s, no schema change, search output byte-identical.",
+    "2. Run the held archive prune (208 docs, 13 MB of body) and purge the 838 expired soft-deletes, then VACUUM again.",
+    "3. Only then consider compression, and only with a decompress shim on every body read plus a rebuild path that does not select raw body.",
+    "4. Add optimize+VACUUM to the daily cleanup so this debt stops accruing. That is the actual fix; step 1 is a one-off."
+  ]
+}
