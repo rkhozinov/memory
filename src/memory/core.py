@@ -3426,8 +3426,12 @@ class MemoryStore:
                 (row_id,),
             ).fetchone()
             had_embedding = emb_row is not None
+            # memory_fts is external-content, so selecting from it reads the
+            # memories row rather than the index -- that row still exists while
+            # soft-deleted, so this probe always said "already indexed" and the
+            # restore below never ran. docsize has one row per INDEXED rowid.
             fts_row = conn.execute(
-                "SELECT rowid FROM memory_fts WHERE rowid = ?",
+                "SELECT id FROM memory_fts_docsize WHERE id = ?",
                 (row_id,),
             ).fetchone()
             had_fts = fts_row is not None

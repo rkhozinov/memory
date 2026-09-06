@@ -2337,3 +2337,25 @@ def test_too_long_to_embed_is_not_fooled_by_the_padded_tokenizer():
     assert count_tokens(short) < MAX_SEQ_LENGTH < count_tokens(long_text)
     assert not _too_long_to_embed(short, MAX_SEQ_LENGTH)
     assert _too_long_to_embed(long_text, MAX_SEQ_LENGTH)
+
+
+def test_undelete_restores_lexical_searchability(store):
+    """Undelete must put the row back in the FTS index, not just flip the flag.
+
+    memory_fts is external-content, so probing it with a plain SELECT reads the
+    memories row (which survives a soft delete) instead of the index -- the
+    restore was skipped every time and the memory came back semantically
+    findable but invisible to exact-token search.
+    """
+    h = store.store("undelete probe about pgbouncer transaction pooling", tags=["test"])["content_hash"]
+    row_id = store._get_conn().execute("select id from memories where content_hash = ?", (h,)).fetchone()[0]
+    store.delete(h)
+    assert store.undelete(h)["undeleted"]
+    conn = store._get_conn()
+    assert conn.execute("select count(*) from memory_fts_docsize where id = ?", (row_id,)).fetchone()[0] == 1
+    assert (
+        conn.execute(
+            "select count(*) from memory_fts where memory_fts match 'pgbouncer' and rowid = ?", (row_id,)
+        ).fetchone()[0]
+        == 1
+    )
