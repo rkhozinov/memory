@@ -1,0 +1,79 @@
+{
+  "_meta": {
+    "generated": "2026-09-06",
+    "question": "Should small related memories be consolidated into bigger ones? (synthesis, not dedup)",
+    "harness": "tests/bench_merge_related.py",
+    "embedding_facts": {
+      "dims": 768,
+      "model": "nomic-ai/modernbert-embed-base",
+      "max_seq_length": 512,
+      "history": "all-MiniLM-L6-v2 (384) -> modernbert-embed-base (768). There was never a 785 or a 1024."
+    },
+    "note": "Aggregates only; queries derive from verbatim production content."
+  },
+  "headroom": {
+    "memory_chars": {
+      "p50": 401,
+      "p90": 733,
+      "p99": 8337,
+      "max": 31282
+    },
+    "approx_tokens": {
+      "p50": 100,
+      "p90": 183
+    },
+    "already_over_512_tokens": "149 of 5972 (2.5%)",
+    "overflow_if_merged": {
+      "2x": "5%",
+      "3x": "12%",
+      "5x": "48%"
+    },
+    "reading": "Merging 2-3 typical memories stays inside the window. Merging 5 puts nearly half of them past it, and everything past 512 tokens is simply not embedded."
+  },
+  "two_sided_result": {
+    "0.80": {
+      "groups": 80,
+      "folded_away": 89,
+      "cost_single_fact_probes": 169,
+      "cost_mrr": [
+        0.997,
+        0.9941
+      ],
+      "cost_delta": -0.003,
+      "facts_lost_from_topk": 1,
+      "benefit_crosscut_probes": 80,
+      "benefit_before_both_in_topk": 26,
+      "benefit_after_merged_in_topk": 77
+    },
+    "0.85": {
+      "groups": 80,
+      "folded_away": 87,
+      "cost_single_fact_probes": 167,
+      "cost_mrr": [
+        0.982,
+        0.9561
+      ],
+      "cost_delta": -0.0259,
+      "facts_lost_from_topk": 4,
+      "benefit_crosscut_probes": 80,
+      "benefit_before_both_in_topk": 39,
+      "benefit_after_merged_in_topk": 78
+    },
+    "also_measured": {
+      "0.75_cost_delta": -0.023,
+      "0.90_cost_delta": -0.133,
+      "note": "0.90 yielded only 7 groups / 15 probes and is not readable. 0.75 folds more aggressively for a larger loss."
+    }
+  },
+  "honest_limits": {
+    "first_cut_was_one_sided": "The initial harness only built queries from tokens unique to ONE member \u2014 the hardest case for a merge. It measured cost and could not see benefit, and it read as a flat 'merging hurts'. The cross-cutting arm was added after noticing that.",
+    "part_of_the_benefit_is_structural": "before_both requires TWO memories in the top-10; after requires ONE. Some of the 26->77 gain is simply that one item is easier to place than two. That is a real retrieval advantage, not an artifact, but it is not evidence that the merged text is better written.",
+    "no_dedup_gain": "This is orthogonal to duplication. The store has 0 exact duplicates and 30 value-identical pairs in 5972 memories; merging here folds DISTINCT facts together on purpose."
+  },
+  "verdict": {
+    "answer": "Yes, but narrowly: at cosine 0.80, in groups of 2-3, with mmr_union.",
+    "why": "At 0.80 the cost is MRR -0.003 and one fact of 169 falling out of the top-10, while cross-cutting queries answered by a single hit go from 26/80 to 77/80. At 0.85 the cost triples (-0.026, 4 facts) for a smaller relative gain.",
+    "do_not": "Do not merge more than 3 at a time (5x puts 48% of memories past the 512-token window, where the tail stops being embedded), and do not reuse the dedup path for it \u2014 the value guard exists precisely to stop consolidate() from folding diverging facts, which is what this does deliberately.",
+    "not_shipped": "Measured, not built. It needs a separate entry point from consolidate(), and the injection-budget effect of larger memories is unmeasured."
+  }
+}
