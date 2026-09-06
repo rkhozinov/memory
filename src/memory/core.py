@@ -334,6 +334,24 @@ def _value_tokens(text: str | None) -> set[str]:
     return {t.strip("`").lower() for t in _VALUE_RE.findall(text)}
 
 
+def _too_long_to_embed(text: str, max_tokens: int) -> bool:
+    """True if `text` would be truncated by the encoder's input window.
+
+    Uses the real tokenizer when it is loaded, and falls back to a chars/4
+    estimate when it is not -- the fallback is only reached in environments
+    without the model, and erring toward "too long" there just declines a merge.
+    """
+    try:
+        from .embeddings import get_model
+
+        tok = getattr(get_model(), "_tokenizer", None)
+        if tok is not None:
+            return len(tok.encode(text).ids) > max_tokens
+    except Exception as e:  # any model failure falls back to the estimate, never blocks
+        sys.stderr.write(f"[synthesize] tokenizer unavailable, estimating length: {e}\n")
+    return len(text) / 4 > max_tokens
+
+
 def differs_by_value(new: str, existing: str) -> bool:
     """True when the two texts disagree about a concrete value.
 
@@ -4000,6 +4018,55 @@ class MemoryStore:
             "bytes_freed": before - after,
         }
 
+    def synthesize(
+        self,
+        threshold: float = 0.80,
+        max_group: int = 3,
+        dry_run: bool = False,
+        exclude_types: list[str] | None = None,
+        project_scoped: bool = True,
+    ) -> dict:
+        """Merge small groups of *related* memories into one.
+
+        This is deliberately not deduplication and must not be confused with
+        `consolidate()`. There are no duplicates left to remove -- 30 mergeable
+        pairs in 5972 memories -- so this folds together memories that state
+        genuinely different facts about one topic. `consolidate()`'s value guard
+        exists precisely to stop that, which is why this runs with the guard off
+        and behind its own entry point rather than as a looser threshold.
+
+        Measured on the production corpus: at 0.80 with groups of 2-3, the cost
+        of burying a single fact is MRR 0.997 -> 0.994 and 1 fact lost of 169,
+        while queries spanning two members go from 26/80 answered by a single
+        hit to 77/80. At 0.85 the cost grows to -0.026 for no extra benefit.
+
+        `max_group` is not a style preference. Everything past the encoder's
+        512-token window is truncated and never embedded; merging 2x pushes 5%
+        of memories past it, 3x pushes 12%, 5x pushes 48%. Groups whose merged
+        text would overflow the window are skipped rather than truncated.
+
+        Originals are soft-deleted with a `merged_into` provenance edge, so the
+        30-day purge window is the undo.
+        """
+        if max_group < 2:
+            raise ValueError("max_group must be at least 2")
+        from .embeddings import MAX_SEQ_LENGTH
+
+        result = self.consolidate(
+            threshold=threshold,
+            dry_run=dry_run,
+            exclude_types=exclude_types,
+            cluster=True,
+            content_strategy="mmr_union",
+            project_scoped=project_scoped,
+            value_guard=False,
+            max_cluster_size=max_group,
+            max_merged_tokens=MAX_SEQ_LENGTH,
+        )
+        result["mode"] = "synthesize"
+        result["max_group"] = max_group
+        return result
+
     def find_clusters(
         self,
         threshold: float = 0.85,
@@ -4130,19 +4197,23 @@ class MemoryStore:
         for member_idxs in groups.values():
             if len(member_idxs) < min_cluster_size:
                 continue
-            # Split if too large: keep top-K closest to centroid, emit remainder separately.
-            if len(member_idxs) > max_cluster_size:
+            # Split if too large: repeatedly peel off the max_cluster_size members
+            # closest to the running centroid. Splitting once and emitting the
+            # whole remainder as a single cluster left groups far over the cap --
+            # a max_cluster_size of 3 produced a 53-member group on the real
+            # corpus, which matters because the caller may be sizing merges
+            # against the encoder's input window.
+            while len(member_idxs) > max_cluster_size:
                 mat = np.stack([vecs[i] for i in member_idxs])
                 centroid = mat.mean(axis=0)
                 centroid /= np.linalg.norm(centroid) + 1e-9
-                proximity = mat @ centroid
-                order = np.argsort(-proximity)
-                kept = [member_idxs[int(k)] for k in order[:max_cluster_size]]
-                spill = [member_idxs[int(k)] for k in order[max_cluster_size:]]
-                if len(spill) >= min_cluster_size:
-                    clusters.append(_format_cluster(spill, meta, vecs, np))
-                member_idxs = kept
-            clusters.append(_format_cluster(member_idxs, meta, vecs, np))
+                order = np.argsort(-(mat @ centroid))
+                clusters.append(
+                    _format_cluster([member_idxs[int(k)] for k in order[:max_cluster_size]], meta, vecs, np)
+                )
+                member_idxs = [member_idxs[int(k)] for k in order[max_cluster_size:]]
+            if len(member_idxs) >= min_cluster_size:
+                clusters.append(_format_cluster(member_idxs, meta, vecs, np))
 
         clusters.sort(key=lambda c: -c["size"])
         return {"threshold": threshold, "n_clusters": len(clusters), "clusters": clusters}
@@ -4156,6 +4227,8 @@ class MemoryStore:
         content_strategy: str = "mmr_union",
         project_scoped: bool = True,
         value_guard: bool = True,
+        max_cluster_size: int = 10,
+        max_merged_tokens: int | None = None,
     ) -> dict:
         """Merge near-duplicate memories deterministically.
 
@@ -4201,6 +4274,8 @@ class MemoryStore:
                 content_strategy=content_strategy,
                 project_scoped=project_scoped,
                 value_guard=value_guard,
+                max_cluster_size=max_cluster_size,
+                max_merged_tokens=max_merged_tokens,
             )
 
         # --- Pairwise mode (legacy default) ---
@@ -4357,6 +4432,8 @@ class MemoryStore:
         content_strategy: str,
         project_scoped: bool,
         value_guard: bool = True,
+        max_cluster_size: int = 10,
+        max_merged_tokens: int | None = None,
     ) -> dict:
         """Cluster-mode consolidation — merge whole connected components.
 
@@ -4373,6 +4450,7 @@ class MemoryStore:
             threshold=threshold,
             exclude_types=exclude_types,
             project_scoped=project_scoped,
+            max_cluster_size=max_cluster_size,
         )
         clusters = clusters_info["clusters"]
 
@@ -4388,6 +4466,29 @@ class MemoryStore:
                     kept.append(c)
             clusters = kept
 
+        # Decide the over-long skips here, before the dry-run branch, so a dry
+        # run reports exactly what a real run will do. Computing the merged text
+        # costs embeddings, but a dry run that over-promises is worse than a slow
+        # one -- `doc delete --dry-run` used to claim 2 and remove 1.
+        skipped_too_long = 0
+        merged_content: dict[str, str] = {}
+        if max_merged_tokens is not None and clusters:
+            kept = []
+            for c in clusters:
+                survivor_row = conn.execute(
+                    "SELECT id, content, tags FROM memories WHERE content_hash = ?",
+                    (c["survivor_hash"],),
+                ).fetchone()
+                if survivor_row is None:
+                    continue
+                text = self._cluster_content(conn, survivor_row, c["survivor_hash"], c["members"], content_strategy)
+                if _too_long_to_embed(text, max_merged_tokens):
+                    skipped_too_long += 1
+                    continue
+                merged_content[c["survivor_hash"]] = text
+                kept.append(c)
+            clusters = kept
+
         if dry_run:
             return {
                 "dry_run": True,
@@ -4396,11 +4497,18 @@ class MemoryStore:
                 "n_clusters": len(clusters),
                 "would_consolidate": sum(c["size"] - 1 for c in clusters),
                 "blocked_by_guard": blocked_by_guard,
+                "skipped_too_long": skipped_too_long,
                 "clusters": clusters,
             }
 
         if not clusters:
-            return {"consolidated": 0, "n_clusters": 0, "blocked_by_guard": blocked_by_guard, "clusters": []}
+            return {
+                "consolidated": 0,
+                "n_clusters": 0,
+                "blocked_by_guard": blocked_by_guard,
+                "skipped_too_long": skipped_too_long,
+                "clusters": [],
+            }
 
         consolidated_total = 0
         now = time.time()
@@ -4417,7 +4525,12 @@ class MemoryStore:
                     continue
 
                 # Build new survivor content + tags from the cluster.
-                new_content = self._cluster_content(conn, survivor_row, survivor_hash, members, content_strategy)
+                # Reuse the text the length check above already computed, so the
+                # merge that happens is the one that was measured and approved.
+                new_content = merged_content.get(survivor_hash)
+                if new_content is None:
+                    new_content = self._cluster_content(conn, survivor_row, survivor_hash, members, content_strategy)
+
                 merged_tags = self._cluster_tags(conn, survivor_hash, members)
 
                 conn.execute(
@@ -4489,6 +4602,7 @@ class MemoryStore:
             "mode": "cluster",
             "threshold": threshold,
             "blocked_by_guard": blocked_by_guard,
+            "skipped_too_long": skipped_too_long,
             "clusters": clusters,
         }
 

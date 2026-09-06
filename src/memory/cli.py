@@ -474,6 +474,17 @@ def cmd_admin_compact(args, store: MemoryStore) -> None:
     _json_out(store.compact())
 
 
+def cmd_admin_synthesize(args, store: MemoryStore) -> None:
+    _json_out(
+        store.synthesize(
+            threshold=args.threshold,
+            max_group=args.max_group,
+            dry_run=args.dry_run,
+            exclude_types=_parse_tags(args.exclude_types) or [],
+        )
+    )
+
+
 def cmd_admin_undelete(args, store: MemoryStore) -> None:
     _json_out(store.undelete(content_hash=args.content_hash, dry_run=args.dry_run))
 
@@ -569,7 +580,8 @@ def cmd_admin(args, store: MemoryStore) -> None:
     admin_cmd = getattr(args, "admin_command", None)
     if not admin_cmd:
         print(
-            "Usage: memory admin {cleanup|consolidate|decay|dream|refresh-hubness|demoted|purge|compact|undelete|"
+            "Usage: memory admin {cleanup|consolidate|synthesize|decay|dream|refresh-hubness|"
+            "demoted|purge|compact|undelete|"
             "export|import|tags|stats|briefing|graph|auto-archive-pending|extract-pending|index}",
             file=sys.stderr,
         )
@@ -635,6 +647,7 @@ _ADMIN_DISPATCH = {
     "demoted": cmd_admin_demoted,
     "purge": cmd_admin_purge,
     "compact": cmd_admin_compact,
+    "synthesize": cmd_admin_synthesize,
     "undelete": cmd_admin_undelete,
     "export": cmd_admin_export,
     "import": cmd_admin_import,
@@ -905,6 +918,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "compact",
         help="Merge FTS segments and VACUUM (dream runs this daily)",
     )
+
+    p = admin_sub.add_parser(
+        "synthesize",
+        help="Merge small groups of related (not duplicate) memories into one",
+    )
+    p.add_argument("--threshold", default=0.80, type=float)
+    p.add_argument(
+        "--max-group",
+        default=3,
+        type=int,
+        help="Max memories per merge. Above 3 the merged text overflows the 512-token encoder window.",
+    )
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--exclude-types", default="reference")
 
     p = admin_sub.add_parser(
         "undelete",

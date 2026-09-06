@@ -2247,3 +2247,81 @@ def test_purge_spares_documents_inside_the_retention_window(store):
     store.delete_doc(h)
     assert store.purge(retention_days=30)["documents_purged"] == 0
     assert store.get_doc(h) is not None
+
+
+# Tests pass an explicit threshold. The 0.80 default comes from a sweep over the
+# production corpus; three hand-written sentences about one topic only reach
+# ~0.70, so pinning 0.80 here would test the fixture, not the code.
+SYNTH_T = 0.70
+
+
+def _synth_group(store, prefix):
+    """Three memories about one topic that state different facts about it."""
+    return [
+        store.store(f"{prefix} runs behind PgBouncer in transaction pooling mode.", tags=["project:p"])["content_hash"],
+        store.store(f"{prefix} PgBouncer pool is sized at 40 server connections.", tags=["project:p"])["content_hash"],
+        store.store(
+            f"{prefix} PgBouncer transaction mode forbids session-level prepared statements.", tags=["project:p"]
+        )["content_hash"],
+    ]
+
+
+def test_synthesize_merges_related_memories_the_value_guard_would_block(store):
+    """synthesize folds distinct facts on purpose; consolidate must not."""
+    _synth_group(store, "The billing service")
+    guarded = store.consolidate(threshold=SYNTH_T, cluster=True, dry_run=True, exclude_types=[])
+    merged = store.synthesize(threshold=SYNTH_T, dry_run=True, exclude_types=[])
+    assert merged["would_consolidate"] >= 1
+    assert guarded["would_consolidate"] < merged["would_consolidate"], (
+        "value guard should block what synthesize deliberately merges"
+    )
+
+
+def test_synthesize_leaves_originals_recoverable(store):
+    """Merged-away originals are soft-deleted, so the purge window is the undo."""
+    hashes = _synth_group(store, "The billing service")
+    assert store.synthesize(threshold=SYNTH_T, exclude_types=[])["consolidated"] == 2
+    conn = store._get_conn()
+
+    def is_deleted(h):
+        return conn.execute("select deleted_at is not null from memories where content_hash = ?", (h,)).fetchone()[0]
+
+    gone = [h for h in hashes if is_deleted(h)]
+    assert len(gone) == 2, "expected one survivor"
+    store.undelete(gone[0])
+    assert not is_deleted(gone[0])
+
+
+def test_synthesize_skips_groups_that_overflow_the_encoder_window(store):
+    """Past 512 tokens the tail is truncated and never embedded, so decline."""
+    long_tail = " ".join(f"clause number {i} about pooling behaviour" for i in range(220))
+    for i in range(3):
+        store.store(f"The billing service PgBouncer note {i}. {long_tail}", tags=["project:p"])
+    result = store.synthesize(threshold=SYNTH_T, exclude_types=[])
+    assert result["skipped_too_long"] >= 1
+    assert result["consolidated"] == 0
+
+
+def test_synthesize_rejects_a_meaningless_group_size(store):
+    with pytest.raises(ValueError):
+        store.synthesize(max_group=1)
+
+
+def test_find_clusters_splits_oversized_components_all_the_way_down(store):
+    """Every emitted group must respect max_cluster_size, not just the first.
+
+    Peeling once and emitting the whole remainder produced a 53-member group
+    under a cap of 3 on the production corpus.
+    """
+    for i in range(8):
+        store.store(
+            f"The billing service PgBouncer note {i}: transaction pooling mode detail {i}.",
+            tags=["project:p"],
+        )
+    for cap in (2, 3):
+        sizes = [
+            c["size"]
+            for c in store.find_clusters(threshold=SYNTH_T, exclude_types=[], max_cluster_size=cap)["clusters"]
+        ]
+        assert sizes, f"no clusters at cap {cap}"
+        assert max(sizes) <= cap, f"cap {cap} produced {sizes}"
