@@ -1,0 +1,75 @@
+{
+  "_meta": {
+    "generated": "2026-09-06",
+    "scope": "The four features shipped in this session, measured on a snapshot of the production store (5216 non-reference memories, 1099 documents, 616 session archives).",
+    "method": "Cold numbers are a fresh CLI process (/usr/bin/time -p, the way a hook or a user invokes it). Warm numbers are in-process, median of 3-5 runs.",
+    "caveat": "Read the cold numbers. The warm ones reuse one MemoryStore and hide the ~0.9s process start every real invocation pays — the same artifact that made an earlier 6.2ms p50 misleading."
+  },
+
+  "consolidation_value_guard": {
+    "what": "consolidate() refuses to merge members that disagree about a concrete value.",
+    "cost_isolated": {
+      "per_pair_us": 74.9,
+      "0.92_default": {"pairs_above_threshold": 1, "guard_ms": 0.03},
+      "0.90": {"pairs_above_threshold": 59, "guard_ms": 4.4},
+      "0.85": {"pairs_above_threshold": 426, "guard_ms": 31.9},
+      "for_scale_similarity_matmul_ms": 34.1,
+      "reading": "The guard only runs on pairs already above threshold, so its worst case costs about the same as the single 5216x5216 matmul it rides on — roughly 3% of a ~1.1s consolidate() call. Free in practice."
+    },
+    "cost_end_to_end_warm_ms": {
+      "0.92": {"guard_on": 1082.6, "guard_off": 1081.5},
+      "0.90": {"guard_on": 1108.8, "guard_off": 1148.9},
+      "0.85": {"guard_on": 1137.6, "guard_off": 1187.6},
+      "reading": "Differences are inside run-to-run noise on a ~1.1s operation; two of three read negative because a blocked pair skips the merge bookkeeping. Use the isolated numbers, not these."
+    },
+    "effect": {
+      "0.92_shipping_default": {"merges_guard_on": 0, "blocked": 1, "merges_guard_off": 1},
+      "0.90": {"merges_guard_on": 3, "blocked": 56, "merges_guard_off": 17},
+      "0.85": {"merges_guard_on": 5, "blocked": 394, "merges_guard_off": 131},
+      "note": "The guard is no longer inert at the shipping default. Earlier today 0.92 had zero pairs either way; the store has since grown and one pair now clears 0.92 with diverging values. Without the guard that pair would have merged and dropped a fact."
+    }
+  },
+
+  "doc_list_depth_summary": {
+    "what": "`memory doc list --depth summary` omits each document's body.",
+    "measured_on": "--type session-archive --page-size 50, cold CLI",
+    "full": {"bytes": 4062359, "wall_s": 1.57},
+    "summary": {"bytes": 61830, "wall_s": 0.74},
+    "delta": {"bytes": "66x smaller", "wall": "2.1x faster"},
+    "reading": "The saving is not just transfer size — serialising 4 MB of bodies was about half the wall time."
+  },
+
+  "markdown_export_mirror": {
+    "what": "`memory admin export --markdown DIR`, one file per record.",
+    "wall_s": 1.45,
+    "memories": 5972,
+    "documents": 1099,
+    "files_written": 7071,
+    "on_disk": "82 MB",
+    "collisions": 0,
+    "throughput_records_per_s": 4877,
+    "note": "collisions was 1 before the duplicate documents row was removed earlier today; it is the counter that surfaced that row in the first place."
+  },
+
+  "handoff_prune_archives": {
+    "what": "Retention policy for /hand:off session archives.",
+    "dry_run_wall_s": 3.27,
+    "scanned": 616,
+    "kept_open": 278,
+    "kept_recent": 130,
+    "would_delete": 208,
+    "per_delete_wall_s": 0.82,
+    "reading": "A dry run over the whole archive set is one pass and ~3s. Deletion is the expensive half at 0.82s per document, all of it cold CLI start — which is why the auto-prune caps at 50 per run (~41s worst case, spread over days) rather than doing 208 in one handoff (~2.8 min)."
+  },
+
+  "retrieval_regression_check": {
+    "method": "AST-level comparison of every function body in core.py between 1a31d85 (pre-session) and HEAD, rather than a noisy end-to-end replay.",
+    "changed_existing_functions": ["consolidate", "_consolidate_clusters", "delete_doc", "list_docs"],
+    "added_functions": ["_cluster_has_diverging_values", "export_markdown", "_markdown_record", "_slug"],
+    "removed_functions": [],
+    "search_path_functions_inspected": 16,
+    "search_path_functions_altered": 0,
+    "reading": "search, _search_hybrid/_semantic/_fts/_exact/_graph, _weighted_fuse, _rrf_fuse, compute_activation, _get_hubness, _promote_exact_matches, _build_time_filter and the doc-search paths are byte-identical to the pre-session revision. Retrieval quality cannot have moved.",
+    "tests": {"before": 469, "after": 480}
+  }
+}
