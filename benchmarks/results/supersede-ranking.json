@@ -1,0 +1,79 @@
+{
+  "_meta": {
+    "probe": "task 40 \u2014 do superseded facts outrank their replacements",
+    "harness": "tests/bench_supersede_ranking.py",
+    "threshold": 0.9,
+    "limit": 10,
+    "note": "Aggregates only; the pairs quote verbatim production content."
+  },
+  "population": {
+    "candidate_pairs": 55,
+    "no_shared_query": 0,
+    "unreachable_by_either": 16,
+    "scored": 39
+  },
+  "outcomes": {
+    "stale_wins": 8,
+    "fresh_wins": 3,
+    "stale_only": 18,
+    "fresh_only": 10
+  },
+  "rates": {
+    "stale_wins_when_both_retrieved": 0.727,
+    "stale_only_share_of_scored": 0.462,
+    "stale_ahead_of_scored": 0.667
+  },
+  "reading": "A value-blind ranker lands near 0.50 on stale_wins_when_both_retrieved. Above that means something systematically favours the older memory \u2014 recall_count and confidence both accrue with age. stale_only is the case that actually misleads: the replacement is not retrieved at all.",
+  "stability_5_runs": {
+    "stale_wins": [
+      8,
+      10,
+      8,
+      8,
+      10
+    ],
+    "fresh_wins": [
+      3,
+      2,
+      3,
+      3,
+      2
+    ],
+    "stale_only": [
+      18,
+      18,
+      18,
+      18,
+      18
+    ],
+    "stale_wins_when_both_retrieved": [
+      0.727,
+      0.833,
+      0.727,
+      0.727,
+      0.833
+    ],
+    "note": "Search is not run-to-run deterministic on near-identical pairs: the KNN pool cut decides who is retrieved when two memories differ by one token. The head-to-head arm moves; stale_only does not."
+  },
+  "also_measured_at_085": {
+    "scored": 325,
+    "stale_wins": 71,
+    "fresh_wins": 77,
+    "stale_only": 90,
+    "fresh_only": 87,
+    "stale_wins_when_both_retrieved": 0.48,
+    "reading": "At 0.85 the population stops being supersessions \u2014 it is topically-similar memories with different values (different infra layers, different agent reports). The rate sits exactly on the value-blind null, which is what a non-supersession population should do. That the 0.90 band departs from it is the signal."
+  },
+  "rejected_controlled_arm": {
+    "design": "Clone real memories with one digit mutated and a fresh timestamp, seed 150 pairs, measure head-to-head. Would have given n=150 instead of n=12.",
+    "result": "fresh wins 146/146, invariant across replacement ages of 0, 30, 90, 180 and 365 days.",
+    "why_discarded": "A uniform 100% is the shape of a deterministic tie-break, not a finding \u2014 the same fake-zero trap this task line hit twice before. Per-case inspection: the two texts are byte-identical apart from one digit, so cosine matches to 4 decimal places and the margin is ~0.1% (1.4750 vs 1.4736 in one inspected case, which flipped to the stale side). Real updates rephrase; a one-digit mutation does not model them. Code removed rather than reported."
+  },
+  "verdict": {
+    "risk_is_real_direction_wise": "The older memory is ahead of its replacement, or retrieved instead of it, in 26 of 39 scored pairs (0.667). In 18 of 39 the replacement is not retrieved at all.",
+    "but_underpowered": "The head-to-head arm is 11-12 pairs and moves between runs. At its worst run (8 of 11) the binomial p against a coin flip is 0.11; at its best (10 of 12) it is 0.019. Suggestive, not established.",
+    "not_caused_by_task_34": "These 55 pairs pre-date the update-path fix \u2014 both members were already in the store. What task 34 changed is that this population will now GROW, since updates are stored instead of discarded. It is a forecast of a cost, not a regression measurement.",
+    "action": "No ranking term. The last three ranking intuitions in this repo (RRF, cross-encoder, injection diversity) were all refuted by measurement, and this evidence is weaker than any of them had. Adding a recency or supersession term now would be guessing.",
+    "gate_for_revisiting": "store() records supersedes_candidate on the result and in operation_events; production has 1 such event today. Re-run this harness against that labelled population once it reaches n>=50 \u2014 it is real supersession rather than a reconstruction, and it needs no shared-query trick."
+  }
+}
