@@ -2214,3 +2214,36 @@ def test_backfill_still_repairs_an_empty_fts_index(store):
     conn.execute("DROP TABLE memory_fts")
     reopened = MemoryStore(db_path=store.db_path)
     assert reopened.search("pgbouncer pooling", limit=5), "index was not rebuilt"
+
+
+def test_purge_removes_documents_and_their_index_rows(store):
+    """Soft-deleted documents must actually go away, not just get a flag.
+
+    delete_doc only sets deleted_at, and nothing else ever removed a documents
+    row, so the archive retention policy reclaimed no space at all.
+    """
+    h = store.store_doc(
+        title="purge probe",
+        summary="s",
+        body="a body about pgbouncer pooling",
+        doc_type="session-archive",
+        tags=["test"],
+    )["content_hash"]
+    doc_id = store._get_conn().execute("select id from documents where content_hash = ?", (h,)).fetchone()[0]
+    store.delete_doc(h)
+
+    result = store.purge(retention_days=0)
+    assert result["documents_purged"] == 1
+    conn = store._get_conn()
+    assert conn.execute("select count(*) from documents where id = ?", (doc_id,)).fetchone()[0] == 0
+    assert conn.execute("select count(*) from document_fts_docsize where id = ?", (doc_id,)).fetchone()[0] == 0
+    assert conn.execute("select count(*) from document_chunks where doc_id = ?", (doc_id,)).fetchone()[0] == 0
+    conn.execute("INSERT INTO document_fts(document_fts) VALUES('integrity-check')")
+
+
+def test_purge_spares_documents_inside_the_retention_window(store):
+    """The 30-day undo window is the whole safety story for a prune."""
+    h = store.store_doc(title="recent probe", summary="s", body="body", tags=["test"])["content_hash"]
+    store.delete_doc(h)
+    assert store.purge(retention_days=30)["documents_purged"] == 0
+    assert store.get_doc(h) is not None

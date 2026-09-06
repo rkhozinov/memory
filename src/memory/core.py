@@ -3899,10 +3899,15 @@ class MemoryStore:
             ).fetchall()
 
             if dry_run:
+                would_docs = conn.execute(
+                    "SELECT COUNT(*) FROM documents WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+                    (cutoff,),
+                ).fetchone()[0]
                 conn.execute("ROLLBACK")
                 return {
                     "dry_run": True,
                     "would_purge": len(rows),
+                    "would_purge_documents": would_docs,
                     "retention_days": retention_days,
                     "hashes": [r["content_hash"] for r in rows],
                 }
@@ -3923,11 +3928,52 @@ class MemoryStore:
         except BaseException:
             self._rollback_safe(conn)
             raise
+        docs_purged = self._purge_documents(cutoff)
         return {
             "purged": len(rows),
+            "documents_purged": docs_purged,
             "retention_days": retention_days,
             "purged_hashes": [r["content_hash"] for r in rows],
         }
+
+    def _purge_documents(self, cutoff: float) -> int:
+        """Hard-delete soft-deleted documents older than `cutoff`.
+
+        delete_doc only sets deleted_at and drops the summary embedding, and
+        nothing else ever removed a documents row -- so an archive retention
+        policy that soft-deletes 208 session archives reclaimed no space at all,
+        it only moved them from live to dead. Bodies dominate the store, so this
+        is where the space actually is.
+        """
+        conn = self._begin_immediate()
+        try:
+            ids = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM documents WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+                    (cutoff,),
+                ).fetchall()
+            ]
+            for doc_id in ids:
+                # FTS first: document_fts is external-content, so it reads the
+                # documents row to work out which tokens to remove. Deleting a
+                # rowid absent from the index raises "database disk image is
+                # malformed", hence the docsize guard.
+                if conn.execute("SELECT 1 FROM document_fts_docsize WHERE id = ?", (doc_id,)).fetchone():
+                    conn.execute("DELETE FROM document_fts WHERE rowid = ?", (doc_id,))
+                for chunk_id in [
+                    r["id"]
+                    for r in conn.execute("SELECT id FROM document_chunks WHERE doc_id = ?", (doc_id,)).fetchall()
+                ]:
+                    conn.execute("DELETE FROM document_chunk_embeddings WHERE rowid = ?", (chunk_id,))
+                conn.execute("DELETE FROM document_chunks WHERE doc_id = ?", (doc_id,))
+                conn.execute("DELETE FROM document_embeddings WHERE rowid = ?", (doc_id,))
+                conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+            conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_safe(conn)
+            raise
+        return len(ids)
 
     def compact(self) -> dict:
         """Merge the FTS segments and return free pages to the OS.
