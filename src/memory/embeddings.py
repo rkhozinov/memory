@@ -410,3 +410,29 @@ def get_model() -> EmbeddingModel:
     if _model is None:
         _model = EmbeddingModel()
     return _model
+
+
+_measure_tokenizer = None
+
+
+def count_tokens(text: str) -> int:
+    """Token count as the encoder would see it, WITHOUT truncation or padding.
+
+    The shared `_tokenizer` has `enable_truncation(512)` and
+    `enable_padding(512)` set for inference, so `len(encode(text).ids)` on it is
+    always exactly 512 -- padded up for short text, cut down for long. Any
+    "is this too long" check built on it silently answers no, every time. This
+    keeps a separate tokenizer with neither setting, purely for measurement.
+
+    Raises if the tokenizer file is unavailable; callers decide the fallback.
+    """
+    global _measure_tokenizer
+    if _measure_tokenizer is None:
+        from tokenizers import Tokenizer
+
+        path = MODEL_DIR / MODEL_NAME / "tokenizer.json"
+        if not path.exists():
+            hf_cache = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{HF_REPO.replace('/', '--')}"
+            path = next((hf_cache / "snapshots").iterdir()) / "tokenizer.json"
+        _measure_tokenizer = Tokenizer.from_file(str(path))
+    return len(_measure_tokenizer.encode(text).ids)

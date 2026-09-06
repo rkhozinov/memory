@@ -2325,3 +2325,15 @@ def test_find_clusters_splits_oversized_components_all_the_way_down(store):
         ]
         assert sizes, f"no clusters at cap {cap}"
         assert max(sizes) <= cap, f"cap {cap} produced {sizes}"
+
+
+def test_too_long_to_embed_is_not_fooled_by_the_padded_tokenizer():
+    """The embedder's tokenizer pads and truncates to the window, so a length
+    check built on it answers 512 for everything and can never fire."""
+    from memory.core import _too_long_to_embed
+    from memory.embeddings import MAX_SEQ_LENGTH, count_tokens
+
+    short, long_text = "hello world", "word " * 2000
+    assert count_tokens(short) < MAX_SEQ_LENGTH < count_tokens(long_text)
+    assert not _too_long_to_embed(short, MAX_SEQ_LENGTH)
+    assert _too_long_to_embed(long_text, MAX_SEQ_LENGTH)

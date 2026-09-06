@@ -337,19 +337,20 @@ def _value_tokens(text: str | None) -> set[str]:
 def _too_long_to_embed(text: str, max_tokens: int) -> bool:
     """True if `text` would be truncated by the encoder's input window.
 
-    Uses the real tokenizer when it is loaded, and falls back to a chars/4
-    estimate when it is not -- the fallback is only reached in environments
-    without the model, and erring toward "too long" there just declines a merge.
+    Must NOT use the embedder's own tokenizer: it has truncation and padding
+    fixed at MAX_SEQ_LENGTH, so len(encode(text).ids) is always exactly that
+    number and the comparison is never true. `count_tokens` keeps a separate
+    tokenizer with neither setting. Falls back to a chars/4 estimate only when
+    the tokenizer file is missing entirely; erring toward "too long" there just
+    declines a merge.
     """
     try:
-        from .embeddings import get_model
+        from .embeddings import count_tokens
 
-        tok = getattr(get_model(), "_tokenizer", None)
-        if tok is not None:
-            return len(tok.encode(text).ids) > max_tokens
-    except Exception as e:  # any model failure falls back to the estimate, never blocks
+        return count_tokens(text) > max_tokens
+    except Exception as e:  # a missing tokenizer falls back, it never blocks
         sys.stderr.write(f"[synthesize] tokenizer unavailable, estimating length: {e}\n")
-    return len(text) / 4 > max_tokens
+        return len(text) / 4 > max_tokens
 
 
 def differs_by_value(new: str, existing: str) -> bool:
