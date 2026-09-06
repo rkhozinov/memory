@@ -3900,7 +3900,13 @@ class MemoryStore:
             for r in rows:
                 mid = r["id"]
                 conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (mid,))
-                conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (mid,))
+                # memory_fts is external-content, so deleting a rowid that is no
+                # longer in the index makes FTS5 subtract tokens it never added
+                # and raise "database disk image is malformed". delete() already
+                # unindexes the row; other soft-delete paths do not. docsize has
+                # exactly one row per indexed rowid, so it answers "is it there".
+                if conn.execute("SELECT 1 FROM memory_fts_docsize WHERE id = ?", (mid,)).fetchone():
+                    conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (mid,))
                 conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
 
             conn.execute("COMMIT")
@@ -3911,6 +3917,31 @@ class MemoryStore:
             "purged": len(rows),
             "retention_days": retention_days,
             "purged_hashes": [r["content_hash"] for r in rows],
+        }
+
+    def compact(self) -> dict:
+        """Merge the FTS segments and return free pages to the OS.
+
+        FTS5 writes every transaction as its own segment and only merges on
+        demand, and soft-delete/purge free pages inside the file without ever
+        shrinking it. Neither was called anywhere, so on a store running since
+        February the file had grown to 288 MB against 127 MB of live data.
+
+        Both statements are housekeeping only -- no rows change -- but VACUUM
+        rewrites the whole file, so it needs free disk space equal to the
+        current size and cannot run inside a transaction.
+        """
+        path = str(self.db_path)
+        before = os.path.getsize(path) if os.path.exists(path) else 0
+        conn = self._get_conn()
+        conn.execute("INSERT INTO document_fts(document_fts) VALUES('optimize')")
+        conn.commit()
+        conn.execute("VACUUM")
+        after = os.path.getsize(path) if os.path.exists(path) else 0
+        return {
+            "bytes_before": before,
+            "bytes_after": after,
+            "bytes_freed": before - after,
         }
 
     def find_clusters(
@@ -4979,6 +5010,11 @@ class MemoryStore:
         # the transaction above because refresh_hubness takes its own.
         hubness_refreshed = 0 if dry_run else self.refresh_hubness()
 
+        # 8. Compact -- merge FTS segments, return free pages to the OS. Last,
+        # so it reclaims what this dream's soft-deletes and merges just freed.
+        # dream() is the once-a-day pass, which is the cadence this needs.
+        compacted = {} if dry_run else self.compact()
+
         return {
             "dry_run": dry_run,
             "dates_rewritten": dates_rewritten,
@@ -4990,6 +5026,7 @@ class MemoryStore:
             "forgotten": forgotten,
             "forgotten_pairs": forgotten_pairs,
             "hubness_refreshed": hubness_refreshed,
+            "compacted": compacted,
             "duration_ms": round((time.time() - start) * 1000, 2),
         }
 

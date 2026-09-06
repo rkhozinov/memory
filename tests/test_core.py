@@ -2140,3 +2140,44 @@ def test_build_index_low_value_types_still_excluded(store):
     noise = store.store("just a note", memory_type="note", tags=["project:idx"])
     idx = store.build_index(max_lines=20, max_tokens=100_000, tags=["project:idx"])
     assert noise["content_hash"][:12] not in idx
+
+
+def test_compact_reclaims_free_pages_and_keeps_data(store):
+    """compact() leaves no free pages and does not change what search returns.
+
+    Asserting the file shrinks would be wrong: on a small store the freshly
+    merged FTS segment can outweigh the pages reclaimed. Zero free pages after
+    VACUUM is the property that actually holds at every size.
+    """
+    hashes = [
+        store.store(f"compaction probe number {i} about pgbouncer pooling", tags=["test"])["content_hash"]
+        for i in range(30)
+    ]
+    for h in hashes[:20]:
+        store.delete(h)
+    store.purge(retention_days=0)
+
+    before_hits = [r["content_hash"] for r in store.search("pgbouncer pooling", limit=5)]
+    result = store.compact()
+
+    assert result["bytes_freed"] == result["bytes_before"] - result["bytes_after"]
+    assert store.db_path.stat().st_size == result["bytes_after"]
+    assert store._get_conn().execute("PRAGMA freelist_count").fetchone()[0] == 0
+    after_hits = [r["content_hash"] for r in store.search("pgbouncer pooling", limit=5)]
+    assert after_hits == before_hits
+
+
+def test_dream_reports_compaction(store):
+    """dream() runs compact as its last pass, and skips it on a dry run."""
+    store.store("a note worth keeping", tags=["test"])
+    assert store.dream(dry_run=True)["compacted"] == {}
+    assert "bytes_after" in store.dream(dry_run=False)["compacted"]
+
+
+def test_purge_after_delete_does_not_corrupt_fts(store):
+    """delete() unindexes the row; purge() must not delete it from FTS twice."""
+    h = store.store("pgbouncer pool exhaustion note", tags=["test"])["content_hash"]
+    store.delete(h)
+    assert store.purge(retention_days=0)["purged"] == 1
+    conn = store._get_conn()
+    conn.execute("INSERT INTO memory_fts(memory_fts) VALUES('integrity-check')")
